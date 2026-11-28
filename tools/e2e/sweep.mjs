@@ -423,6 +423,7 @@ async function watchWidgetOutcomes({ waitForPlaying = false } = {}) {
       grid: document.querySelector('.dash-grid-scroll'),
       playHost: document.querySelector('button.header-play')?.parentElement ?? document.body,
       isPlaying: () => !!document.querySelector('button.header-play[aria-label="Pause"]'),
+      readHour: () => window.__perf.hour(),
       classify,
       observe: (node, options, cb) => { const mo = new MutationObserver(cb); mo.observe(node, options); return () => mo.disconnect(); },
       requestFrame: cb => requestAnimationFrame(cb),
@@ -433,7 +434,7 @@ async function watchWidgetOutcomes({ waitForPlaying = false } = {}) {
   })()`);
 }
 
-const DASHBOARD_INVENTORY = `(() => {
+const dashboardInventory = (tracking = false) => `(() => {
   const classify = ${CLASSIFY_WIDGET};
   const grid = document.querySelector('.dash-grid-scroll'), viewport = grid.getBoundingClientRect();
   const visible = node => {
@@ -450,7 +451,7 @@ const DASHBOARD_INVENTORY = `(() => {
   };
   return [...grid.querySelectorAll('article.dash-widget')].map(a => {
     const kind = [...a.classList].find(c => c.startsWith('kind-'))?.slice(5);
-    const { outcome, detail } = classify(a);
+    const { outcome, detail } = classify(a, ${tracking});
     const byPlacement = new Map();
     for (const c of a.querySelectorAll('[data-surface]')) {
       const id = c.dataset.placement ?? c.dataset.surface, held = byPlacement.get(id);
@@ -753,7 +754,7 @@ await phase('playback', async () => {
         height = tallViewportHeight(after.height, height, SHELL_HEADER_HEIGHT);
       }
       if (!fitted) throw new Error('the tall viewport did not fit the dashboard grid');
-      const tallInventory = await app.evaluate(DASHBOARD_INVENTORY);
+      const tallInventory = await app.evaluate(dashboardInventory());
       const tallExpected = fixture.pages[page]?.widgets ?? [];
       if (tallExpected.some(expected => !tallInventory.some(widget => widget.id === expected.id)))
         throw new Error('the tall-view inventory does not cover every fixture widget');
@@ -801,7 +802,7 @@ await phase('playback', async () => {
           await watchWidgetOutcomes({ waitForPlaying: true });
           await s.click('button.header-play[aria-label="Play"]');
           await s.frames(2);
-          let widgets = await app.evaluate(DASHBOARD_INVENTORY);
+          let widgets = await app.evaluate(dashboardInventory(true));
           const expectedWidgets = fixture?.pages[page]?.widgets
             ?.filter(expected => requestedPage === HEAVIEST || !widgets.some(widget => widget.id === expected.id) || widgets.some(widget => widget.id === expected.id && widget.visible))
             .map(({ id }) => ({ id }));
@@ -817,7 +818,7 @@ await phase('playback', async () => {
               windowReasons.push('Playback did not cover the requested game hours');
           } else await sleep(PLAY_SECONDS * 1000);
           const observedOutcomes = await app.evaluate('__e2e.endWidgetOutcomes?.() ?? {}').catch(() => ({}));
-          const endInventory = await app.evaluate(DASHBOARD_INVENTORY).catch(() => null);
+          const endInventory = await app.evaluate(dashboardInventory()).catch(() => null);
           widgets = mergeWidgetOutcomes(widgets, observedOutcomes);
           if (Array.isArray(endInventory)) {
             const byId = Object.fromEntries(endInventory.map(w => [w.id, w]));
@@ -916,7 +917,7 @@ await phase('widget-costs', async () => {
     return warmupReasons;
   };
   const measureOne = async ({ kind, view = null, isDefaultView = true, title, label, widget, isEmpty, sampleLabel = null, extraReasons = [] }) => {
-    let from = null, to = null, seekStart = null, audit = [], outcome = isEmpty ? 'empty' : 'content', detail = null, surfaces = [], playingAtSnap = null;
+    let from = null, to = null, seekStart = null, audit = [], outcome = isEmpty ? 'empty' : 'content', detail = null, loading = null, surfaces = [], playingAtSnap = null;
     const reasons = [...extraReasons];
     try {
       await s.openPage(label);
@@ -941,12 +942,13 @@ await phase('widget-costs', async () => {
           const classify = ${CLASSIFY_WIDGET};
           const a = document.querySelector('article.dash-widget');
           if (!a) return { outcome: 'error', detail: 'widget element not mounted', surfaces: [] };
-          const { outcome, detail } = classify(a);
+          const { outcome, detail } = classify(a, true);
           const surfaces = [...new Set([...a.querySelectorAll('[data-surface]')].map(c => c.dataset.surface).filter(Boolean))];
           return { outcome, detail, surfaces, id: a.dataset.widget };
         })()`);
         const merged = mergeWidgetOutcomes([{ id: snap.id ?? widget, outcome: snap.outcome, detail: snap.detail }], observed)[0];
-        outcome = merged.outcome; detail = merged.detail; surfaces = snap.surfaces;
+        outcome = merged.outcome === 'loading' ? 'error' : merged.outcome;
+        detail = merged.detail; loading = merged.loading ?? null; surfaces = snap.surfaces;
       }
       to = s.epoch + await app.evaluate('performance.now()');
       await pausePlayback();
@@ -969,7 +971,7 @@ await phase('widget-costs', async () => {
     }
     const itemName = sampleLabel ? `${kind}/${sampleLabel}` : !isDefaultView && view ? `${kind}/${view}` : kind;
     await s.record({ area: 'widget-costs', item: itemName, label, kind, ...(view ? { view } : {}), title, widget, isEmpty, sampleLabel, from, to, seekStart, seconds: COST_SECONDS,
-      playingAtSnap, outcome, detail, surfaces, audit, complete: reasons.length === 0, pass: reasons.length === 0, reasons, screenshot: false });
+      playingAtSnap, outcome, detail, ...(loading ? { loading } : {}), surfaces, audit, complete: reasons.length === 0, pass: reasons.length === 0, reasons, screenshot: false });
   };
   const warmupReasons = await warmEmptyBaseline();
   await measureOne({ kind: '__empty__', title: 'Empty page (start)', label: costFixture.empty.label, widget: null, isEmpty: true, sampleLabel: 'start', extraReasons: warmupReasons });

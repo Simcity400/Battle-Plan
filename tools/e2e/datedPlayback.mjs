@@ -252,18 +252,21 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const placementStart = placements.length;
     for (const widget of w.widgets ?? []) {
       if (!widget.visible) continue;
+      const loading = widget.loading ? { loading: widget.loading } : {};
       if (widget.outcome === 'refusal') {
         const detail = widget.detail ?? 'refused';
-        placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, status: 'refused', reason: detail, pass: false });
+        placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, ...loading, status: 'refused', reason: detail, pass: false });
         reasons.push(`${widget.kind} refused: ${detail}`);
         continue;
       }
       if (widget.outcome === 'error') {
         const detail = widget.detail ?? 'error';
-        placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, status: 'error', reason: detail, pass: false });
+        placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, ...loading, status: 'error', reason: detail, pass: false });
         reasons.push(`${widget.kind} error: ${detail}`);
         continue;
       }
+      const recovered = widget.outcome === 'loading-recovered';
+      if (recovered) reasons.push(`${widget.kind}: ${widget.detail}`);
       const reports = (picturesByWidget.get(widget.id) ?? []).toSorted((a, b) => shownFrom(a) - shownFrom(b));
       const declared = [...new Set((widget.surfaces ?? []).filter(surface => surface != null))];
       const visible = new Set(declared), required = new Set(visible);
@@ -342,7 +345,8 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, p95: Number.isFinite(age) ? age : null,
         eligibleP95: Number.isFinite(eligible) ? eligible : null, surfaces, samples: samples.length, distinctHoursPerSecond: hours.size / seconds,
         missing, late, lateWithoutCrossing, structureCrossings, future, exact, ...(unauditedPictures > 0 && { unauditedPictures }), boundaryErrors,
-        ...(playLost.count > 0 && { lostRecords: playLost.count, reason: `perf log lost ${playLost.count} records during playing window` }), pass });
+        ...(recovered && { status: 'loading-recovered', reason: widget.detail }), ...loading,
+        ...(playLost.count > 0 && { lostRecords: playLost.count, reason: `perf log lost ${playLost.count} records during playing window` }), pass: pass && !recovered });
       reasons.push(...boundaryErrors);
     }
     for (const expected of expectedWidgets) {
@@ -353,7 +357,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
   const kinds = [...new Set(placements.map(p => p.kind))];
   const widgets = kinds.map(kind => {
     const kept = placements.filter(p => p.kind === kind);
-    const realFailed = kept.some(p => !p.pass && p.status !== 'refused' && p.status !== 'error');
+    const realFailed = kept.some(p => !p.pass && p.status === undefined);
     const pass = kept.every(p => p.pass);
     if (realFailed) reasons.push('A widget missed its dated presentation or exact-read target');
     return { kind, p95: kept.length && kept.every(p => p.p95 !== null && p.p95 !== undefined) ? Math.max(...kept.map(p => p.p95)) : null,
@@ -603,8 +607,9 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
       outcome = 'error';
       detail = widgetErrors[0].message ?? 'widget error';
     }
-    let exact = outcome === 'content' ? 'not-audited' : 'n/a', exactError = null;
-    if (outcome === 'content' && (inWindowAudit.length > 0 || observedPairs.size > 0)) {
+    const displayed = outcome === 'content' || outcome === 'loading-recovered';
+    let exact = displayed ? 'not-audited' : 'n/a', exactError = null;
+    if (displayed && (inWindowAudit.length > 0 || observedPairs.size > 0)) {
       if (inWindowAuditError) { exact = 'fail'; exactError = inWindowAuditError; }
       else if (unauditedPictures > 0) { exact = 'fail'; exactError = `${unauditedPictures} painted picture${unauditedPictures === 1 ? '' : 's'} emitted without an audit sample`; }
       else if (inWindowAudit.length > 0 && [...observedPairs].every(pair => auditedPairs.has(pair))) { exact = 'pass'; }
@@ -622,12 +627,12 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
     if (exact === 'fail') correctnessErrors.push(exactError ? `audit: ${exactError}` : 'exact-read audit failed');
     if (futureFrames > 0) correctnessErrors.push(`${futureFrames} future frame${futureFrames === 1 ? '' : 's'}`);
     const complete = Boolean(w.complete ?? true) && lost === 0 && main.n > 0 && clock.ok && baselineUsable;
-    const pass = outcome !== 'error' && complete && correctnessErrors.length === 0;
+    const pass = outcome !== 'error' && outcome !== 'loading-recovered' && complete && correctnessErrors.length === 0;
     const belowBaselineNoise = Number.isFinite(mainDelta.p95) && mainDelta.p95 < 0;
     const lowFrameCount = main.n > 0 && main.n < WIDGET_LOW_FRAMES;
     const costScoreMs = complete && Number.isFinite(mainDelta.p95) ? mainDelta.p95 + (worker.p95 ?? 0) : null;
     return {
-      kind: w.kind, ...(w.view ? { view: w.view } : {}), title: w.title ?? w.kind, outcome, detail,
+      kind: w.kind, ...(w.view ? { view: w.view } : {}), title: w.title ?? w.kind, outcome, detail, ...(w.loading ? { loading: w.loading } : {}),
       seconds, clockHps: clock.hps, main, mainDelta, interval, worker,
       commits, commitsPerSec,
       requests: liveQueries.length, requestsPerSec, requestsByProduct, requestCountsByProduct, cacheHitsPerSec,

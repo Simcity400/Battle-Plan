@@ -459,7 +459,7 @@ if (sweep) {
     const signed = value => (value === null || value === undefined || !Number.isFinite(value) ? '–' : `${value >= 0 ? '+' : ''}${value.toFixed(1)}`);
     const byOutcome = new Map();
     for (const w of costReport.widgets) byOutcome.set(w.outcome, (byOutcome.get(w.outcome) ?? 0) + 1);
-    const outcomeLine = ['content', 'refusal', 'error'].map(k => `${byOutcome.get(k) ?? 0} ${k}`).join(', ');
+    const outcomeLine = ['content', 'loading-recovered', 'refusal', 'error'].map(k => `${byOutcome.get(k) ?? 0} ${k}`).join(', ');
     const baseMain = costReport.baseline.main;
     const sampleLine = (costReport.baseline.samples ?? []).map(sample =>
       `${sample.label}: p50 ${ms1(sample.main.p50)} / p95 ${ms1(sample.main.p95)} / max ${ms1(sample.main.max)} ms (${sample.main.n} frames)`).join('; ');

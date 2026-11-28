@@ -1,4 +1,4 @@
-export const OUTCOME_RANK = Object.freeze({ content: 0, outside: 1, 'not-recorded': 1, refusal: 2, error: 3 });
+export const OUTCOME_RANK = Object.freeze({ loading: -1, content: 0, 'loading-recovered': 1, outside: 2, 'not-recorded': 2, refusal: 3, error: 4 });
 
 export async function restoreCountHour(hour, session, seek) {
   const line = await session.timeline();
@@ -10,10 +10,9 @@ export function mergeWidgetOutcomes(widgets, observed) {
   return widgets.map(widget => {
     const seen = observed?.[widget.id];
     if (!seen) return widget;
-    if ((OUTCOME_RANK[seen.outcome] ?? 0) > (OUTCOME_RANK[widget.outcome ?? 'content'] ?? 0)) {
-      return { ...widget, outcome: seen.outcome, detail: seen.detail };
-    }
-    return widget;
+    const worse = (OUTCOME_RANK[seen.outcome] ?? 0) > (OUTCOME_RANK[widget.outcome ?? 'content'] ?? 0);
+    return { ...widget, ...(worse ? { outcome: seen.outcome, detail: seen.detail } : {}),
+      ...(seen.loading ? { loading: seen.loading } : {}) };
   });
 }
 
@@ -44,20 +43,57 @@ export async function measureIdleCost({ pausePlayback, waitPlayButton, setSpeed,
   }
 }
 
-export function createOutcomeWatcher({ grid, playHost, isPlaying, classify, observe, requestFrame, cancelFrame, waitForPlaying = false }) {
-  const rank = { content: 0, outside: 1, 'not-recorded': 1, refusal: 2, error: 3 };
+export function createOutcomeWatcher({ grid, playHost, isPlaying, classify, observe, requestFrame, cancelFrame, readHour = () => null, waitForPlaying = false }) {
+  const rank = { content: 0, 'loading-recovered': 1, outside: 2, 'not-recorded': 2, refusal: 3, error: 4 };
   const worst = new Map();
+  const loading = new Map();
+  const firstLoading = new Map();
   let active = !waitForPlaying || isPlaying();
   let stopped = false;
   let rafId = 0;
+  let loadingFrame = 0;
   let playStop = null;
   let gridStop = null;
+  const remember = (id, next) => {
+    const prev = worst.get(id);
+    if (!prev || (rank[next.outcome] ?? 0) > (rank[prev.outcome] ?? 0)) worst.set(id, next);
+  };
+  const countLoading = () => {
+    loadingFrame = 0;
+    for (const pending of loading.values()) pending.frames++;
+    scheduleLoading();
+  };
+  const scheduleLoading = () => {
+    if (!stopped && loading.size && !loadingFrame && requestFrame) loadingFrame = requestFrame(countLoading);
+  };
+  const finishLoading = (id, { firstHour, frames, observation }) => {
+    const window = { firstHour, lastHour: readHour(), frames, ...(observation ? { observation } : {}) };
+    if (!firstLoading.has(id)) firstLoading.set(id, window);
+    return window;
+  };
   const recordArticle = a => {
     const id = a?.dataset?.widget;
     if (!id) return;
-    const next = classify(a);
-    const prev = worst.get(id);
-    if (!prev || (rank[next.outcome] ?? 0) > (rank[prev.outcome] ?? 0)) worst.set(id, next);
+    const next = classify(a, true);
+    if (next.outcome === 'loading') {
+      if (!loading.has(id)) loading.set(id, { firstHour: readHour(), frames: 0, detail: next.detail, observation: next.observation });
+      scheduleLoading();
+      return;
+    }
+    const pending = loading.get(id);
+    if (pending) {
+      loading.delete(id);
+      if (!loading.size && loadingFrame) {
+        cancelFrame?.(loadingFrame);
+        loadingFrame = 0;
+      }
+      const { firstHour, lastHour, frames } = finishLoading(id, pending);
+      if (next.outcome === 'content') {
+        const span = Number.isFinite(firstHour) && Number.isFinite(lastHour) ? ` across ${Math.abs(lastHour - firstHour)} game hours` : '';
+        remember(id, { outcome: 'loading-recovered', detail: `Loading recovered after ${frames} ${frames === 1 ? 'frame' : 'frames'}${span}` });
+      }
+    }
+    remember(id, next);
   };
   const scanAll = () => {
     if (!active || !grid) return;
@@ -116,14 +152,19 @@ export function createOutcomeWatcher({ grid, playHost, isPlaying, classify, obse
       stopped = true;
       stopActivation();
       if (active || isPlaying()) { active = true; scanAll(); }
+      if (loadingFrame) { cancelFrame?.(loadingFrame); loadingFrame = 0; }
+      for (const [id, pending] of loading) {
+        finishLoading(id, pending);
+        remember(id, { outcome: 'error', detail: pending.detail ?? 'still loading' });
+      }
       if (gridStop) { gridStop(); gridStop = null; }
-      return Object.fromEntries(worst);
+      return Object.fromEntries([...worst].map(([id, outcome]) => [id, firstLoading.has(id) ? { ...outcome, loading: firstLoading.get(id) } : outcome]));
     },
   };
 }
 
 export function buildWidgetClassifierExpr(classifySnapshot) {
-  return `(a => {
+  return `((a, tracking = false) => {
     const classify = ${classifySnapshot.toString()};
     const readDetail = el => el ? (el.getAttribute('data-detail')?.trim() || el.getAttribute('data-tooltip')?.trim() || el.textContent?.trim() || null) : null;
     const bodyState = a.querySelector('.widget-state[data-state]:not(.is-section)') ?? a.querySelector('[data-state]');
@@ -133,10 +174,10 @@ export function buildWidgetClassifierExpr(classifySnapshot) {
     const outside = a.querySelector('[data-state="outside"]');
     const notRecorded = a.querySelector('[data-state="not-recorded"]');
     const empty = a.querySelector('[data-state="empty"]');
-    const probe = window.__e2e?.stateOf?.(a) ?? null;
-    return classify({
+    const probe = window.__e2e?.stateOf?.(a, tracking) ?? null;
+    const result = classify({
       domState,
-      domDetail: readDetail(bodyState),
+      domDetail: readDetail(bodyState) ?? (domState === 'loading' ? bodyState?.getAttribute('aria-label') : null),
       unavailableText: unavailable ? (readDetail(unavailable) || 'unavailable') : null,
       errorDetail: error ? (readDetail(error) || 'error') : null,
       outsideText: outside ? (readDetail(outside) || 'outside') : null,
@@ -144,7 +185,21 @@ export function buildWidgetClassifierExpr(classifySnapshot) {
       emptyText: empty?.textContent ?? null,
       probeState: probe?.state ?? null,
       probeDrawing: Boolean(probe?.drawing),
-    });
+    }, tracking);
+    if (result.outcome !== 'loading') return result;
+    const element = domState === 'loading' ? bodyState : probe?.element;
+    const host = element?.closest('.fh-frame') ?? a.querySelector('.fh-frame');
+    const diagnostics = host?.playbackDiagnostics;
+    const selector = element ? element.localName + [...element.classList].map(name => '.' + window.CSS.escape(name)).join('') : null;
+    return { ...result, observation: {
+      source: domState === 'loading' ? 'body-state' : 'probe',
+      selector: element?.closest('.fh-overlay') ? '.fh-overlay ' + selector : selector,
+      text: element?.textContent?.trim() || element?.getAttribute('aria-label') || null,
+      domState,
+      bodyStatus: diagnostics?.bodyStatus ?? null,
+      metaMode: diagnostics?.metaMode ?? null,
+      installedBinding: diagnostics?.installedBinding ?? null,
+    } };
   })`;
 }
 

@@ -78,12 +78,14 @@
   const ids = new WeakMap();
   let serial = 0;
   const idOf = article => { let id = ids.get(article); if (id === undefined) ids.set(article, id = ++serial); return id; };
-  p.stateOf = article => {
+  p.stateOf = (article, describeLoading = false) => {
     const error = article.querySelector(ERROR);
     if (error) return { state: 'error', text: (error.textContent || '').trim().slice(0, 200), detail: error.getAttribute('data-detail') };
-    if ([...article.querySelectorAll(LOADING)].some(shownOnScreen)) return { state: 'loading' };
+    const placeholder = [...article.querySelectorAll(LOADING)].find(shownOnScreen);
+    if (placeholder) return { state: 'loading', ...(describeLoading ? { element: placeholder } : {}) };
     if ([...article.querySelectorAll('canvas')].some(c => c.drawPending && shownOnScreen(c))) return { state: 'loading', drawing: true };
-    if ([...article.querySelectorAll('[role=status]')].some(e => /^Loading\b/.test((e.textContent || '').trim()) && shownOnScreen(e))) return { state: 'loading' };
+    const status = [...article.querySelectorAll('[role=status]')].find(e => loadingText(e) && shownOnScreen(e));
+    if (status) return { state: 'loading', ...(describeLoading ? { element: status } : {}) };
     const content = article.querySelector('.dash-widget-content');
     const notice = content?.querySelector('[data-state=empty], [data-state=unavailable], [data-state=outside], [data-state=not-recorded], [data-state=nothing-chosen], [data-state=no-members]');
     if (notice && (content.textContent || '').trim() === (notice.textContent || '').trim())

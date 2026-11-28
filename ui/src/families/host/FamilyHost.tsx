@@ -271,6 +271,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly extraWarnings?: readonly string[];
   readonly blockedState?: ReactNode;
   readonly blockedLoading?: boolean;
+  readonly bodyStatus?: string;
   readonly held?: boolean;
   readonly loadingLabel?: string;
   readonly className?: string;
@@ -339,6 +340,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   extraWarnings,
   blockedState = null,
   blockedLoading = false,
+  bodyStatus,
   held = false,
   loadingLabel,
   className = '',
@@ -356,7 +358,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const contextMenuRef = useRef(contextMenu);
   contextMenuRef.current = contextMenu;
 
-  const frameRef = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<HTMLDivElement & { playbackDiagnostics?: { bodyStatus?: string; metaMode?: string; installedBinding?: number } }>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const listboxMirrorRef = useRef<HTMLDivElement>(null);
   const accessibleTableRef = useRef<HTMLTableElement>(null);
@@ -1237,6 +1239,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const install = () => {
       const shown = pipeline.view(pipe);
       const frameNode = frameRef.current;
+      if (perfLog && frameNode) (frameNode.playbackDiagnostics ??= {}).installedBinding = shown?.installedBinding;
       const cur = latestRef.current;
       const activeAdapter = cur.adapter;
       holdElement(frameNode, !!shown?.dim);
@@ -1640,6 +1643,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       clearHoverRef.current = () => {};
       stopPointer();
       stopInstall();
+      if (frameRef.current?.playbackDiagnostics) delete frameRef.current.playbackDiagnostics.installedBinding;
       auditWatch.dispose();
       clearMirrorRef.current();
       recordRef.current = null;
@@ -1988,6 +1992,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       lastMirrorCaptionRef.current = null;
     }
   }, [blockedState, rowsFocus, syncTableTabIndex]);
+
+  useLayoutEffect(() => {
+    if (!perfLog || !frameRef.current) return;
+    const diagnostics = frameRef.current.playbackDiagnostics ??= {};
+    diagnostics.bodyStatus = bodyStatus ?? (blockedState ? 'blocked' : 'ready');
+    diagnostics.metaMode = meta.mode;
+  }, [bodyStatus, blockedState, meta.mode]);
 
   return (
     <div ref={frameRef} data-tooltip-owner={tooltipOwner} className={className ? `fh-frame ${className}` : 'fh-frame'}>

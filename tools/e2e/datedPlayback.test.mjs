@@ -128,6 +128,14 @@ test('review 6 D: a lane that served twice and then stalled for the rest of the 
   assert.equal(datedPlaybackVerdict([window], records).pass, false);
   const served = [...records.filter(r => r.t !== 'workerFrame'), ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 }))];
   assert.equal(datedPlaybackVerdict([window], served).pass, true, 'the same window passes when the lane serves every frame');
+  const loading = { firstHour: 0, lastHour: 24, frames: 1 };
+  const recovered = { ...window, widgets: [{ ...window.widgets[0], outcome: 'loading-recovered', detail: 'Loading recovered after one frame', loading }] };
+  const recoveredResult = datedPlaybackVerdict([recovered], served);
+  assert.equal(recoveredResult.pass, false);
+  assert.equal(recoveredResult.placements[0].pass, false);
+  assert.equal(recoveredResult.placements[0].status, 'loading-recovered');
+  assert.equal(recoveredResult.placements[0].exact, true);
+  assert.deepEqual(recoveredResult.placements[0].loading, loading);
   const unpictured = served.map(r => r.t === 'frame' ? { ...r, pictures: 0, expired: ['w'] } : r);
   const result = datedPlaybackVerdict([window], unpictured);
   assert.equal(result.pass, false, '60 main-thread frames with no new widget picture are not 60 frames the user sees');
@@ -687,6 +695,13 @@ test('per-widget cost ranking combines net main-thread p95 and drawing-lane serv
   assert.equal(report.widgets[2].detail, 'No table 44 in the schema');
   assert.deepEqual(rankWidgetCosts([report.widgets[2], report.widgets[1], report.widgets[0]]).map(w => w.kind),
     ['worker-heavy', 'main-heavy', 'refused-widget']);
+
+  const loading = { firstHour: 100, lastHour: 124, frames: 1 };
+  const resumed = summarizeWidgetCosts([{ ...windows[0], outcome: 'loading-recovered', loading }], records, { baselines: [emptyStart, emptyEnd] }).widgets[0];
+  assert.equal(resumed.outcome, 'loading-recovered');
+  assert.deepEqual(resumed.loading, loading);
+  assert.equal(resumed.exact, 'pass');
+  assert.equal(resumed.pass, false, 'visible loading remains a finding after exact content is drawn');
 
   const multiView = summarizeWidgetCosts([
     { kind: 'naval-supremacy', view: 'shares', title: 'Naval supremacy', widget: 'page-cost-naval-supremacy-naval-supremacy', from: 3000, to: 5000, seconds: 2, outcome: 'content', audit: [], complete: true },
