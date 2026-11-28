@@ -792,7 +792,7 @@ struct Shared {
     asked: Mutex<Vec<Asked>>,
     demand: AtomicU64,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-    on_publish: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    on_publish: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
     #[cfg(test)]
     chosen: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
@@ -910,7 +910,7 @@ impl Store {
             asked: Mutex::default(),
             demand: AtomicU64::new(0),
             wake: Mutex::default(),
-            on_publish: Mutex::default(),
+            on_publish: Arc::default(),
             #[cfg(test)]
             chosen: Mutex::default(),
             #[cfg(test)]
@@ -1253,6 +1253,16 @@ impl Views {
 
     pub fn notify_progress(&self) {
         self.shared.notify_progress();
+    }
+
+    pub(super) fn progress_notifier(&self) -> impl Fn() + use<> {
+        let on_publish = Arc::clone(&self.shared.on_publish);
+        move || {
+            let wake = lock(&on_publish).clone();
+            if let Some(wake) = wake {
+                wake();
+            }
+        }
     }
 
     pub fn demand(&self) -> u64 {

@@ -431,6 +431,7 @@ pub struct Mirror {
     table: usize,
     columns: Vec<Column>,
     position: Vec<u16>,
+    watched: Vec<usize>,
     live: Bits,
     keys: Option<Vec<u128>>,
     index: OnceLock<HashMap<u128, u32, Keys>>,
@@ -491,10 +492,12 @@ impl Mirror {
         let index = keys.as_ref().filter(|_| listed.is_some()).map_or_else(OnceLock::new, |keys| {
             OnceLock::from(live.iter().map(|&slot| (keys[slot as usize], slot)).collect::<HashMap<_, _, Keys>>())
         });
+        let watched = lane.declared().0.iter().copied().filter(|&column| position.get(column) == Some(&ABSENT)).collect();
         Self {
             table: lane.table(),
             columns: held,
             position,
+            watched,
             live: bits,
             keys,
             index,
@@ -822,6 +825,7 @@ impl Mirror {
 
     pub(super) fn covers(&self, read: &crate::layers::Read) -> bool {
         (!read.keyed || self.keyed()) && read.columns.iter().all(|&column| column >= self.width() || self.holds(column))
+            && read.watched.iter().all(|&column| column >= self.width() || self.holds(column) || self.watched.contains(&column))
     }
 
     pub fn width(&self) -> usize {
@@ -955,6 +959,7 @@ impl Mirror {
             + self.index.get().map_or(0, |index| index.capacity() * 24)
             + columns
             + self.position.capacity() * 2
+            + self.watched.capacity() * size_of::<usize>()
             + self.texts.values().map(|text| text.len() + 40).sum::<usize>()
             + self.listed.as_ref().map_or(0, |listed| listed.capacity() * 16)
     }

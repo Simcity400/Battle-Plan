@@ -415,7 +415,7 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(views: views::Views) -> io::Result<Self> {
+    fn new(notify_progress: impl Fn() + Send + 'static) -> io::Result<Self> {
         let (jobs, receive) = mpsc::channel::<Job>();
         let (send, done) = viewer_runtime::landed::channel();
         std::thread::Builder::new().name("playhead host worker".into()).spawn(move || {
@@ -427,7 +427,7 @@ impl Worker {
                         if send.send(away).is_err() {
                             return;
                         }
-                        views.notify_progress();
+                        notify_progress();
                     }
                     Job::Drop(held) => drop(held),
                 }
@@ -866,13 +866,18 @@ impl<P: PlaybackProducts> MapSide<P> {
         })
     }
 
-    pub fn with_products(entry: Arc<Entry>, mut layers: Vec<Box<dyn Layer>>, view: View) -> io::Result<Self> {
+    pub fn with_products(entry: Arc<Entry>, layers: Vec<Box<dyn Layer>>, view: View) -> io::Result<Self> {
+        Self::with_readers(entry, layers, view, |_| ()).map(|(side, ())| side)
+    }
+
+    pub fn with_readers<R>(entry: Arc<Entry>, mut layers: Vec<Box<dyn Layer>>, view: View, readers: impl FnOnce(&views::Store) -> R) -> io::Result<(Self, R)> {
         let names: Vec<_> = layers.iter().map(|layer| layer.name()).collect();
         let counter_at = counters_at(&names);
         let views = views::Store::new(&entry);
         for layer in &mut layers {
             layer.views(&views)?;
         }
+        let readers = readers(&views);
         let Declaring { union: declared, reads, upstream, each } = declare(&entry, &mut layers, &view);
         let placed = layers.iter_mut().map(|layer| layer.placed(&view)).collect();
         let declared_layers = declared;
@@ -882,7 +887,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         let (tables, projections) = to_declared(&declared);
         let reader = entry.playhead.declare_projected(tables, Some(mirror::rebuild(Arc::clone(&entry.pages))), projections)?;
         let consumer = entry.playhead.consumer(reader);
-        let worker = Worker::new(views.handle())?;
+        let worker = Worker::new(views.handle().progress_notifier())?;
         let vision = shown_vision::ShownVision::with_views(views.handle());
         let reads_len = reads.len();
         let timed = layers.iter().any(|layer| layer.timed());
@@ -895,7 +900,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             }
         }
         entry.maps.fetch_add(1, Ordering::AcqRel);
-        Ok(Self {
+        Ok((Self {
             entry,
             reader,
             consumer,
@@ -965,7 +970,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             waited: Waited::default(),
             doing: Arc::default(),
             composed: Arc::default(),
-        })
+        }, readers))
     }
 
     pub fn take_installs(&mut self) -> Vec<Box<dyn Installs>> {
@@ -1372,7 +1377,7 @@ impl<P: PlaybackProducts> MapSide<P> {
                 *again = false;
             }
         }
-        let composed_here = !after_reset && !self.composing && !self.superseded && compose.contains(&true);
+        let composed_here = !after_reset && self.drawn.is_some() && !self.composing && !self.superseded && compose.contains(&true);
         if composed_here {
             self.compose_here(&compose, &mut frame);
         }
