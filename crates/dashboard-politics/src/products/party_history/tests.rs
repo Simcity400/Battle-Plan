@@ -236,6 +236,32 @@ fn a_party_named_for_another_country_follows_that_countrys_naming_and_never_brid
     assert!(hours.contains(&210) && !hours.contains(&208), "only a ruling party's country names it: {hours:?}");
 }
 
+#[test]
+fn its_own_party_name_does_not_read_unrelated_country_histories() {
+    use replay_data::rows::tables;
+    let frames = (200..=204).map(|hour| {
+        let mut frame = naming_frame(hour);
+        let mut parties = frame.complete::<tables::PoliticalParties>().unwrap().to_vec();
+        parties[0].tag = GER;
+        set(&mut frame, TableId::PoliticalParties, TableRows::PoliticalParties(parties));
+        frame
+    }).collect();
+    let source = recording(frames);
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let run = query.timeline.stretches[0].run;
+    let recording = query.replay.recording();
+    let columns = super::Columns::new(super::PartyRead::Ruling).unwrap();
+    let key = u128::from(GER) << 32;
+    let held = replay_lanes::lanes::history(recording, run, TableId::PoliticalParties, &columns.party, replay_lanes::lanes::Keys::Range(key, key | 0xFFFF_FFFF), 200, 204).unwrap();
+    let naming = super::naming_changes(recording, run, &columns, &held, (7, GER), 200, 204).unwrap();
+    assert_eq!(naming.country_histories, 1);
+
+    let parties = read(&query, &"GER".into(), super::PartyRead::Ruling, &AtomicBool::new(false)).unwrap();
+    let (name, original) = &parties.ruling.namings[0];
+    assert_eq!(name.tag.as_deref(), Some("GER"));
+    assert_eq!(original.as_deref(), Ok("GER"));
+}
+
 fn sparse_lexicon_frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1_000));
     set(&mut frame, TableId::Countries, TableRows::Countries(vec![CountryRow { id: GER, canonical_slot: 7, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }]));
