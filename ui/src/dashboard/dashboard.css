@@ -31,7 +31,10 @@
 .header-playback { grid-area: playback; display: flex; align-items: center; gap: 8px; }
 .header-date { display: flex; align-items: center; }
 .header-date .field { gap: 0; }
-.header-date .date-time-trigger { width: var(--header-date-width); contain: strict; }
+.header-date .date-time-trigger { width: var(--header-date-width); contain: strict; justify-content: space-between; }
+.header-date .date-time-value {
+  position: absolute; inset-inline: 35px 32px; inset-block: 0; margin-block: auto; block-size: 1lh; contain: size layout style;
+}
 .header-date .date-time-trigger > svg:first-child { color: var(--muted); }
 .header-date.has-date-draft .date-time-trigger { border-color: var(--accent-line); }
 .header-transport { display: flex; align-items: center; gap: 4px; }
@@ -115,7 +118,9 @@
 .header-workspace-tools .icon-button:disabled { opacity: .45; }
 @container (max-width: 1000px) {
   .header-workspace-bar { --header-date-width: 156px; }
+  .header-date .date-time-trigger { justify-content: flex-end; }
   .header-date .date-time-trigger > svg:first-child { display: none; }
+  .header-date .date-time-value { inset-inline-start: 10px; }
   .header-layout-trigger { width: 32px; min-width: 0; padding: 0; justify-content: center; }
   .header-layout-trigger > :not(svg:first-child) { display: none; }
   .toolbar-label { display: none; }
