@@ -54,11 +54,8 @@ const LAND_COMBATS: &[TableId] = &[TableId::LandCombatDivisions, TableId::LandCo
 const NAVAL_MISSIONS: &[TableId] = &[
     TableId::NavalMissionLedgers,
     TableId::NavalMissionTaskForces,
-    TableId::NavalMissionCommanders,
-    TableId::NavalMissionCountries,
     TableId::NavalDominanceTaskForceRanges,
     TableId::SliceReads,
-    TableId::ModifierDefinitions,
     TableId::WeatherProvinces,
 ];
 
@@ -70,7 +67,6 @@ const BASE_ICONS: &[TableId] = &[
     TableId::AirMissionInputs,
     TableId::AirGroundCrews,
     TableId::AirRegionCombat,
-    TableId::AirCountryRelations,
     TableId::WingEquipment,
     TableId::FacilityMapFlags,
     TableId::AirSortieBaseCountries,
@@ -100,9 +96,13 @@ const OVERLAY: &[TableId] = &[
     TableId::NavalResultCountries,
     TableId::NavalTransferUnits,
     TableId::NavalAccidentReports,
+    TableId::NavalMissionCommanders,
+    TableId::NavalMissionCountries,
+    TableId::ModifierDefinitions,
     TableId::Capitulation,
     TableId::CountryGameScoreInputs,
     TableId::AirRegionalMissions,
+    TableId::AirCountryRelations,
     TableId::VariantDefinitions,
     TableId::RaidAirSites,
     TableId::RaidAirScores,

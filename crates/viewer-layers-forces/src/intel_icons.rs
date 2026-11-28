@@ -28,6 +28,7 @@ const CORE: [TableId; 5] = [TableId::Countries, TableId::CountryLinks, TableId::
 const CATCH_UP: Duration = Duration::from_secs(120);
 
 pub trait Evaluate: Send + Sync + 'static {
+    fn row_tables(&self) -> &[TableId] { &[] }
     fn icons(&self, frame: &DecodedFrame, choice: &perspective::Choice) -> IntelIcons;
 }
 
@@ -208,7 +209,11 @@ pub struct Icons {
 
 impl Icons {
     pub fn new(evaluate: Arc<dyn Evaluate>, pace: Pace) -> Self {
-        Self { evaluate, retiring: RetirementFlag::default(), views: None, pace, shown: false, choice: perspective::Choice::default(), tables: CORE.to_vec(), open: None, icons: None, stands: None, epoch: 0, applied: None, stats: Stats::default(), installs: Installs::default() }
+        let mut tables = CORE.to_vec();
+        tables.extend_from_slice(evaluate.row_tables());
+        tables.sort_unstable_by_key(|table| table.index());
+        tables.dedup();
+        Self { evaluate, retiring: RetirementFlag::default(), views: None, pace, shown: false, choice: perspective::Choice::default(), tables, open: None, icons: None, stands: None, epoch: 0, applied: None, stats: Stats::default(), installs: Installs::default() }
     }
 
     pub fn icons(&self) -> Option<(&Arc<IntelIcons>, Hour)> {
@@ -444,6 +449,7 @@ impl Layer for Icons {
             self.close();
             return Ok(());
         }
+        self.ensure_open();
         inputs.table(TableId::Countries, true)
     }
 

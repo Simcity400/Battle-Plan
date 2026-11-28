@@ -152,6 +152,19 @@ pub struct ModeNames {
 impl Build for ModeNames {
     type Product = Arc<Placements>;
 
+    fn row_tables(&self, view: &View) -> Vec<TableId> {
+        let mut tables = vec![TableId::Campaign, TableId::States, TableId::ReservedCountryNaming, TableId::LexicalTokens];
+        let Some(layers) = self.atlas.name_layers(&view.map_mode) else { return tables };
+        for layer in [layers.far, layers.near] {
+            match layer {
+                NameLayer::Players => tables.push(TableId::Players),
+                NameLayer::Factions => tables.extend([TableId::Factions, TableId::FactionMembers]),
+                _ => {}
+            }
+        }
+        tables
+    }
+
     fn tables(&self) -> Option<Executable> {
         self.atlas.executable()
     }
