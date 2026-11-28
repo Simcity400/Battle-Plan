@@ -157,6 +157,7 @@ fn tail(source: &Source, hour: i32, categories: Vec<EventFeedCategory>) -> super
             exclude: None,
             expanded: None,
             full: None,
+            place_names: None,
         },
         &LoadContext { content: None },
         &AtomicBool::new(false),

@@ -24,10 +24,11 @@ use dashboard_query::{
     series::ranked::GroupSelection,
     timeline::Timeline,
 };
+use dashboard_world::products::{place_name_runs::{PlacePoint, names_at}, place_names::Name};
 use replay::campaign::Replay;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
@@ -85,6 +86,9 @@ pub struct EventFeedTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub full: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub place_names: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -236,7 +240,7 @@ impl ScriptEventKind {
 }
 
 const FEED_FIELDS: dashboard_base::products::Fields =
-    dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, categories, exclude, "exclude[]", expanded, "expanded[]", full, "full[]", row];
+    dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, categories, exclude, "exclude[]", expanded, "expanded[]", full, "full[]", row, placeNames];
 
 const CARD_FIELDS: dashboard_base::products::Fields =
     dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, events, statuses, row];
@@ -265,6 +269,12 @@ pub struct EventFeedPageRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub parent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub place_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub place_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -399,6 +409,7 @@ struct Prepared {
     losses: Vec<(i32, i32)>,
     content: Arc<Result<Arc<Catalogue>, String>>,
     kept: Arc<Mutex<KeptNaming>>,
+    places: Mutex<BTreeMap<PlacePoint, Name>>,
 }
 
 fn branch_id(text: &str) -> io::Result<u64> {
@@ -441,7 +452,7 @@ fn prepare(source: &Source, query: &Query<'_>, branch: u64, context: &LoadContex
         None => index,
     };
     let losses = source.replay_ref().event_losses(branch).collect();
-    Ok(Prepared { selection, index, feed, scanned, losses, content, kept })
+    Ok(Prepared { selection, index, feed, scanned, losses, content, kept, places: Mutex::default() })
 }
 
 struct Window<'p> {
@@ -530,7 +541,41 @@ fn notices_for(prepared: &Prepared, unattributed: u64, windows: bool, from: i32,
 
 type DatedFeed = (DatedCursor<Item>, fold::Pages);
 
-fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailParams, hour: i32, followed: Option<&mut Option<DatedFeed>>, cancelled: &AtomicBool) -> io::Result<EventFeedTailReply> {
+fn place_point(row: &EventFeedRow) -> Option<PlacePoint> {
+    let state = match row.kind {
+        EventFeedKind::StateTransferred => row.cause.as_ref()?.state?,
+        EventFeedKind::NuclearStrike => row.strike.as_ref()?.state?,
+        _ => return None,
+    };
+    Some(PlacePoint::State(state, row.hour))
+}
+
+fn attach_place_names(source: &Source, query: &Query<'_>, load: &LoadContext, prepared: &Prepared, rows: &mut [EventFeedLine], hour: i32, cancelled: &AtomicBool) -> io::Result<()> {
+    let point = |row: &EventFeedPageRow| {
+        let event = row.row.as_ref().filter(|event| event.hour <= hour)?;
+        place_point(event)
+    };
+    let points: BTreeSet<_> = rows.iter().filter_map(|line| match line {
+        EventFeedLine::Event(row) => point(row),
+        _ => None,
+    }).collect();
+    let mut held = prepared.places.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    held.retain(|point, _| points.contains(point));
+    let needed = points.into_iter().filter(|point| !held.contains_key(point)).collect();
+    held.extend(names_at(source, query, load, &needed, cancelled)?);
+    for line in rows {
+        let EventFeedLine::Event(row) = line else { continue };
+        if let Some(name) = point(row).and_then(|point| held.get(&point)) {
+            row.place_name.clone_from(&name.name);
+            row.place_missing.clone_from(&name.missing);
+        }
+    }
+    let text_bytes: usize = held.values().map(|name| name.name.as_ref().map_or(0, String::capacity) + name.missing.as_ref().map_or(0, String::capacity)).sum();
+    if text_bytes > dashboard_base::products::MAX_PRODUCT_REPLY_BYTES { held.clear(); }
+    Ok(())
+}
+
+fn load_feed_at(prepared: &Prepared, query: &Query<'_>, (source, load): (&Source, &LoadContext), params: &EventFeedTailParams, hour: i32, followed: Option<&mut Option<DatedFeed>>, cancelled: &AtomicBool) -> io::Result<EventFeedTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
     let index = prepared.index.as_ref();
@@ -647,7 +692,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         listed(&mut presented, false, true);
     }
     let mut art_warnings = BTreeMap::new();
-    let rows = planned
+    let mut rows: Vec<_> = planned
         .into_iter()
         .zip(shapes)
         .map(|(line, shape)| match line {
@@ -692,6 +737,8 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                     status,
                     not_recorded_reason,
                     parent,
+                    place_name: None,
+                    place_missing: None,
                 }))
             }
             PlannedLine::Fold { key, first_at, observed, count, kind, country } => {
@@ -751,6 +798,9 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         if hours > 0 {
             notices.unavailable(family.kind, family.label, format!("{} {hours} hours of this span {}.", family.listed, family.why), None);
         }
+    }
+    if params.place_names == Some(true) {
+        attach_place_names(source, query, load, prepared, &mut rows, hour, cancelled)?;
     }
     let reply = EventFeedTailReply {
         branch_id: params.branch_id.clone(),
@@ -995,7 +1045,7 @@ impl Product for EventFeedTail {
         let query = dashboard_base::queries::query(source, branch)?;
         let hour = occurrences::cutoff(&query, params.hour)?;
         let prepared = prepare(source, &query, branch, context, None, asked!(params), cancelled)?;
-            load_feed_at(&prepared, &query, params, hour, None, cancelled)
+        load_feed_at(&prepared, &query, (source, context), params, hour, None, cancelled)
     }
 }
 
@@ -1023,7 +1073,7 @@ pub fn event_feed_dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &
             *held = (finish, prepared.map_err(|error| dashboard_core::duplicate(&error))?, None);
         }
         let (finish, prepared, pages) = &mut *held;
-        let reply = finish.reply(|| load_feed_at(prepared, &query, &params, hour, Some(pages), cancelled))?;
+        let reply = finish.reply(|| load_feed_at(prepared, &query, (&shared, &load), &params, hour, Some(pages), cancelled))?;
         let through = match prepared.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
             true => hour.saturating_sub(1),
             false => reply.next_change().map_or(i32::MAX, |next| next.saturating_sub(1)),
