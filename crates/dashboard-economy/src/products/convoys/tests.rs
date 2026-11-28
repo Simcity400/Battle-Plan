@@ -181,6 +181,10 @@ fn a_recording_gap_is_taken_out_of_the_unheld_hours_and_keeps_its_own_reason() {
 }
 
 fn synthetic(id: &str, hours: &[(i32, bool, Vec<(u32, i64)>)]) -> dashboard_base::Source {
+    synthetic_with(id, hours, |_| {})
+}
+
+fn synthetic_with(id: &str, hours: &[(i32, bool, Vec<(u32, i64)>)], amend: impl Fn(&mut DecodedFrame)) -> dashboard_base::Source {
     use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
     use replay::campaign::Replay;
     use replay_data::rows::{CountryLinkRow, CountryRow, RegionalConvoyEfficiencyRow, TableSchema};
@@ -204,6 +208,7 @@ fn synthetic(id: &str, hours: &[(i32, bool, Vec<(u32, i64)>)]) -> dashboard_base
             complete(TableId::ConvoyClients.index(), tables::ConvoyClients::wrap(vec![]));
             complete(TableId::ResourceOrigins.index(), tables::ResourceOrigins::wrap(vec![]));
             complete(TableId::TradeRoutes.index(), tables::TradeRoutes::wrap(vec![]));
+            amend(&mut frame);
             frame
         })
         .collect();
@@ -271,6 +276,56 @@ fn a_convoy_stride_keeps_changes_that_return_to_the_same_value() {
     };
     dashboard_base::test_fixtures::proven_by_steps(source.replay_ref(), &checked, 12, 36, 24);
     assert!(checked_stride.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[test]
+fn consecutive_convoy_days_reuse_discovery_but_keep_the_unrecorded_reason() {
+    let hours: Vec<_> = (0..168).map(|hour| (hour, true, Vec::new())).collect();
+    let source = Arc::new(synthetic_with("convoy-discovery", &hours, |frame| {
+        use replay_data::rows::{ConvoyClientRow, CountryLinkRow, TableSchema};
+        let unrelated = (100..164).map(|id| CountryLinkRow { id, canonical_slot: id });
+        let links = std::iter::once(CountryLinkRow { id: 10, canonical_slot: 1 }).chain(unrelated).collect();
+        *frame.tables[TableId::CountryLinks.index()] = replay_frame::frame::TableView::Complete(tables::CountryLinks::wrap(links));
+        if frame.hour >= 96 {
+            *frame.tables[TableId::ConvoyClients.index()] = replay_frame::frame::TableView::NotRecorded {
+                mode: replay_data::scope::CaptureMode::Full,
+            };
+        } else if frame.hour >= 48 {
+            *frame.tables[TableId::ConvoyClients.index()] = replay_frame::frame::TableView::Complete(tables::ConvoyClients::wrap(vec![
+                ConvoyClientRow { handle: 42, category: IMPORT, owner: 10, route_class: 1, route_country: 10, route_other: 2, convoys_assigned: 5, ..Default::default() }
+            ]));
+            *frame.tables[TableId::TradeRoutes.index()] = replay_frame::frame::TableView::Complete(tables::TradeRoutes::wrap(vec![
+                TradeRouteRow { class: 1, country: 10, other: 2, kind: NAVAL_ROUTE, from: 1, to: 2, path: vec![17], ..Default::default() }
+            ]));
+        }
+    }));
+    let panel = followed_panel(&source);
+    let exact = panel.exact().unwrap();
+    let advance = exact.advance.clone();
+    let saw_unrecorded = Arc::new(AtomicBool::new(false));
+    let refused = Arc::clone(&saw_unrecorded);
+    let checked = dashboard_follow::panel::AtHour {
+        advance: Arc::new(move |hour, seed, cancelled, step| {
+            let reply = advance(hour, seed, cancelled, step);
+            if hour == 24 {
+                assert_eq!(reply.value.as_ref().as_ref().unwrap()["regions"][0]["readout"]["kind"], "noTraffic");
+            }
+            if step.is_some_and(|input| !input.step.reset()) && hour == 72 {
+                assert!(reply.rows < 32, "an exact day should not rescan 64 unrelated country links, read {} rows", reply.rows);
+                assert_eq!(reply.value.as_ref().as_ref().unwrap()["regions"][0]["readout"]["value"], SCALE);
+            }
+            if hour == 120 {
+                let reply = reply.value.as_ref().as_ref().unwrap();
+                assert_eq!(reply["regions"][0]["readout"]["reason"], "Convoy clients were not recorded at this hour");
+                refused.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            reply
+        }),
+        cold: exact.cold.clone(),
+        read: exact.read.clone(),
+    };
+    dashboard_base::test_fixtures::proven_by_steps(source.replay_ref(), &checked, 0, 120, 24);
+    assert!(saw_unrecorded.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 #[test]
