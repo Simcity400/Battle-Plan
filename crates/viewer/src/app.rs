@@ -4321,15 +4321,23 @@ impl Viewer {
         Option<viewer_playback::overlay::Ask>,
         Option<viewer_combat::Asking>,
     ) {
-        let drawing = self.last_view.is_some() && self.picture_ready();
+        let last_view = self.last_view.or_else(|| {
+            let (viewport, placement) = self.capture.as_ref().filter(|_| self.private_playhead)?.pinned?;
+            Some(View {
+                camera: pinned_camera(document, viewport, placement),
+                viewport,
+                ui_scale: Raster::direct(self.options.ui_scale.unwrap_or(1.0)).ui_scale,
+            })
+        });
+        let drawing = last_view.is_some() && (self.private_playhead || self.picture_ready());
         let at = self.head_wanted(drawing);
         let view = viewer_layer_core::layers::View {
             map_mode: self.map_mode.clone(),
             perspective: self.perspective.clone(),
-            camera_height: self.last_view.as_ref().map_or(0.0, |view| view.camera.height),
-            camera: self.last_view.as_ref().map(|view| view.camera.placement()),
+            camera_height: last_view.map_or(0.0, |view| view.camera.height),
+            camera: last_view.map(|view| view.camera.placement()),
             target: self.zoom.target(),
-            viewport: self.last_view.as_ref().map_or([0, 0], |view| view.viewport),
+            viewport: last_view.map_or([0, 0], |view| view.viewport),
             fog: self.perspective.fog,
             graphics: self.graphics,
             sound: self.audio_focus,
@@ -4348,7 +4356,7 @@ impl Viewer {
             view.set_mode(&shown_mode);
             view
         };
-        let overlay_ask = self.last_view.as_ref().filter(|_| drawing).map(|last| viewer_playback::overlay::Ask {
+        let overlay_ask = last_view.filter(|_| drawing).map(|last| viewer_playback::overlay::Ask {
             camera: last.camera,
             target: self.zoom.target().map(|target| target.height),
             pixels: last.viewport,
@@ -5252,11 +5260,8 @@ impl Viewer {
         }
         self.camera = Some(camera.placement());
         let (camera, overlay_camera) = match pinned.filter(|_| !placed_walk) {
-            Some((size, camera)) => {
-                let camera = camera.map_or_else(
-                    || Camera::fit(map_size, defines, size),
-                    |placement| placement.on(map_size, defines),
-                );
+            Some((size, placement)) => {
+                let camera = pinned_camera(document, size, placement);
                 match self.options.fly {
                     Some(scripted) if free_mode => {
                         let time = self.capture.as_ref().and_then(|capture| capture.time);
@@ -8064,6 +8069,12 @@ fn missed_tables(missed: &[replay_data::rows::TableId]) -> Option<String> {
 
 fn live_of(map: &Option<viewer_playback::side::SideThread>) -> Option<&viewer_playback::side::SideThread> {
     map.as_ref().filter(|side| side.failure().is_none())
+}
+
+fn pinned_camera(document: &Document, size: [u32; 2], placement: Option<Placement>) -> Camera {
+    let map = MapSize::of(&document.map);
+    let defines = document.map_defines;
+    placement.map_or_else(|| Camera::fit(map, defines, size), |placement| placement.on(map, defines))
 }
 
 fn head_wanted(capture: Option<bool>, hour: Option<replay_data::Hour>, window_dump: bool, drawing: bool) -> crate::playhead_host::Head {
