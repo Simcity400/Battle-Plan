@@ -433,6 +433,47 @@ impl TableReader {
         self.cells.bytes().total()
     }
 
+    pub fn park_exact(&mut self) -> Option<usize> {
+        if self.log.is_some() || self.tracking || self.absent || self.withheld_before.is_some() {
+            return None;
+        }
+        self.entry = None;
+        Some(self.held_bytes() + self.cells.column_capacity_bytes() + self.strings.reader_bytes() + self.cursor.retained_bytes() + size_of::<Self>()
+            + self.kinds.capacity() * size_of::<Kind>() + self.columns.capacity() * size_of::<usize>()
+            + (self.view.capacity() + self.witnessed_before.capacity() + self.changes.inserted.capacity()
+                + self.changes.witnessed.capacity() + self.changes.written.iter().map(Vec::capacity).sum::<usize>()) * size_of::<u32>()
+            + self.changes.written.capacity() * size_of::<Vec<u32>>()
+            + self.changes.deleted.capacity() * size_of::<(u32, u128)>()
+            + (self.lives.inserted.capacity() + self.lives.deleted.capacity()) * size_of::<(u16, u32, u128)>()
+            + (self.marks.0.capacity() + self.marks.1.capacity()) * size_of::<(u16, u32)>())
+    }
+
+    pub fn walk_exact(&mut self, recording: &Recording, to: u32) -> io::Result<Option<bool>> {
+        let Some(from) = self.ordinal else { return Ok(None) };
+        if self.log.is_some() || self.tracking || self.absent || self.withheld_before.is_some()
+            || !(from..self.ordinals).contains(&to) || self.status != Status::Complete
+        {
+            return Ok(None);
+        }
+        for block in self.block..to / BLOCK {
+            if recording.table_entry(self.run, block, self.table)?.unit.restore.is_some() {
+                return Ok(None);
+            }
+        }
+        if to > from && self.entry.is_none() {
+            self.entry = Some(recording.table_entry(self.run, self.block, self.table)?);
+        }
+        let mut changed = false;
+        for _ in from..to {
+            if !self.step(recording)? || self.status != Status::Complete {
+                return Ok(None);
+            }
+            changed |= self.changes.anew || !self.changes.inserted.is_empty() || !self.changes.deleted.is_empty()
+                || self.changes.written.iter().any(|slots| !slots.is_empty());
+        }
+        Ok(Some(changed))
+    }
+
     fn damaged(&self, block: u32, error: io::Error) -> io::Error {
         Damage::wrap(DamageScope::Table { run: self.run, block, table: self.table as u32 }, error)
     }

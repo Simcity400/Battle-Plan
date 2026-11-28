@@ -7,6 +7,8 @@ use replay_columnar::{manifest::Status, unit::BLOCK};
 use std::io;
 
 pub use crate::lanes::Keys;
+mod lexical;
+pub use lexical::LexicalCursor;
 
 #[cfg(test)]
 mod tests;

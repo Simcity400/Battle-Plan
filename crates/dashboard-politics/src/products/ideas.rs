@@ -6,7 +6,7 @@ use dashboard_base::products::{
     check_reply_budget,
     idea_format::{self, LocalisedText, ModifierFormat},
     politics_content::{PoliticsContent, politics_content},
-    scoped_text::{self, KeyedVariables, Scope, ScopedText, Validity},
+    scoped_text::{self, KeyedVariables, Lexical, Scope, ScopedText, Validity},
     validate_country,
 };
 use dashboard_core::dto::Artwork;
@@ -973,6 +973,7 @@ pub(crate) fn present(
     cancelled: &AtomicBool,
 ) -> io::Result<IdeaHistoryReply> {
     check_cancel(cancelled)?;
+    if asked.unrecorded.is_some() { read.lexical.release(); }
     let mut kept = read.presentation.lock().unwrap_or_else(PoisonError::into_inner);
     if !kept.content.upgrade().is_some_and(|held| Arc::ptr_eq(&held, content)) {
         *kept = Presentation { content: Arc::downgrade(content), ..Presentation::default() };
@@ -1025,7 +1026,8 @@ fn present_new(
         warnings.push(format!("Idea categories and laws may be incomplete: {gap}."));
     }
     warnings.extend(ideas.warnings.iter().filter(|(_, at)| **at <= hour).map(|(warning, _)| (*warning).to_owned()));
-    let scoped = ScopedText::new(query.replay, &content.catalogue).with_keyed_variables(Arc::clone(&read.variables));
+    let scoped = ScopedText::new(query.replay, &content.catalogue)
+        .with_keyed_variables(Arc::clone(&read.variables)).with_lexical(&read.lexical);
     let mut validity = Validity::default();
     let unnamed = NamingCountry::default();
     let mut looks: Vec<IdeaLook> = Vec::new();
@@ -1222,6 +1224,7 @@ pub(crate) struct Read {
     looks: Mutex<(Weak<PoliticsContent>, Vec<Vec<CachedLook>>)>,
     dates: Arc<Mutex<ReadDates>>,
     variables: Arc<KeyedVariables>,
+    lexical: Lexical,
     presentation: Mutex<Presentation>,
 }
 
@@ -1290,7 +1293,7 @@ pub(crate) fn history(source: &Source, branch: u64, tag: &Country) -> io::Result
     let variables = Arc::clone(state.lock().unwrap_or_else(PoisonError::into_inner)
         .get_or_insert_with(|| Arc::new(KeyedVariables::new(source.replay()))));
     let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())), dates: source.state::<ReadDates>(),
-        variables, presentation: Mutex::default() });
+        variables, lexical: Lexical::for_source(source), presentation: Mutex::default() });
     *held = Some(Arc::clone(&read));
     Ok(read)
 }
