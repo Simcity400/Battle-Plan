@@ -275,6 +275,7 @@ pub struct Scene {
     mode_channels: [Option<[f32; 2]>; 2],
     gradient1: Bound,
     gradient2: Bound,
+    empty_secondary: Bound,
     secondary: Bound,
     province_colors: Option<viewer_map_modes::political_gpu::ProvinceColors>,
     compiled_terrain: viewer_terrain::terrain_shader::Terrain,
@@ -974,6 +975,7 @@ impl Scene {
             mode_channels: [None; 2],
             gradient1,
             gradient2,
+            empty_secondary: secondary.share(),
             secondary,
             province_colors: None,
             compiled_terrain: viewer_terrain::terrain_shader::Terrain::new(
@@ -2228,18 +2230,32 @@ impl Scene {
                 field,
             },
         )?;
-        let colors = viewer_map_modes::political_gpu::ProvinceColors::new(device, &base)?;
-        self.secondary = colors.bound.share();
-        self.province_colors = Some(colors);
         self.political = Some(viewer_map_modes::political_gpu::View::new(base, device, queue)?);
         Ok(())
     }
 
     pub fn set_air_assignment(
         &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         field: &viewer_map_modes::air_assignment::Field,
     ) -> io::Result<()> {
+        if field.provinces.is_empty() {
+            if let Some(colors) = self.province_colors.take() {
+                self.secondary = self.empty_secondary.share();
+                self.surface_view = None;
+                colors.bound.texture.destroy();
+            }
+            return Ok(());
+        }
+        if self.province_colors.is_none()
+            && let Some(political) = &self.political
+        {
+            let colors = political.province_colors(device)?;
+            self.secondary = colors.bound.share();
+            self.province_colors = Some(colors);
+            self.surface_view = None;
+        }
         if let Some(colors) = &mut self.province_colors {
             colors.update(queue, &field.provinces)?;
         }
@@ -4893,6 +4909,11 @@ impl Scene {
 
     pub fn icon_page_count(&self) -> usize {
         self.icon_textures.page_count()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn stripe_texture(&self) -> &wgpu::Texture {
+        &self.secondary.texture
     }
 
     pub fn tree_instances(&self) -> u32 {

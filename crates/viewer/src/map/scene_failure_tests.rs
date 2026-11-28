@@ -229,6 +229,45 @@ const ISOLATED: [passes::Pass; 11] = [
     passes::Pass::Sky,
 ];
 
+fn check_stripe_retirement(
+    fixture: &Fixture,
+    scene: &mut Scene,
+    request: Request<'_>,
+) -> io::Result<()> {
+    let (device, queue) = (&fixture.state.device, &fixture.state.queue);
+    let map = &fixture.document.map;
+    let province = map.province_ids.iter().copied().find(|id| *id != 0).unwrap();
+    let mut stripes = viewer_map_modes::air_assignment::Field::default();
+    stripes.provinces.insert(province, [255, 0, 0, 127]);
+    let empty = viewer_map_modes::air_assignment::Field::default();
+    let extent = |scene: &Scene| {
+        let texture = scene.stripe_texture();
+        [texture.width(), texture.height()]
+    };
+
+    assert_eq!(extent(scene), [1, 1]);
+    scene.apply(device, queue, SceneInput::SetAirAssignment(&stripes))?;
+    assert_eq!(extent(scene), [map.width, map.height]);
+    fixture.render(scene, request)?;
+    let old_view = scene.stripe_texture().create_view(&Default::default());
+    scene.apply(device, queue, SceneInput::SetAirAssignment(&empty))?;
+    assert_eq!(extent(scene), [1, 1]);
+    fixture.render(scene, request)?;
+    device.poll(wgpu::PollType::wait_indefinitely()).map_err(io::Error::other)?;
+    if let Some(report) = device.generate_allocator_report() {
+        let full_size = u64::from(map.width) * u64::from(map.height) * 4;
+        assert!(!report.allocations.iter().any(|alloc| {
+            alloc.name == "ProvinceSecondaryColorMap" && alloc.size >= full_size
+        }));
+    }
+    drop(old_view);
+    scene.apply(device, queue, SceneInput::SetAirAssignment(&stripes))?;
+    assert_eq!(extent(scene), [map.width, map.height]);
+    fixture.render(scene, request)?;
+    scene.apply(device, queue, SceneInput::SetAirAssignment(&empty))?;
+    fixture.render(scene, request)
+}
+
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn production_scene_preflight_matrix() -> io::Result<()> {
@@ -241,6 +280,7 @@ fn production_scene_preflight_matrix() -> io::Result<()> {
         no_shadows: true,
         ..fixture.request([256, 144])
     };
+    check_stripe_retirement(&fixture, &mut scene, request)?;
     fixture.render(&mut scene, request)?;
     assert!(
         scene.pass_diagnostics.is_empty(),

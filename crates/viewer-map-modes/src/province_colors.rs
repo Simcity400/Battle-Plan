@@ -20,7 +20,25 @@ pub struct ProvinceColors {
 }
 
 impl ProvinceColors {
+    pub(super) fn pipeline(device: &wgpu::Device) -> Arc<wgpu::ComputePipeline> {
+        viewer_runtime::device_shared::shared(device, "province stripe pixels", || {
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("province stripe pixels"),
+                source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+            });
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("province stripe pixels"),
+                layout: None,
+                module: &shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        })
+    }
+
     pub fn new(device: &wgpu::Device, source: &Static) -> io::Result<Self> {
+        let pipeline = Arc::clone(&source.stripe_pipeline);
         let source = &source.strategic;
         let p = source.params;
         let tile_count = (p.columns as usize)
@@ -80,21 +98,6 @@ impl ProvinceColors {
             usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
             ..Default::default()
         });
-        let pipeline =
-            viewer_runtime::device_shared::shared(device, "province stripe pixels", || {
-                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("province stripe pixels"),
-                    source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-                });
-                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("province stripe pixels"),
-                    layout: None,
-                    module: &shader,
-                    entry_point: Some("main"),
-                    compilation_options: Default::default(),
-                    cache: None,
-                })
-            });
         let group = shader_pipeline::gpu::stats::create_bind_group(
             &device,
             &wgpu::BindGroupDescriptor {
