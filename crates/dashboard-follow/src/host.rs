@@ -339,6 +339,13 @@ enum PanelRead {
     Resume(Hour),
 }
 
+struct PanelClock {
+    epoch: u64,
+    head: Hour,
+    playing: bool,
+    newest: Option<Hour>,
+}
+
 struct PanelJob {
     stamp: (i32, u32, u32),
     session: u64,
@@ -367,11 +374,16 @@ impl PanelJob {
             }
         }
         let owner = Arc::downgrade(owner);
-        run_panel(move || self.run(read, product, work, move || owner.upgrade().map(|owner| get(&owner).clock_state_at(Instant::now()))));
+        run_panel(move || self.run(read, product, work, move || {
+            let owner = owner.upgrade()?;
+            let playhead = get(&owner);
+            let (epoch, head, playing) = playhead.clock_state_at(Instant::now());
+            Some(PanelClock { epoch, head, playing, newest: if playing { playhead.newest() } else { None } })
+        }));
     }
 
-    fn run(self, read: PanelRead, mut product: StepProduct, work: Arc<Work<StepProduct>>, clock: impl Fn() -> Option<(u64, Hour, bool)> + Send + 'static) {
-        let head = || clock().map(|(epoch, hour, _)| (epoch, hour));
+    fn run(self, read: PanelRead, mut product: StepProduct, work: Arc<Work<StepProduct>>, clock: impl Fn() -> Option<PanelClock> + Send + 'static) {
+        let head = || clock().map(|state| (state.epoch, state.head));
         let mut preparation = None;
         match read {
             PanelRead::Seed(hour) => self.seed(&mut product, hour, head),
@@ -380,18 +392,20 @@ impl PanelJob {
                 if let Some((_, _, mut hour)) = product.last {
                     while hour < through {
                         hour = hour.saturating_add(quantum).min(through);
-                        if let Some((epoch, current, playing)) = clock() && epoch == self.epoch && !self.token.load(Ordering::Acquire) {
-                            if playing && parked {
-                                preparation = self.prepare_resume(&mut product, through, &clock);
-                                break;
-                            }
-                            if !playing && hour > current {
+                        if let Some(state) = clock() && state.epoch == self.epoch && !self.token.load(Ordering::Acquire) {
+                            if state.playing {
+                                if parked {
+                                    preparation = self.prepare_resume(&mut product, through, &clock);
+                                    break;
+                                }
+                                hour = through.max(state.newest.unwrap_or(through));
+                            } else if hour > state.head {
                                 match self.push.reply_lead_full() {
                                     Err(()) => break,
                                     Ok(true) => {
                                         let Some(parking) = self.parking.upgrade() else { break };
                                         parking.park(ParkedPanel {
-                                            hour, epoch, token: self.token.clone(),
+                                            hour, epoch: self.epoch, token: self.token.clone(),
                                             task: Box::new(move || self.run(PanelRead::CatchUp { through, quantum, parked: true }, product, work, clock)),
                                         });
                                         return;
@@ -437,9 +451,9 @@ impl PanelJob {
         }
     }
 
-    fn prepare_resume(&self, product: &mut StepProduct, hour: Hour, clock: &impl Fn() -> Option<(u64, Hour, bool)>) -> Option<(panel::OnPrepared, Arc<AtomicBool>)> {
+    fn prepare_resume(&self, product: &mut StepProduct, hour: Hour, clock: &impl Fn() -> Option<PanelClock>) -> Option<(panel::OnPrepared, Arc<AtomicBool>)> {
         product.resume = None;
-        if self.token.load(Ordering::Acquire) || !clock().is_some_and(|(epoch, head, playing)| epoch == self.epoch && (playing || head == hour)) { return None; }
+        if self.token.load(Ordering::Acquire) || !clock().is_some_and(|state| state.epoch == self.epoch && (state.playing || state.head == hour)) { return None; }
         let next = product.last.map_or(hour, |(_, _, last)| last.saturating_add(1));
         let resend = product.resend;
         let Some((change, from, fresh)) = product.read_at(self.stamp.2, self.epoch, hour, false, false, true, &self.token, None, &self.reads) else {
@@ -1253,6 +1267,12 @@ fn a_paused_panel_catches_up_to_the_head_without_computing_past_its_credit() {
 }
 
 #[cfg(test)]
+#[test]
+fn a_playing_panel_prepares_only_the_latest_step_when_it_is_behind() {
+    check_parked_panel("playing");
+}
+
+#[cfg(test)]
 fn check_parked_panel(release: &str) {
     let (head, epoch, route, seek) = (10, 1, 1, 1);
     let future = panel::dated::encoded(0, route, seek, 2, head + 1, panel::dated::DATA, &[1; 2048]);
@@ -1296,11 +1316,24 @@ fn check_parked_panel(release: &str) {
     }, parking: Arc::downgrade(&parking) };
     let work = Arc::new(Work::new(None));
     let now = Arc::new(AtomicU64::new(epoch));
-    let playing = Arc::new(AtomicBool::new(false));
+    let playing = Arc::new(AtomicBool::new(release == "playing"));
     let clock = now.clone();
     let live = playing.clone();
     let through = if release == "play" { head + 4 } else { head + 1 };
-    job().run(PanelRead::CatchUp { through, quantum: 1, parked: false }, product, work.clone(), move || Some((clock.load(Ordering::Acquire), head, live.load(Ordering::Acquire))));
+    let latest = if release == "playing" { through + 3 } else { through };
+    job().run(PanelRead::CatchUp { through, quantum: 1, parked: false }, product, work.clone(), move || Some(PanelClock {
+        epoch: clock.load(Ordering::Acquire), head, playing: live.load(Ordering::Acquire), newest: Some(latest),
+    }));
+    if release == "playing" {
+        assert_eq!(*sampled.lock().unwrap(), [latest]);
+        let (_, bytes, ..) = push.try_take().expect("the latest reading is sent");
+        let records = panel::dated::records(&bytes).unwrap();
+        assert_eq!((records[0].hour, records[0].kind), (latest, panel::dated::DATA));
+        assert_eq!(rmp_serde::from_slice::<Hour>(records[0].body).unwrap(), latest);
+        assert_eq!((records[1].hour, records[1].kind), (latest + 1, panel::dated::WAITING));
+        assert_eq!(work.take().unwrap().last, Some((epoch, seek, latest)));
+        return;
+    }
     assert_eq!(*sampled.lock().unwrap(), [head]);
     let (_, bytes, ..) = push.try_take().expect("the head answer fits while future replies hold credit");
     assert_eq!(panel::dated::records(&bytes).unwrap()[0].hour, head);
@@ -1357,7 +1390,7 @@ fn check_parked_panel(release: &str) {
         wake();
         assert_ne!(wake_gate.stamp(), waiting, "preparation wakes the paused host");
         let due = resume(&product).expect("the paused hour is ready to retry");
-        job().run(PanelRead::Resume(due), product, work.clone(), move || Some((epoch, through, false)));
+        job().run(PanelRead::Resume(due), product, work.clone(), move || Some(PanelClock { epoch, head: through, playing: false, newest: Some(through) }));
         let (next, change, proof) = work.take().unwrap().resumed_step(through);
         let (hour, kind, body) = change.expect("ready preparation supplies the paused picture");
         assert_eq!((next, proof, hour, kind), (through + 1, Some(through), through, panel::dated::DATA));
