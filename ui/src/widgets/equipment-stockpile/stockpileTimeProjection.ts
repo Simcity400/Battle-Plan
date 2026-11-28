@@ -89,7 +89,8 @@ export const stockpileTimeProjection: TimeChartProjection<StockpileTimeOptions> 
   project(readView: BoundedReadView, options: StockpileTimeOptions) {
     const hour = readView.hour;
     const head = readView.panel<StockpileLinesReply>('lines');
-    const refused = options.chosen ? null : head?.top?.refused ?? null;
+    const top = options.chosen ? null : head?.top;
+    const refused = options.chosen ? null : readView.refused('lines') ?? top?.refused ?? null;
     const byKey = new Map((head?.lines ?? []).map(line => [line.key, line]));
     const keys = refused ? [] : displayedKeys(readView, head, options);
     const tiles = readView.series('stock');
@@ -127,6 +128,7 @@ export const stockpileTimeProjection: TimeChartProjection<StockpileTimeOptions> 
       extent: options.extent,
       yAxis: { format: options.measure === 'share' ? 'percent' : 'compact', min: options.yMin, max: options.yMax, log: options.log },
       series,
+      ...(top || refused ? { followedTileRanks: { lines: { tags: refused ? [] : top?.keys ?? [], refused } } } : {}),
       ...(legend ? { legend } : {}),
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       empty: refused ? { message: 'Main types not ranked at this date', detail: refused, kind: 'unavailable' } : null,
@@ -183,7 +185,7 @@ export const stockpileTimeDeclaration: TimeChartWidgetDeclaration<StockpileTimeO
           coverage: chosen ? { mode: 'keyed', keys: chosen } : { mode: 'population', form: 'top', limit: MAIN_TYPES },
           family,
           tags: chosen ?? [],
-          ...(chosen ? {} : { top: { n: MAIN_TYPES } }),
+          ...(chosen ? {} : { top: { n: MAIN_TYPES }, followRank: 'lines' }),
           headQuery: null,
         },
       },
