@@ -322,6 +322,14 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value, chec
 }
 
 pub fn answer_grouped(query: &Query<'_>, product: &str, params: &serde_json::Value, resolve: ranked::Resolve<'_>, check_cancel: &dyn Fn() -> io::Result<()>) -> io::Result<Option<serde_json::Value>> {
+    answer_with_rank(query, product, params, resolve, None, check_cancel)
+}
+
+pub fn answer_ranked_retained(query: &Query<'_>, params: &serde_json::Value, resolve: ranked::Resolve<'_>, retained: &Mutex<ranked::Retained>, check_cancel: &dyn Fn() -> io::Result<()>) -> io::Result<Option<serde_json::Value>> {
+    answer_with_rank(query, ranked::PRODUCT, params, resolve, Some(retained), check_cancel)
+}
+
+fn answer_with_rank(query: &Query<'_>, product: &str, params: &serde_json::Value, resolve: ranked::Resolve<'_>, retained: Option<&Mutex<ranked::Retained>>, check_cancel: &dyn Fn() -> io::Result<()>) -> io::Result<Option<serde_json::Value>> {
     let Some(kind) = params.get("family").and_then(|family| family.get("kind")).and_then(serde_json::Value::as_str) else {
         return Ok(None);
     };
@@ -351,7 +359,11 @@ pub fn answer_grouped(query: &Query<'_>, product: &str, params: &serde_json::Val
                 details.push(Line::new(query, series, detail)?);
             }
             let ask = ranked::Ask { hour: params.hour, top: params.top, least: params.least == Some(true), countries: &params.countries, group: params.group.as_ref().map(|group| (group, resolve)) };
-            serde_json::to_value(ranked::rank(&line, &details, &params.branch_id, ask)?)?
+            let ranked = match retained {
+                Some(cache) => ranked::rank_retained(&line, &details, &params.branch_id, ask, &mut cache.lock().unwrap_or_else(PoisonError::into_inner)),
+                None => ranked::rank(&line, &details, &params.branch_id, ask),
+            }?;
+            serde_json::to_value(ranked)?
         }
         _ if params.group.is_some() => return Err(invalid(format!("{product} does not take a group: a group is read by {}", ranked::PRODUCT))),
         "series-next-change" => {
@@ -1146,6 +1158,10 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     pub fn states(&self, reads: &[SeriesRead], top: Option<usize>) -> io::Result<Vec<SeriesState>> {
+        self.states_with(reads, top, None)
+    }
+
+    fn states_with(&self, reads: &[SeriesRead], top: Option<usize>, retained: Option<&mut ranked::Retained>) -> io::Result<Vec<SeriesState>> {
         if top.is_some() && self.series.parts.is_none() {
             return Err(invalid(format!("{} has no parts to rank", self.series.kind)));
         }
@@ -1178,7 +1194,7 @@ impl<'q, 'a> Line<'q, 'a> {
                 }
             }
         }
-        let mut states: Vec<Option<SeriesState>> = self.states_of(&asks)?.into_iter().map(Some).collect();
+        let mut states: Vec<Option<SeriesState>> = self.states_of(&asks, retained)?.into_iter().map(Some).collect();
         Ok(planned
             .into_iter()
             .map(|plan| match plan {
@@ -1206,7 +1222,7 @@ impl<'q, 'a> Line<'q, 'a> {
         });
     }
 
-    fn states_of(&self, reads: &[(Ask, i32)]) -> io::Result<Vec<SeriesState>> {
+    fn states_of(&self, reads: &[(Ask, i32)], mut retained: Option<&mut ranked::Retained>) -> io::Result<Vec<SeriesState>> {
         let recording = self.query.replay.recording();
         let mut blocks: HashMap<(u32, u32), Vec<(usize, Part, (i32, i32))>> = HashMap::new();
         let mut out: Vec<SeriesState> = reads
@@ -1254,7 +1270,13 @@ impl<'q, 'a> Line<'q, 'a> {
             let mut keys: Vec<u128> = wanted.iter().map(|(_, part, _)| part.key).collect();
             keys.sort_unstable();
             keys.dedup();
-            let (runs, complete) = self.key_runs_covered(run, &keys, from, block_last)?;
+            let fresh;
+            let (runs, complete) = if let Some(cache) = retained.as_deref_mut() {
+                cache.covered(self, run, &keys, from, block_last)?
+            } else {
+                fresh = self.key_runs_covered(run, &keys, from, block_last)?;
+                &fresh
+            };
             let is_computed = matches!(self.source, Source::Computed { .. });
             let complete_at = |hour: i32| {
                 let at = complete.partition_point(|&(_, last)| last < hour);

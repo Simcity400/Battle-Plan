@@ -136,6 +136,14 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
             previous = Some((*read.value).clone());
         }
     }
+    let ask = json!({"panel": "series-rank", "branchId": "1", "family": {"kind": "country-game-scores", "measure": "army"}, "countries": ["GER"]});
+    let panel = open(&source, &load, &ask).unwrap();
+    let rank = panel.exact().unwrap();
+    let seed = (rank.advance)(102, true, &false.into(), None);
+    let (cold, reads) = replay_recording::cells::count_reads(|| (rank.cold)(102, &false.into()));
+    assert_eq!(seed.value.as_ref(), &cold);
+    assert!(cold.unwrap()["rows"][0]["readings"][0]["run"].is_object());
+    assert_eq!(reads[&TableId::CountryGameScores].opened, 1, "the exact oracle opens its own reader even after the followed read");
     drop(source);
     std::fs::remove_dir_all(root).unwrap();
 }

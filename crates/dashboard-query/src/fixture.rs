@@ -11,7 +11,7 @@ use replay_columnar::envelope::{SPAN_BLOCKS, UNIT_ORDINALS};
 use replay_data::{
     identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification},
     rows::{
-        CampaignRow, ClockRow, CountryFactoriesRow, CountryLinkRow, CountryResourceRow, CountryRow, FactionMemberRow, FactionRow, MarketEventRow,
+        CampaignRow, ClockRow, CountryFactoriesRow, CountryGameScoreRow, CountryLinkRow, CountryResourceRow, CountryRow, FactionMemberRow, FactionRow, MarketEventRow, Recorded,
         ProvinceRow, RowCodec, StateRow, TableId, TableRows, WorldTensionRow,
     },
 };
@@ -125,6 +125,7 @@ pub fn receiver(country: u32, kind: u8, hour: i32) -> u32 {
 pub enum Data {
     Power,
     RankedPower,
+    GameScores,
     Resources,
     Market,
     DenseMarket(i32, u64),
@@ -277,7 +278,15 @@ impl Fixture {
     fn record(data: Data, runs: &[RangeInclusive<i32>], gap: Option<RangeInclusive<i32>>, not_recorded_factories: bool) -> Self {
         let (first, last) = (*runs[0].start(), *runs[runs.len() - 1].end());
         let campaign = CampaignRow { id: b"tiles".to_vec() };
-        let replay = Replay::from_synthetic_runs(recorder_derive::writers(), campaign.id.clone(), session(1), branch_start(1, first), runs, |frame, hour| {
+        let writers = if matches!(data, Data::GameScores) {
+            let current = replay_recording::schema::columns_at(replay_data::FORMAT_VERSION).unwrap();
+            let mut given = current.clone();
+            given[TableId::CountryGameScores.index()] = 0;
+            recorder_derive::writers_within(&given, &current)
+        } else {
+            recorder_derive::writers()
+        };
+        let replay = Replay::from_synthetic_runs(writers, campaign.id.clone(), session(1), branch_start(1, first), runs, |frame, hour| {
             sample(frame, TableId::Clock, &[ClockRow { hour, ..ClockRow::default() }])?;
             sample(frame, TableId::Campaign, std::slice::from_ref(&campaign))?;
             country_rows(frame, hour, &data)?;
@@ -286,6 +295,18 @@ impl Fixture {
             }
             match data {
                 Data::Power | Data::RankedPower => Ok(()),
+                Data::GameScores => sample(frame, TableId::CountryGameScores, &[9001, 9002].map(|country| CountryGameScoreRow {
+                    country,
+                    army: match (hour % 13, hour % 7, hour % 91, country) {
+                        (0, _, _, 9002) => Recorded::NotRecorded,
+                        (_, 0, _, _) => Recorded::Value(30),
+                        (_, _, 5..=6, 9002) => Recorded::Value(60),
+                        (_, _, _, 9001) => Recorded::Value(i64::from(hour % 11) + 31),
+                        _ => Recorded::Value(20),
+                    },
+                    navy: if country == 9001 { Recorded::Value(20) } else { Recorded::NotRecorded },
+                    ..CountryGameScoreRow::default()
+                })),
                 Data::Resources => resource_rows(frame, hour),
                 Data::Market => market_rows(frame, hour),
                 Data::DenseMarket(dense_hour, dense_count) => {

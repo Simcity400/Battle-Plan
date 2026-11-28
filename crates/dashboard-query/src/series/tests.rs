@@ -793,6 +793,44 @@ fn a_singleton_line_reads_its_one_row_in_every_stretch_whatever_it_is_named_and_
 }
 
 #[test]
+fn followed_game_score_rank_reuses_block_runs_and_matches_exact_through_seeks() {
+    let start = ITA_FROM + 91 - ITA_FROM.rem_euclid(91);
+    let edge = start + UNIT_HOURS;
+    let second = edge + 20;
+    let fixture = Fixture::with_runs(Data::GameScores, &[start..=edge + 4, second..=second + 12]);
+    let query = fixture.query();
+    let cache = std::sync::Mutex::new(ranked::Retained::default());
+    let resolve = |_: &ranked::GroupSelection, _| panic!("No group requested");
+    let ask = |hour, top| serde_json::json!({
+        "branchId": "1", "family": { "kind": "country-game-scores", "measure": "army" },
+        "hour": hour, "top": top, "measures": ["navy"],
+    });
+    for (hour, top, saved) in [
+        (start + 1, 2, 0), (start + 2, 2, 2), (start + 3, 2, 2), (start + 7, 2, 2), (start + 13, 2, 0),
+        (edge - 1, 2, 2), (edge, 2, 0), (second - 1, 2, 0), (second, 2, 0), (start + 7, 2, 0), (start + 8, 2, 2),
+        (start + 4, 1, 0), (start + 5, 1, 0), (start + 6, 1, 2),
+    ] {
+        let params = ask(hour, top);
+        let open = |counts: replay_recording::cells::ReadCounts| counts.get(&TableId::CountryGameScores).map_or(0, |stats| stats.opened);
+        let (exact, cold) = replay_recording::cells::count_reads(|| answer(&query, ranked::PRODUCT, &params, &|| Ok(())).unwrap().unwrap());
+        let (followed, warm) = replay_recording::cells::count_reads(|| answer_ranked_retained(&query, &params, &resolve, &cache, &|| Ok(())).unwrap().unwrap());
+        assert_eq!(serde_json::to_vec(&followed).unwrap(), serde_json::to_vec(&exact).unwrap(), "rank and run bounds at {hour}");
+        assert_eq!(open(cold), open(warm) + saved, "reader opens at {hour}");
+        if hour == start + 7 {
+            assert_eq!(exact["rows"][0]["country"], "GER");
+            assert_eq!(exact["rows"][1]["country"], "ITA");
+            assert_eq!(exact["rows"][0]["readings"][0]["run"]["valueRaw"], "30");
+        }
+        if hour == start + 13 {
+            assert!(exact["refused"].as_str().is_some(), "the missing ranking has its exact refusal");
+        }
+        if top == 1 {
+            assert_eq!(exact["rows"][0]["country"], if hour == start + 4 { "GER" } else { "ITA" });
+        }
+    }
+}
+
+#[test]
 fn a_rank_names_the_greatest_countries_at_the_hour_with_their_states() {
     let fixture = Fixture::with_gap(Data::Power, FIRST..=SECOND + 3, FIRST + FIRST_HOURS..=SECOND - 1);
     let query = fixture.query();

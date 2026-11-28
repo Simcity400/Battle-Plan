@@ -1,8 +1,11 @@
 
 use super::{Line, NavigationKey, SeriesRead, SeriesState, hour_of, invalid};
-use crate::identity::Country;
+use crate::{Query, identity::Country, read};
+use replay_columnar::{container::Revision, envelope::UNIT_ORDINALS};
+use replay_data::rows::TableId;
+use replay_recording::columnar_frames::Source;
 use serde::{Deserialize, Serialize};
-use std::{io, sync::Arc};
+use std::{collections::HashMap, io, sync::{Arc, Weak}};
 use ts_rs::TS;
 
 pub(super) fn top(line: &Line<'_, '_>, top: Option<u32>) -> io::Result<Option<usize>> {
@@ -112,6 +115,56 @@ pub struct Ask<'a> {
     pub group: Option<(&'a GroupSelection, Resolve<'a>)>,
 }
 
+type CoverageRuns = (HashMap<u128, read::CoveredRuns>, Vec<(i32, i32)>);
+
+struct MeasureRuns {
+    keys: Vec<u128>,
+    bounds: (u32, i32, i32),
+    runs: CoverageRuns,
+}
+
+#[derive(Default)]
+pub struct Retained {
+    source: Weak<Source>,
+    revision: Option<Revision>,
+    position: Option<(u64, u32, u32)>,
+    hour: Option<i32>,
+    measures: HashMap<(TableId, &'static str, &'static str), MeasureRuns>,
+}
+
+impl Retained {
+    fn prepare(&mut self, query: &Query<'_>, hour: i32) {
+        let recording = query.replay.recording();
+        let source = recording.source();
+        let revision = recording.revision();
+        let position = query.timeline.at(hour).and_then(|stretch| {
+            let ord = recording.run(stretch.run).ok()?.ordinal(hour)?;
+            Some((query.timeline.id, stretch.run, ord / UNIT_ORDINALS))
+        });
+        if self.position != position || self.hour.is_some_and(|last| hour < last)
+            || self.revision != Some(revision) || !Weak::ptr_eq(&self.source, &Arc::downgrade(&source))
+        {
+            self.measures.clear();
+        }
+        self.source = Arc::downgrade(&source);
+        self.revision = Some(revision);
+        self.position = position;
+        self.hour = Some(hour);
+    }
+
+    pub(super) fn covered(&mut self, line: &Line<'_, '_>, run: u32, keys: &[u128], from: i32, to: i32) -> io::Result<&CoverageRuns> {
+        use std::collections::hash_map::Entry;
+        let bounds = (run, from, to);
+        match self.measures.entry((line.series.table, line.series.kind, line.measure.name)) {
+            Entry::Occupied(entry) if entry.get().keys == keys && entry.get().bounds == bounds => Ok(&entry.into_mut().runs),
+            entry => {
+                let value = MeasureRuns { keys: keys.to_vec(), bounds, runs: line.key_runs_covered(run, keys, from, to)? };
+                Ok(&entry.insert_entry(value).into_mut().runs)
+            }
+        }
+    }
+}
+
 fn reading_interval(line: &Line<'_, '_>, state: &SeriesState, within: (i32, i32)) -> io::Result<(i32, i32)> {
     let hour = state.hour;
     if let Some(run) = &state.run {
@@ -132,8 +185,23 @@ fn reading_interval(line: &Line<'_, '_>, state: &SeriesState, within: (i32, i32)
 }
 
 pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &str, ask: Ask<'_>) -> io::Result<SeriesRankReply> {
+    rank_with(line, details, branch_id, ask, None)
+}
+
+pub(super) fn rank_retained(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &str, ask: Ask<'_>, retained: &mut Retained) -> io::Result<SeriesRankReply> {
+    let result = rank_with(line, details, branch_id, ask, Some(&mut *retained));
+    if result.is_err() {
+        retained.measures.clear();
+    }
+    result
+}
+
+fn rank_with(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &str, ask: Ask<'_>, mut retained: Option<&mut Retained>) -> io::Result<SeriesRankReply> {
     line.owners_only("a rank")?;
     let hour = hour_of(ask.hour, "hour")?;
+    if let Some(cache) = retained.as_deref_mut() {
+        cache.prepare(line.query, hour);
+    }
     let mut held = line.query.holders.interval(hour);
     let countries: Vec<Country> = match ask.group {
         None => ask.countries.to_vec(),
@@ -177,10 +245,9 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
             _ => None,
         }).collect()
     } else { Vec::new() };
-    let mut columns = vec![line.states(&reads, None)?];
-    for detail in details {
-        columns.push(detail.states(&reads, None)?);
-    }
+    let mut columns = std::iter::once(line).chain(details)
+        .map(|line| line.states_with(&reads, None, retained.as_deref_mut()))
+        .collect::<io::Result<Vec<_>>>()?;
     if !unnamed.is_empty() {
         let unnamed_slots: Vec<u32> = unnamed.iter().map(|&(_, slot)| slot).collect();
         for (column, reader) in columns.iter_mut().zip(std::iter::once(line).chain(details)) {
