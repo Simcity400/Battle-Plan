@@ -382,7 +382,7 @@ impl ExportWebviewState {
         let app_clone = app.clone();
         let (tx, rx) = mpsc::channel();
         app.run_on_main_thread(move || {
-            let built = WebviewWindowBuilder::new(
+            let builder = WebviewWindowBuilder::new(
                 &app_clone,
                 EXPORT_WINDOW_LABEL,
                 WebviewUrl::App(format!("index.html?export=1&boot={boot_seq}").into()),
@@ -392,9 +392,17 @@ impl ExportWebviewState {
             .skip_taskbar(true)
             .decorations(false)
             .resizable(false)
-            .inner_size(1280.0, 720.0)
-            .build()
-            .map_err(|e| format!("Couldn’t create hidden export window: {e}"));
+            .inner_size(1280.0, 720.0);
+            let browser_args = app_clone.config().app.windows.iter()
+                .find(|window| window.label == "main")
+                .and_then(|window| window.additional_browser_args.as_deref());
+            let builder = match browser_args {
+                Some(args) => builder.additional_browser_args(args),
+                None => builder,
+            };
+            let built = builder
+                .build()
+                .map_err(|e| format!("Couldn’t create hidden export window: {e}"));
             let _ = tx.send(built);
         })
         .map_err(|e| format!("Couldn’t schedule hidden export window creation: {e}"))?;
