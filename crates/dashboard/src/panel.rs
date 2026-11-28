@@ -29,7 +29,7 @@ fn rank_panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result
     let load = LoadContext { content: load.content.clone() };
     let mut params = asked.clone();
     params.as_object_mut().ok_or("Expected rank parameters")?.remove("panel");
-    let retains_runs = params["family"]["kind"] == "country-game-scores";
+    let retains_runs = matches!(params["family"]["kind"].as_str(), Some("country-game-scores" | "casualty-totals" | "army-totals"));
     let cold: Option<ExactReader> = retains_runs.then(|| {
         let (source, params) = (source.clone(), params.clone());
         let load = LoadContext { content: load.content.clone() };

@@ -149,6 +149,98 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
 }
 
 #[test]
+fn military_ranks_reuse_reading_runs_and_keep_the_exact_reply() {
+    use dashboard_base::{SourceKey, test_fixtures::{CAMPAIGN, records, source}};
+    use replay::campaign::Replay;
+    use replay_data::rows::*;
+    use replay_frame::frame::TableView;
+    use serde_json::json;
+
+    let first = 100;
+    let second = first + 750;
+    let frames = (first..=first + 724).chain(second..=second + 3).map(|hour| {
+        let mut frame = source(1, hour, None);
+        if let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()] {
+            rows.push(CountryRow { id: 9002, canonical_slot: 8, tag: b"ITA".to_vec(), ..Default::default() });
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) = &mut *frame.tables[TableId::CountryLinks.index()] {
+            rows.push(CountryLinkRow { id: 9002, canonical_slot: 8 });
+        }
+        let value = |slot| match (hour - first, slot) {
+            (3, 8) => Recorded::NotRecorded,
+            (2, _) => Recorded::Value(30),
+            (6..=7, 8) => Recorded::Value(i64::from(hour) + 100),
+            (_, 7) => Recorded::Value(i64::from(hour) + 20),
+            _ => Recorded::Value(i64::from(hour)),
+        };
+        let army = [7, 8].map(|slot| ArmyTotalRow { slot, owner_manpower: value(slot), ..Default::default() });
+        let casualties = [7, 8].map(|slot| CasualtyTotalRow {
+            slot, id: 8994 + slot, dealt: Recorded::Value(12), taken: value(slot), unknown: Recorded::Value(1), partial: u8::from(slot == 8),
+        });
+        *frame.tables[TableId::ArmyTotals.index()] = TableView::Complete(TableRows::ArmyTotals(army.into()));
+        *frame.tables[TableId::CasualtyTotals.index()] = TableView::Complete(TableRows::CasualtyTotals(casualties.into()));
+        frame
+    }).collect();
+    let current = replay_recording::schema::columns_at(replay_data::FORMAT_VERSION).unwrap();
+    let mut inputs = current.clone();
+    for table in [TableId::ArmyTotals, TableId::CasualtyTotals] { inputs[table.index()] = 0; }
+    let writers = recorder_derive::writers_within(&inputs, &current);
+    let replay = Replay::from_records(writers, CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap().into_timelines(&Default::default()).unwrap();
+    let edge = replay.index.iter().find(|block| block.run == 0 && block.page == 1).unwrap().first_hour;
+    let cancelled = false.into();
+    let source = Arc::new(Source::from_replay(
+        SourceKey { source_id: "military-ranks".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(replay), &cancelled,
+    ).unwrap());
+    let load = LoadContext { content: None };
+    for (table, kind, measure, details) in [
+        (TableId::CasualtyTotals, "casualty-totals", "dealtAndTaken", &["dealt", "taken", "unknown", "partial"][..]),
+        (TableId::CasualtyTotals, "casualty-totals", "taken", &["unknown", "partial"][..]),
+        (TableId::ArmyTotals, "army-totals", "ownerManpower", &[][..]),
+    ] {
+        for top in [2, 1] {
+            let ask = json!({"panel": "series-rank", "branchId": "1", "family": {"kind": kind, "measure": measure}, "top": top, "measures": details});
+            let panel = open(&source, &load, &ask).unwrap();
+            let rank = panel.exact().unwrap();
+            let steps = if top == 2 {
+                vec![(first + 1, false), (first + 2, true), (first + 3, false), (edge - 1, true), (edge, false),
+                    (second - 1, false), (second, false), (second + 1, true), (second, false), (second + 1, true)]
+            } else {
+                vec![(first + 4, false), (first + 5, true), (first + 6, false), (first + 7, true)]
+            };
+            let mut previous = None;
+            for (hour, reused) in steps {
+                let count = |runs: replay_recording::cells::ReadCounts| runs.get(&table).map_or(0, |stats| stats.opened) as usize;
+                let seek = previous.is_none_or(|before| hour < before);
+                let (followed, warm) = replay_recording::cells::count_reads(|| (rank.advance)(hour, seek, &cancelled, None));
+                let (exact, cold) = replay_recording::cells::count_reads(|| (rank.cold)(hour, &cancelled));
+                previous = Some(hour);
+                let exact = exact.unwrap();
+                assert_eq!(rmp_serde::to_vec(followed.value.as_ref().as_ref().unwrap()).unwrap(), rmp_serde::to_vec(&exact).unwrap(), "{kind}/{measure} at {hour}");
+                assert_eq!(count(cold), count(warm) + if reused { details.len() + 1 } else { 0 }, "reader opens for {kind}/{measure} at {hour}");
+                if hour == first + 2 {
+                    assert_eq!(exact["rows"][0]["country"], "GER");
+                    assert_eq!(exact["rows"][1]["country"], "ITA");
+                    if measure == "dealtAndTaken" {
+                        let readings = &exact["rows"][0]["readings"];
+                        assert_eq!(readings[0]["run"]["valueRaw"], "42");
+                        assert_eq!(readings[1]["run"]["valueRaw"], "12");
+                        assert_eq!(readings[2]["run"]["valueRaw"], "30");
+                    }
+                }
+                if hour == first + 3 || hour == second - 1 {
+                    assert!(exact["refused"].as_str().is_some(), "{kind}/{measure} at {hour}");
+                }
+                if top == 1 {
+                    assert_eq!(exact["rows"][0]["country"], if hour < first + 6 { "GER" } else { "ITA" });
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn each_ui_panel_key_has_one_registered_reader() {
     let folder = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let contract = std::fs::read_to_string(folder.join("../../ui/src/generated/dashboard.ts")).unwrap();
