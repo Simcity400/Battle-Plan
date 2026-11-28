@@ -7,9 +7,13 @@ import { deriveColors } from '../../shell/appearance/themes.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { createBoundedReadView, createBoundedSlice, displayedHour, FutureDataError } from '../../families/boundedView.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
+import { compileFollowPlan } from '../../families/broker.ts';
 import { TIME_CHART_VIEWS } from '../manifest/time-chart.ts';
 import { resolveWidgetScopedOptions } from '../manifest.ts';
 import type { FactionTotalsAtReply } from '../../generated/dashboard';
+import { factionStrengthLinesDeclaration } from '../faction-strength/factionStrengthLinesProjection.ts';
+import { factionStrengthRaceDeclaration } from '../faction-strength/factionStrengthRaceProjection.ts';
+import { territoryRaceDeclaration } from './territoryRaceProjection.ts';
 import {
   territoryLinesDeclaration,
   territoryLinesDeclarationWithStyles,
@@ -104,6 +108,25 @@ test('territory lines registers in TIME_CHART_VIEWS and selects series tiles for
   const factionMain = factionPlan.entries.find(e => e.name === 'main');
   assert.ok(factionMain && factionMain.read.shape === 'pixel-binned');
   assert.deepEqual(factionMain.read.family, { kind: 'faction-totals', measure: 'controlledStates' });
+});
+
+test('Territory and Faction strength name empty plans without starting a follow subscription', () => {
+  const noMembers = makeCtx({ countries: { kind: 'group', group: { type: 'top', count: 2 }, membership: 'hour', aggregate: true } });
+  const noCountries = makeCtx({ countries: { kind: 'tags', tags: [] } });
+  const noFactions = makeCtx({ countries: { kind: 'factions', count: 5, membership: 'hour' }, factions: [] });
+  for (const [declaration, ctx, message] of [
+    [territoryRaceDeclaration, noCountries, 'No territory is available for this selection.'],
+    [territoryLinesDeclaration, noCountries, 'No territory is available for this selection.'],
+    [territoryLinesDeclaration, noFactions, 'No territory is available for this selection.'],
+    [factionStrengthRaceDeclaration, noMembers, 'No faction strength is available for this selection.'],
+    [factionStrengthLinesDeclaration, noFactions, 'No faction strength is available for this selection.'],
+  ] as const) {
+    const plan = declaration.sources(ctx, { following: true, staticSpan: null });
+    assert.deepEqual(plan.entries, []);
+    const compiled = compileFollowPlan(plan, () => assert.fail('An empty plan should not open a subscription'));
+    assert.equal(compiled.refused, message);
+    assert.equal(compiled.allowEmptyFollow, false);
+  }
 });
 
 const recorded = ['#bca9df', '#bda8df', '#df95ae', '#df96ad', '#ad9ed1', '#c4b4e6', '#499d7e', '#8991a1', '#777777', '#999999'];

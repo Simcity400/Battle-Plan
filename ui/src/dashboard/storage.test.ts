@@ -85,6 +85,24 @@ test('saved Territory faction counts follow its uncapped definition without chan
   }
 });
 
+test('saved Territory Race and Lines clear Top aggregation and retain the other settings', () => {
+  const template = defaultTemplate();
+  const widget = template.widgets[0];
+  widget.kind = 'territory';
+  widget.configVersion = widgetDefinition('territory')!.version;
+  widget.contentScale = 100;
+  widget.time = { mode: 'range', firstOffset: 12, lastOffset: 96 };
+  for (const view of ['race', 'lines']) {
+    widget.options = { view, rule: 'occupied', measure: 'provinces' };
+    widget.countries = { kind: 'group', group: { type: 'top', count: 7 }, membership: 'ever', aggregate: true };
+    assert.deepEqual(parseTemplate(template)?.widgets[0], {
+      ...widget, countries: { ...widget.countries, aggregate: false },
+    });
+    widget.countries = { kind: 'group', group: { type: 'faction', id: '42' }, membership: 'ever', aggregate: true };
+    assert.deepEqual(parseTemplate(template)?.widgets[0], widget);
+  }
+});
+
 test('widget content scales migrate, persist independently and reject invalid saved values', () => {
   const storage = memoryStorage();
   const { library } = loadLayouts(storage);

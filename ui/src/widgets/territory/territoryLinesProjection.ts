@@ -63,10 +63,10 @@ function territoryLinesSources(ctx: FamilyPlanContext, opts: Parameters<typeof c
   const measure = measureOf(ctx.options.measure);
   const rule = ruleOf(ctx.options.rule);
   const seriesMeasure = territorySeriesMeasure(measure, rule);
-  if (isFactionTotalsSelection(ctx.widget.countries)) {
-    return factionTotalsLinesSources('territory:lines', ctx, 'territory', seriesMeasure);
-  }
-  return countryView.declaration.sources(ctx, opts);
+  const plan = isFactionTotalsSelection(ctx.widget.countries)
+    ? factionTotalsLinesSources('territory:lines', ctx, 'territory', seriesMeasure)
+    : countryView.declaration.sources(ctx, opts);
+  return plan.entries.length ? plan : { ...plan, refused: ctx.countries.reason ?? 'No territory is available for this selection.' };
 }
 
 export const territoryLinesDeclaration: TimeChartWidgetDeclaration<TerritoryLinesOptions> = {
