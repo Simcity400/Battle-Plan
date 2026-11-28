@@ -1223,11 +1223,13 @@ fn check_parked_panel(release: &str) {
     let token = reads.lock().unwrap().tokens[&4].clone();
     let sampled = Arc::new(Mutex::new(Vec::new()));
     let recorded = sampled.clone();
+    let pending_at = (release == "preparation").then_some(head + 1);
     let product = StepProduct {
         id: 4, pending_seed: None, started_on: Some((epoch, seek)), last: Some((epoch, seek, head - 1)), joined: false, resume: None, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
         read: Arc::new(move |hour, _, _, _| {
             recorded.lock().unwrap().push(hour);
-            panel::ProductRead { value: Arc::new(Ok(serde_json::json!(hour))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new(), from: hour }
+            let pending = pending_at == Some(hour);
+            panel::ProductRead { value: Arc::new(Ok(serde_json::json!(hour))), rows: 1, fresh: !pending, pending, live: None, lanes: Vec::new(), from: hour }
         }),
     };
     let job = PanelJob { stamp: (0, route, seek), session: push.session(), epoch, token, reads: reads.clone(), push: push.clone(), wake: Arc::new(|| {}), parking: Arc::downgrade(&parking) };
@@ -1248,7 +1250,7 @@ fn check_parked_panel(release: &str) {
 
     let mut next_epoch = epoch;
     match release {
-        "play" => playing.store(true, Ordering::Release),
+        "play" | "preparation" => playing.store(true, Ordering::Release),
         "credit" => {
             let seen = gate.stamp();
             push.credit(push.session(), u64::MAX);
@@ -1282,6 +1284,9 @@ fn check_parked_panel(release: &str) {
         assert_eq!((next, proof), (through + 2, Some(through)), "the newer step confirms only the worker's hour");
         assert!(matches!(product.resume, Some(PanelResume::Read(at)) if at == through + 2));
         assert_eq!(*sampled.lock().unwrap(), [head, through], "taking the reply performs no read");
+    } else if release == "preparation" {
+        let (next, _, proof) = product.resumed_step(through);
+        assert_eq!((next, proof), (through, None), "a pending read must leave its own hour eligible");
     } else if release == "seek" {
         assert_eq!(*sampled.lock().unwrap(), [head], "the seek wakes the job so it can retire without computing");
         assert!(push.try_take().is_none());
@@ -1289,6 +1294,65 @@ fn check_parked_panel(release: &str) {
         assert_eq!(*sampled.lock().unwrap(), [head, head + 1]);
         let (_, bytes, ..) = push.try_take().unwrap();
         assert_eq!(panel::dated::records(&bytes).unwrap()[0].hour, head + 1);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_pending_handoff_can_retry_the_paused_hour() {
+    check_parked_panel("preparation");
+}
+
+#[cfg(test)]
+#[test]
+fn an_older_handoff_dispatches_the_final_hour_without_another_native_step() {
+    use crate::panel::{ProductRead, dated};
+    use crate::tests::{joined, playing_panel_with_hook};
+
+    let armed = Arc::new(AtomicBool::new(false));
+    let observe = Arc::clone(&armed);
+    let (gates, hook) = mpsc::channel();
+    let advance = Arc::new(|hour, _, _: &AtomicBool, _: Option<panel::ProductStep<'_>>| ProductRead {
+        value: Arc::new(Ok(serde_json::json!(hour))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new(), from: hour,
+    });
+    let (host, push, ..) = playing_panel_with_hook(advance, move |step, after| {
+        if step.first() > step.last() && observe.load(Ordering::Acquire) {
+            let (permit, wait) = mpsc::channel();
+            gates.send((after, permit)).unwrap();
+            let _ = wait.recv();
+        }
+    });
+    joined(&push);
+    let work = host.panels.lock().unwrap().products[&1].clone();
+    let mut product = std::iter::repeat_with(|| work.take()).find_map(|product| product).unwrap();
+    let playhead = host.playhead();
+    let last = playhead.timeline().last();
+    playhead.anchor(f64::from(last), true, 360.0, Instant::now(), false);
+    playhead.wait_newest(last).unwrap();
+    armed.store(true, Ordering::Release);
+    host.follow.rehooker()();
+    let (after, permit) = hook.recv().unwrap();
+    assert!(!after);
+    product.resume = Some(PanelResume::Ready(last - 1, dated::DATA, rmp_serde::to_vec(&(last - 1)).unwrap()));
+    work.put(product);
+    permit.send(()).unwrap();
+    let (after, permit) = hook.recv().unwrap();
+    assert!(after);
+    {
+        let state = work.state.lock().unwrap();
+        assert!(!state.0.as_ref().is_some_and(|product| matches!(product.resume, Some(PanelResume::Read(hour)) if hour == last)),
+            "the final hour's read must already be dispatched");
+    }
+    armed.store(false, Ordering::Release);
+    permit.send(()).unwrap();
+    loop {
+        let (kind, bytes, session) = push.take_sent().unwrap();
+        push.credit(session, u64::MAX);
+        if kind != PANEL { continue; }
+        if let Some(record) = dated::records(&bytes).unwrap().into_iter().find(|r| r.id == 1 && r.hour == last && r.kind == dated::DATA) {
+            assert_eq!(rmp_serde::from_slice::<Hour>(record.body).unwrap(), last);
+            break;
+        }
     }
 }
 
