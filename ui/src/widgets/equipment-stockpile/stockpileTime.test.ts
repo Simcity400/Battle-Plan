@@ -3,13 +3,15 @@ import { test } from 'node:test';
 import type { ChartBucket } from '../../charts/chartSummary.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { setToken } from '../../dashboard/options.ts';
+import type { FollowQuery } from '../../dashboard/regionTime.ts';
 import { boundTiledSeries, createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
-import { readPlanExact } from '../../families/broker.ts';
+import { compileFollowPlan, readPlanExact, readsWithoutFollow } from '../../families/broker.ts';
 import type { FamilyPlanContext, PixelBinnedSourceRead, PointSourceRead } from '../../families/plan.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { knownValue } from '../../families/value.ts';
 import type { StockpileLinesReply } from '../../generated/dashboard';
 import { TIME_CHART_VIEWS } from '../manifest/time-chart.ts';
+import { stockpileDeclaration } from './stockpileProjection.ts';
 
 const FIRST = 60_000_000;
 const HOUR = FIRST + 400;
@@ -59,6 +61,11 @@ function reply(hour: number, values: Record<string, number | null>, top: Stockpi
 test('the Time view asks the product for the main types at the date, and a chosen list by name', async () => {
   const { declaration } = await view();
   const automatic = declaration.sources(context({}), { width: 600, height: 300 } as never);
+  const bars = stockpileDeclaration.sources(context({}), { width: 600, height: 300 } as never);
+  assert.equal([...automatic.entries, ...bars.entries].filter(entry => readsWithoutFollow(entry.read)).length, 0);
+  const compile = (plan: typeof automatic) => compileFollowPlan(plan, query => ({ query: query as FollowQuery, refused: null })).subscriptions.map(sub => [sub.channel, sub.product]);
+  assert.deepEqual(compile(automatic), [['panel', 'equipment-stockpile-lines']]);
+  assert.deepEqual(compile(bars), [['panel', 'equipment-stockpile-types'], ['panel', 'stockpile-artwork']]);
   const tiles = automatic.entries.find(entry => entry.name === 'stock')!.read as PixelBinnedSourceRead;
   assert.deepEqual(tiles.top, { n: 5 });
   assert.deepEqual(tiles.tags, []);

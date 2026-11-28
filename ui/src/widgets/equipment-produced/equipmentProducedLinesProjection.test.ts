@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import type { FollowQuery } from '../../dashboard/regionTime.ts';
 import { createBoundedReadView, createBoundedSlice, displayedHour } from '../../families/boundedView.ts';
-import { hoverAsks, readPlanExact } from '../../families/broker.ts';
+import { compileFollowPlan, hoverAsks, readPlanExact, readsWithoutFollow } from '../../families/broker.ts';
 import { planFamilySources } from '../../families/host/planSources.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/plan.ts';
 import { ReadTarget, unitEntries } from '../../families/readUnits.ts';
@@ -11,6 +12,7 @@ import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
 import type { EquipmentProducedRaceReply, ProducedTypesReply } from '../../generated/dashboard';
 import { TIME_CHART_VIEWS } from '../manifest/time-chart.ts';
+import { equipmentProducedRaceDeclaration } from './equipmentProducedRaceProjection.ts';
 import {
   equipmentProducedLinesDeclaration,
   equipmentProducedLinesProjection,
@@ -109,6 +111,12 @@ test('equipment-produced lines registers in TIME_CHART_VIEWS and threads Range f
   assert.ok(entry, 'equipment-produced/lines registered in TIME_CHART_VIEWS');
 
   const followPlan = equipmentProducedLinesDeclaration.sources(makeCtx({ options: { measure: 'day', count: 'units' } }), { following: true, staticSpan: null });
+  const racePlan = equipmentProducedRaceDeclaration.sources(makeCtx({ options: { measure: 'day', count: 'units' } }), { following: true, staticSpan: null });
+  assert.equal([...followPlan.entries, ...racePlan.entries].filter(entry => readsWithoutFollow(entry.read)).length, 0);
+  for (const plan of [followPlan, racePlan]) {
+    const { subscriptions } = compileFollowPlan(plan, query => ({ query: query as FollowQuery, refused: null }));
+    assert.deepEqual(subscriptions.map(sub => [sub.channel, sub.product]), [['panel', 'equipment-produced-race']]);
+  }
   const main = followPlan.entries.find(e => e.name === 'main')?.read;
   assert.equal(main?.shape, 'pixel-binned');
   if (main?.shape === 'pixel-binned') {

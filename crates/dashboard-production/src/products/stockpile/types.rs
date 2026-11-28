@@ -1,7 +1,7 @@
 
-use super::{Content, DECIMALS, NAME_TABLES, NEED_BOUND_RAW, StockType, Types, daily_units_raw, history, name_at};
+use super::{Content, DECIMALS, NEED_BOUND_RAW, StockType, Types, daily_units_raw, history, name_at};
 use crate::products::production::LineKind;
-use dashboard_base::products::{Country, LoadContext, Product, at_hour::{self, Keys, Read}, validate_country};
+use dashboard_base::products::{Country, LoadContext, Product, at_hour::{self, DatedStep, Keys, Read}, validate_country};
 use dashboard_base::{Source, span::HourSpan};
 use dashboard_query::{coverage::witnessed_selection, identity::Holder};
 use replay_data::{
@@ -14,7 +14,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -313,7 +313,7 @@ fn stale(frame: &DecodedFrame, table: TableId, what: &str) -> Option<String> {
     (i64::from(frame.hour) - i64::from(read) >= i64::from(STAGGER_PERIOD)).then(|| format!("The {what} was not read within a day of this hour."))
 }
 
-fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<StockpileTypesReply> {
+fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, cancelled: &AtomicBool, mut step: Option<DatedStep<'_>>) -> io::Result<StockpileTypesReply> {
     let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
     let query = dashboard_base::queries::query(source, branch)?;
     let hour = params.hour;
@@ -323,24 +323,31 @@ fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, c
     dashboard_text::metadata::check_cancel(cancelled)?;
     let content = Content::load(source, context)?;
     let range = |table, low: u128, high: u128| Read { table, keys: Keys::Range(low, high) };
-    let mut reads = vec![
+    let reads = [
         range(TableId::StockByVariant, u128::from(slot) << 64, u128::from(slot) << 64 | u128::from(u64::MAX)),
         range(TableId::Stockpiles, u128::from(id) << 32, u128::from(id) << 32 | u128::from(u32::MAX)),
         range(TableId::LogisticsEquipment, u128::from(id) << 32, u128::from(id) << 32 | u128::from(u32::MAX)),
         Read::all(TableId::ProductionLines),
+        Read::all(TableId::CountryLinks),
     ];
-    reads.extend(NAME_TABLES.map(Read::all));
-    let frame = at_hour::frame(&query, hour, &reads, "Equipment stockpile")?;
-    let links = witnessed_selection::<tables::CountryLinks>(&frame);
+    let cold;
+    let frame = match &mut step {
+        Some(step) if query.timeline.at(hour).is_some() => step.frame(source, &query, hour, &reads, |_| None)?,
+        _ => {
+            cold = at_hour::frame(&query, hour, &reads, "Equipment stockpile")?;
+            &cold
+        }
+    };
+    let links = witnessed_selection::<tables::CountryLinks>(frame);
     let raws: BTreeSet<u32> = links.rows.iter().filter(|link| link.canonical_slot == slot).map(|link| link.id).collect();
-    let stock = witnessed_selection::<tables::StockByVariant>(&frame);
-    let stock_missing = stock.missing.or_else(|| stale(&frame, TableId::Stockpiles, "stockpile"));
+    let stock = witnessed_selection::<tables::StockByVariant>(frame);
+    let stock_missing = stock.missing.or_else(|| stale(frame, TableId::Stockpiles, "stockpile"));
     let stock_rows: Vec<_> = stock.rows.iter().filter(|row| row.slot == slot).collect();
-    let production = witnessed_selection::<tables::ProductionLines>(&frame);
-    let lines_missing = production.missing.or(links.missing).or_else(|| stale(&frame, TableId::ProductionLines, "production lines"));
+    let production = witnessed_selection::<tables::ProductionLines>(frame);
+    let lines_missing = production.missing.or(links.missing).or_else(|| stale(frame, TableId::ProductionLines, "production lines"));
     let lines: Vec<_> = production.rows.iter().filter(|line| raws.contains(&line.country)).collect();
-    let logistics = witnessed_selection::<tables::LogisticsEquipment>(&frame);
-    let logistics_stale = stale(&frame, TableId::LogisticsEquipment, "logistics record");
+    let logistics = witnessed_selection::<tables::LogisticsEquipment>(frame);
+    let logistics_stale = stale(frame, TableId::LogisticsEquipment, "logistics record");
     let logistics_rows: Vec<_> = logistics.rows.iter().filter(|row| row.country == id && logistics_stale.is_none()).collect();
     let logistics_missing = logistics.missing.or(logistics_stale);
     let mut ids: BTreeSet<u64> = stock_rows.iter().map(|row| row.variant).collect();
@@ -419,6 +426,13 @@ fn load(source: &Source, params: &StockpileTypesParams, context: &LoadContext, c
 
 pub struct EquipmentStockpileTypes;
 
+pub fn panel(source: &Arc<Source>, context: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
+    at_hour::dated_product::<EquipmentStockpileTypes>(
+        source, context, asked, at_hour::at_hour, |_, reply| reply.hour, |_, _| {},
+        |source, params, context, cancelled, step| load(source, params, context, cancelled, Some(step)),
+    )
+}
+
 impl Product for EquipmentStockpileTypes {
     const KEY: &'static str = "equipment-stockpile-types";
     const CONTENT_DEPENDENT: bool = true;
@@ -437,6 +451,6 @@ impl Product for EquipmentStockpileTypes {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        load(source, params, context, cancelled)
+        load(source, params, context, cancelled, None)
     }
 }

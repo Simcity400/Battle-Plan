@@ -32,7 +32,7 @@ fn stockpile_type_list_distinguishes_empty_from_unread_stock_and_keeps_witnesses
         *frame.tables[TableId::LogisticsEquipment.index()] = logistics;
         let replay = replay(vec![baseline, frame]).into_timelines(&Default::default()).unwrap();
         let source = super::Source::from_replay(dashboard_base::SourceKey { source_id: "stockpile-types".into(), revision: "1".into() }, "synthetic.battleplan".into(), std::sync::Arc::new(replay), &false.into()).unwrap();
-        super::load(&source, &super::StockpileTypesParams { branch_id: "1".into(), country: super::Country::Slot(7), hour }, &super::LoadContext { content: None }, &false.into()).unwrap()
+        super::load(&source, &super::StockpileTypesParams { branch_id: "1".into(), country: super::Country::Slot(7), hour }, &super::LoadContext { content: None }, &false.into(), None).unwrap()
     };
     let known = || TableView::Complete(TableRows::LogisticsEquipment(vec![]));
     let empty = ask(&[], Some(&[]), known());

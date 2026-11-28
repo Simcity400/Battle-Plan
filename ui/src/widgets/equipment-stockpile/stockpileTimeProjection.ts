@@ -195,7 +195,7 @@ export const stockpileTimeDeclaration: TimeChartWidgetDeclaration<StockpileTimeO
           channel: 'panel',
           coverage: { mode: 'keyed', keys: [tag] },
           product: 'equipment-stockpile-lines',
-          followQuery: null,
+          followQuery: { panel: 'equipment-stockpile-lines', ...asked },
           params: asked,
           provenInterval: stockpileTimeProvenInterval,
           dynamicKeys: ['hour'],
