@@ -295,7 +295,7 @@ impl BattleView {
             return state;
         };
         state.close_requests = (held.close_requests > 0).then_some(held.close_requests);
-        let hour = match picture_reply(held.refused.as_ref(), held.shown, || held.window.loading_art() || held.window.loading_title()) {
+        let hour = match picture_reply(held.refused.as_ref(), || held.shown.filter(|_| !held.window.loading_art() && !held.window.loading_title())) {
             (Some((hour, _)), _) => Some(*hour),
             (None, Some(shown)) => {
                 state.notes.clone_from(&held.notes);
@@ -314,8 +314,8 @@ impl BattleView {
     }
 }
 
-fn picture_reply(refused: Option<&(Hour, String)>, shown: Option<OnScreen>, pending: impl FnOnce() -> bool) -> (Option<&(Hour, String)>, Option<OnScreen>) {
-    (refused, shown.filter(|_| refused.is_none() && !pending()))
+fn picture_reply<T>(refused: Option<&(Hour, String)>, answer: impl FnOnce() -> Option<T>) -> (Option<&(Hour, String)>, Option<T>) {
+    (refused, if refused.is_none() { answer() } else { None })
 }
 
 fn memory(name: &str, frame: &eframe::Frame) {
@@ -336,10 +336,21 @@ mod tests {
 
     #[test]
     fn a_seek_refusal_answers_while_the_previous_naval_title_is_pending() {
-        let shown = Some(OnScreen { branch: 1, hour: 104, seek: 1 });
         let refusal = (105, "This hour was not recorded".to_owned());
-        assert_eq!(picture_reply(None, shown, || true), (None, None));
-        assert_eq!(picture_reply(Some(&refusal), shown, || panic!("a refusal never waits for a title")), (Some(&refusal), None));
+        let shown = Some(OnScreen { branch: 1, hour: 104, seek: 1 });
+        let title_pending = true;
+        let presented = || shown.filter(|_| !title_pending);
+        assert_eq!(picture_reply(None, presented), (None, None));
+        assert_eq!(picture_reply::<OnScreen>(Some(&refusal), || panic!("a refusal never waits for a title")), (Some(&refusal), None));
+    }
+
+    #[test]
+    fn a_seek_refusal_reports_its_reason_while_previous_art_is_pending() {
+        let refusal = (105, "This hour was not recorded".to_owned());
+        assert_eq!(picture_reply(None, || Some(())), (None, Some(())));
+        let (refused, art) = picture_reply::<()>(Some(&refusal), || panic!("a refusal never waits for art"));
+        assert_eq!(refused.map(|(_, why)| why.as_str()), Some("This hour was not recorded"));
+        assert!(art.is_none());
     }
 }
 
@@ -513,10 +524,11 @@ impl Held {
             pool.dropper().drop_later(retired);
         }
         self.settle_art(ctx, pool);
-        if self.window.loading_art() {
+        let (refused, art) = picture_reply(self.refused.as_ref(), || self.window.loading_art().then_some(()));
+        if art.is_some() {
             return Ok(Some("Loading battle window art...".into()));
         }
-        if let Some((_, why)) = &self.refused {
+        if let Some((_, why)) = refused {
             return Ok(Some(why.clone()));
         }
         if self.picture.is_none() {

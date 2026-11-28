@@ -687,9 +687,6 @@ impl Inner {
             read_naming_ahead(&source);
             read_feed_scope_ahead(&source, self.content_for(&source, dashboard_base::source::Work::Ahead));
             read_air_observed_ahead(&source);
-            if let Some(branch) = source.replay_ref().timelines().map(|timelines| timelines.main) {
-                let _ = crate::products::battle_names::ahead(&source, branch, &LoadContext { content: source.admit(dashboard_base::source::Work::Recorded) });
-            }
             source
                 .name_countries(self.content().as_ref())
                 .map_err(|error| error.to_string())?;
@@ -785,6 +782,7 @@ fn read_naming_ahead(source: &Arc<Source>) {
 
 fn read_feed_scope_ahead(source: &Arc<Source>, content: Option<ContentOptions>) {
     let Some(branch) = source.replay_ref().timelines().map(|timelines| timelines.main) else { return };
+    let _ = crate::products::battle_names::ahead(source, branch, &LoadContext { content: source.admit(dashboard_base::source::Work::Recorded) });
     let source = Arc::downgrade(source);
     let _ = dashboard_base::products::read_ahead::spawn("feed scope ahead", move || {
         let Some(source) = source.upgrade() else { return };

@@ -7053,10 +7053,8 @@ impl Viewer {
         if let Some((drag, stroke)) = box_stroke {
             ui.painter().with_clip_rect(rect).rect_stroke(drag, 0.0, stroke, egui::StrokeKind::Middle);
         }
-        let loading_art = if self.combat.loading_title() {
-            ui.ctx().request_repaint_after(Duration::from_millis(50));
-            Some("Loading battle titles…")
-        } else if self.combat.loading_art() {
+        if self.combat.loading_title() { ui.ctx().request_repaint_after(Duration::from_millis(50)); }
+        let loading_art = if self.combat.loading_art() {
             Some("Loading combat window art...")
         } else if self.combat.is_loading() {
             Some("Reading the combat window...")
