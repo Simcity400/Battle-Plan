@@ -2355,18 +2355,25 @@ test('a followed roster publishes retained lines while an entering country tile 
   let letEnter!: () => void;
   const entering = new Promise<void>(resolve => { letEnter = resolve; });
   let shown = NO_TILED_SERIES;
+  let ranked = 0;
+  const reply = (binHours: number, index: number, tags: readonly string[]) => {
+    const firstHour = index * TILE_BINS * binHours;
+    return {
+      branchId: '1', measure: 'value', decimals: 0, binHours, index, firstHour,
+      immutable: true, filled: firstHour + TILE_BINS * binHours - 1, rawValues: true, hourBytes: 0,
+      lines: tags.map(country => ({ country, missing: [], partial: [], parts: [] })), bins: new Uint8Array(tags.length * TILE_BINS),
+    };
+  };
   const view: TileView = new TileView(new TileCache(), {
     key: 'ranked test', lastHour: 600, tags: [], followRank: 'head',
-    top: { ask: async () => { throw new Error('Playback must use the followed roster'); } },
+    top: { ask: async (binHours, index, hour) => {
+      ranked++;
+      return { ...reply(binHours, index, ['AAA', 'BBB']), ranking: { hour, from: 299, until: 309, refused: null } };
+    } },
     ask: async (binHours, index, tags) => {
       requests.push([...tags]);
       if (tags.includes('CCC')) await entering;
-      const firstHour = index * TILE_BINS * binHours;
-      return {
-        branchId: '1', measure: 'value', decimals: 0, binHours, index, firstHour,
-        immutable: true, filled: firstHour + TILE_BINS * binHours - 1, rawValues: true, hourBytes: 0,
-        lines: tags.map(country => ({ country, missing: [], partial: [], parts: [] })), bins: new Uint8Array(tags.length * TILE_BINS),
-      };
+      return reply(binHours, index, tags);
     },
   }, () => { shown = reuseTiledSeries(shown, views, view.settled); });
   const views = new Map([['main', view]]);
@@ -2376,17 +2383,23 @@ test('a followed roster publishes retained lines while an entering country tile 
   };
   try {
     view.setView({ from: 290, to: 345, end: 345, width: 100 });
-    rank(300, ['AAA', 'BBB']);
+    view.setHour(299, false);
     await new Promise<void>(resolve => setImmediate(resolve));
     const original = shown.main?.get('AAA');
     assert.ok(original);
     assert.deepEqual([...shown.main!.keys()], ['AAA', 'BBB']);
 
+    const paused = shown;
+    view.setHour(300, true);
+    assert.equal(shown, paused, 'the dated rank still proves membership at the first played hour');
+    rank(300, ['AAA', 'BBB']);
+
     rank(310, ['AAA', 'CCC']);
     assert.equal(view.settled, false);
     assert.deepEqual([...(shown.main?.keys() ?? [])], ['AAA']);
     assert.equal(shown.main!.get('AAA'), original);
-    assert.deepEqual(requests, [['AAA', 'BBB'], ['CCC']]);
+    assert.deepEqual(requests, [['CCC']]);
+    assert.equal(ranked, 1, 'only the paused rank makes a ranked request');
 
     letEnter();
     await new Promise<void>(resolve => setImmediate(resolve));

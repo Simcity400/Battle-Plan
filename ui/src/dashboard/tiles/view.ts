@@ -216,7 +216,8 @@ export class TileView {
       this.rankPending = false;
       if (this.rankFailedHour !== null) this.failure = null;
       this.rankFailedHour = null;
-      this.setRank(null);
+      if (!follow || !this.ranked || hour < this.ranked.from || hour > this.ranked.until) this.setRank(null);
+      else if (this.failure !== this.told.failure) this.notify();
     }
     this.rankHour = hour;
     if (follow) return;
