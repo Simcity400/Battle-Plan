@@ -16,6 +16,7 @@ const STOCKPILE_TIME_VIEW = 'time';
 const MAIN_TYPES = 5;
 
 type Measure = 'stock' | 'share';
+type StockpileLinesHead = Omit<StockpileLinesReply, 'hour' | 'nextChange'>;
 
 interface StockpileTimeOptions {
   readonly chosen: readonly string[] | null;
@@ -53,7 +54,7 @@ export const stockpileTimeProvenInterval = (data: unknown, hour: number): readon
 
 const lineName = (line: StockpileLineAt) => line.name ?? line.key;
 
-function displayedKeys(readView: BoundedReadView, head: StockpileLinesReply | undefined, options: StockpileTimeOptions): readonly string[] {
+function displayedKeys(readView: BoundedReadView, head: StockpileLinesHead | undefined, options: StockpileTimeOptions): readonly string[] {
   if (options.chosen) return options.chosen;
   return head?.top?.keys ?? [...readView.series('stock')?.keys() ?? []];
 }
@@ -88,7 +89,7 @@ export const stockpileTimeProjection: TimeChartProjection<StockpileTimeOptions> 
   measureTitle: 'Equipment stockpile',
   project(readView: BoundedReadView, options: StockpileTimeOptions) {
     const hour = readView.hour;
-    const head = readView.panel<StockpileLinesReply>('lines');
+    const head = readView.panel<StockpileLinesHead>('lines');
     const top = options.chosen ? null : head?.top;
     const refused = options.chosen ? null : readView.refused('lines') ?? top?.refused ?? null;
     const byKey = new Map((head?.lines ?? []).map(line => [line.key, line]));

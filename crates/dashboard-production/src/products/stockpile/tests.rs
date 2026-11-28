@@ -79,6 +79,75 @@ fn stockpile_names_read_only_spellings_used_at_each_hour() {
 }
 
 #[test]
+fn followed_stockpile_lines_confirm_equal_bodies_even_when_the_proof_changes() {
+    use super::lines::{EquipmentStockpileLines, StockpileLinesParams};
+    use dashboard_base::{Source, SourceKey, products::{LoadContext, Product}, test_fixtures::{replay, slot_hour, stockpile_frame}};
+    use dashboard_follow::panel::{dated, product::Delivery};
+    use replay_data::rows::TableId;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let first = slot_hour(TableId::Stockpiles) + 24;
+    let replay = replay((first - 1..=first + 4)
+        .map(|hour| stockpile_frame(hour, true, &[(20, 100_000)], Some(&[])))
+        .collect()).into_timelines(&Default::default()).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let source = Arc::new(Source::from_replay(SourceKey { source_id: "stockpile-lines-confirmation".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap());
+    let load = LoadContext { content: None };
+    let params: StockpileLinesParams = serde_json::from_value(json!({
+        "branchId": "1", "hour": first, "top": 5,
+        "family": { "kind": "equipment-stockpile", "country": 7, "measure": "stock", "included": [],
+            "membership": [{ "firstHour": first, "lastHour": first }, { "firstHour": first + 1, "lastHour": first + 1 }] },
+    })).unwrap();
+    let mut asked = serde_json::to_value(&params).unwrap();
+    asked.as_object_mut().unwrap().remove("hour");
+    asked["panel"] = EquipmentStockpileLines::KEY.into();
+    let panel = (crate::registrations::STOCKPILE_EQUIPMENTSTOCKPILELINES.panel.unwrap().open)(&source, &load, &asked).unwrap();
+    let read = panel.exact().unwrap();
+    let mut delivery = Delivery::default();
+    let mut kinds = Vec::new();
+    for hour in first..=first + 4 {
+        let seed = hour == first;
+        let followed = (read.advance)(hour, seed, &cancelled, None);
+        let exact = EquipmentStockpileLines::load(&source, &StockpileLinesParams { hour, ..params.clone() }, &load, &cancelled).unwrap();
+        assert!(!exact.lines.is_empty());
+        assert_eq!(exact.hour, hour);
+        let mut body = serde_json::to_value(exact).unwrap();
+        let fields = body.as_object_mut().unwrap();
+        fields.remove("hour");
+        fields.remove("nextChange");
+        assert_eq!(followed.value.as_ref(), &Ok(body), "hour {hour}");
+        let packet = delivery.packet((0, 1, 1), 1, hour, seed, &followed.value);
+        kinds.push(dated::records(&packet.bytes).unwrap()[0].kind);
+        if hour > first + 2 {
+            assert!(!followed.fresh);
+            assert_eq!(followed.from, first + 2);
+        }
+    }
+    assert_eq!(kinds, [dated::DATA, dated::STANDS, dated::DATA, dated::STANDS, dated::STANDS]);
+
+    asked["family"]["membership"] = json!([
+        { "firstHour": first + 3, "lastHour": first + 4 },
+        { "firstHour": first, "lastHour": first },
+        { "firstHour": first + 2, "lastHour": first + 2 },
+    ]);
+    let panel = (crate::registrations::STOCKPILE_EQUIPMENTSTOCKPILELINES.panel.unwrap().open)(&source, &load, &asked).unwrap();
+    let read = panel.exact().unwrap();
+    let mut params = params;
+    params.family.membership = serde_json::from_value(asked["family"]["membership"].clone()).unwrap();
+    for hour in first..=first + 4 {
+        params.hour = hour;
+        let followed = (read.advance)(hour, hour == first, &cancelled, None);
+        let mut exact = serde_json::to_value(EquipmentStockpileLines::load(&source, &params, &load, &cancelled).unwrap()).unwrap();
+        exact.as_object_mut().unwrap().remove("hour");
+        exact.as_object_mut().unwrap().remove("nextChange");
+        assert_eq!(followed.value.as_ref(), &Ok(exact), "unordered spans at hour {hour}");
+        assert_eq!(followed.from, hour);
+    }
+}
+
+#[test]
 fn a_read_is_carried_a_day_to_the_next_read_and_no_further() {
     assert_eq!(carried(&[10, 34, 58], 100), vec![span(10, 81)]);
     assert_eq!(carried(&[10, 82], 90), vec![span(10, 33), span(82, 90)]);
