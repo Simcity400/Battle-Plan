@@ -455,7 +455,7 @@ impl SceneTextures {
         queue: &wgpu::Queue,
         assets: &MapAssets,
         sources: &TerrainSources,
-        mut warnings: Vec<String>,
+        warnings: Vec<String>,
         icon_textures: impl FnOnce() -> io::Result<Arc<IconTextures>>,
     ) -> io::Result<Arc<Self>> {
         check_textures(device)?;
@@ -517,7 +517,6 @@ impl SceneTextures {
             .transpose()?
             .map(Arc::new);
         let icon_textures = icon_textures()?;
-        warnings.extend(icon_textures.warnings().iter().cloned());
         Ok(Arc::new(Self {
             atlas: Arc::new(upload(
                 device,
@@ -654,7 +653,7 @@ struct DeviceUpload {
 
 struct Uploads {
     reader: crate::scene_content::TerrainReader,
-    icon_sources: Vec<viewer_gpu::textures::GuiSource>,
+    icon_sources: Arc<[viewer_gpu::textures::GuiSource]>,
     entries: Vec<DeviceUpload>,
 }
 
@@ -687,10 +686,10 @@ impl Uploads {
         {
             return Ok(existing);
         }
-        let made = Arc::new(IconTextures::from_sources_tolerant(
+        let made = Arc::new(IconTextures::deferred(
             device,
             queue,
-            &self.icon_sources,
+            Arc::clone(&self.icon_sources),
         )?);
         let entry = self.entry_mut(device);
         entry.icons = Arc::downgrade(&made);
@@ -703,7 +702,7 @@ impl TextureCache {
         let SceneSources { reader, icon_images } = sources;
         Self(std::sync::Mutex::new(Uploads {
             reader,
-            icon_sources: icon_images,
+            icon_sources: icon_images.into(),
             entries: Vec::new(),
         }))
     }
@@ -1472,7 +1471,7 @@ impl Scene {
         self.animated_text = Some(viewer_map_text::animated_map_text::Player::new(
             assets,
             gui,
-            self.icon_textures.views(),
+            self.icon_textures.as_ref().clone(),
             self.graphics.samples,
         ));
     }
@@ -4567,6 +4566,9 @@ impl Scene {
         cpu_mark("encoder_finish");
         command_buffers.push(MapBuffer(trailing));
         cpu_mark("encoder_join");
+        if let Some(why) = self.icon_textures.failure() {
+            return Err(invalid(why));
+        }
         queue.submit(command_buffers.into_iter().map(|MapBuffer(buffer)| buffer).collect::<Vec<_>>());
         if let Some(frame_timer) = &mut self.frame_timer {
             frame_timer.submitted();
@@ -4755,6 +4757,7 @@ impl Scene {
 
     pub fn pass_warnings(&self) -> Vec<String> {
         let mut warnings = self._shared.warnings().to_vec();
+        warnings.extend(self.icon_textures.warnings());
         warnings.extend(passes::lines(&self.pass_diagnostics));
         warnings.extend(self.compiled_terrain.not_kept().map(|(technique, reason)| {
             format!("Map shader {technique}: drawn every frame: {reason}")
@@ -5165,6 +5168,11 @@ mod tests {
         let mut modded_tga = viewer_runtime::test_support::test_tga_rgba8(4, 4);
         modded_tga[18..22].copy_from_slice(&[10, 20, 30, 255]);
         std::fs::write(mod_dir.join("gfx/icon.tga"), modded_tga).unwrap();
+        std::fs::write(
+            mod_dir.join("gfx/later.tga"),
+            viewer_runtime::test_support::test_tga_rgba8(2, 2),
+        )
+        .unwrap();
 
         let layers = Arc::new(
             content_reader_layers::ResolvedLayers::from_folders(&[
@@ -5173,21 +5181,18 @@ mod tests {
             ])
             .unwrap(),
         );
-        let decoded = content_reader_gui::gui::native::resources::stack_texture_or_recorded(
-            &layers,
-            None,
-            b"gfx/icon.tga",
-            content_reader_image::native::Decode::default(),
-        )
-        .unwrap()
-        .unwrap();
-        let source = viewer_gpu::textures::GuiSource::deferred_stack(
-            Arc::clone(&layers),
-            None,
-            b"gfx/icon.tga".to_vec(),
-            content_reader_image::native::Decode::default(),
-            &decoded.image,
-        );
+        let deferred = |path: &[u8]| {
+            let decode = content_reader_image::native::Decode::default();
+            let decoded = content_reader_gui::gui::native::resources::stack_texture_or_recorded(
+                &layers, None, path, decode,
+            )
+            .unwrap()
+            .unwrap();
+            viewer_gpu::textures::GuiSource::deferred_stack(
+                Arc::clone(&layers), None, path.to_vec(), decode, &decoded.image,
+            )
+        };
+        let source = deferred(b"gfx/icon.tga");
         assert!(!source.is_held());
         let cache = TextureCache::new(SceneSources {
             reader: crate::scene_content::TerrainReader {
@@ -5197,36 +5202,37 @@ mod tests {
                 quality: 0,
                 decode: content_reader_image::native::Decode::default(),
             },
-            icon_images: vec![source],
+            icon_images: vec![source, deferred(b"gfx/later.tga")],
         });
 
         let icons_a = cache.icons(&device_a, &queue_a).unwrap();
-        assert_eq!(icons_a.page_count(), 1);
+        assert_eq!(icons_a.page_count(), 2);
         assert!(icons_a.warnings().is_empty());
         assert!(cache.uploaded_icons(&device_a).is_some());
+        let original = icons_a.view(0).unwrap();
 
         let icons_b = cache.icons(&device_b, &queue_b).unwrap();
-        assert_eq!(icons_b.page_count(), 1);
+        assert_eq!(icons_b.page_count(), 2);
         assert!(icons_b.warnings().is_empty());
         assert!(cache.uploaded_icons(&device_b).is_some());
+
+        std::fs::remove_file(mod_dir.join("gfx/icon.tga")).unwrap();
+        std::fs::remove_file(base.join("gfx/icon.tga")).unwrap();
+        std::fs::remove_file(mod_dir.join("gfx/later.tga")).unwrap();
+        assert_eq!(icons_a.view(1).unwrap().view.texture().width(), 1);
+        assert!(icons_a.warnings()[0].contains("gfx/later.tga"));
+        let fallback = icons_b.view(0).unwrap();
+        assert_eq!(fallback.view.texture().width(), 1);
+        assert_eq!(icons_a.view(0).unwrap().view, original.view);
+        assert_eq!(original.view.texture().width(), 4);
+        assert_eq!(icons_b.view(0).unwrap().view, fallback.view);
+        let warnings = icons_b.warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("gfx/icon.tga"), "{warnings:?}");
 
         drop(icons_a);
         assert!(cache.uploaded_icons(&device_a).is_none());
         assert!(cache.uploaded_icons(&device_b).is_some());
-
-        drop(icons_b);
-        std::fs::remove_file(mod_dir.join("gfx/icon.tga")).unwrap();
-        std::fs::remove_file(base.join("gfx/icon.tga")).unwrap();
-        let fallback = cache.icons(&device_a, &queue_a).unwrap();
-        assert_eq!(fallback.page_count(), 1);
-        assert!(
-            fallback
-                .warnings()
-                .iter()
-                .any(|warning| warning.contains("gfx/icon.tga")),
-            "{:?}",
-            fallback.warnings()
-        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

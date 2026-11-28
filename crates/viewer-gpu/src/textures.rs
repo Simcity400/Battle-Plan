@@ -16,7 +16,7 @@ use super::{camera::MapSize, gradient_math};
 
 mod gui;
 pub use gui::{
-    GuiMeta, GuiSource, GuiTexture, upload_gui, upload_gui_sources, upload_gui_sources_tolerant,
+    DeferredGui, GuiMeta, GuiSource, GuiTexture, upload_gui, upload_gui_sources,
 };
 
 mod intel_cells;

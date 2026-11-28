@@ -21,6 +21,7 @@ use viewer_native_gui::{
     native_gui::SpriteKind,
     native_resources::GuiResources,
     native_text,
+    sprites::IconTextures,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -129,7 +130,7 @@ pub struct Player {
     renderer: Result<draw::Renderer, String>,
     styles: BTreeMap<Style, Result<LoadedStyle, String>>,
     colors: BTreeMap<u8, [f32; 4]>,
-    textures: Vec<shader_pipeline::gpu::TextureBinding>,
+    textures: IconTextures,
     cutoff: Result<f32, String>,
     retained: shader_scene::State,
     provinces: BTreeMap<u32, Province>,
@@ -148,7 +149,7 @@ impl Player {
     pub fn new(
         assets: &Assets,
         resources: &GuiResources,
-        textures: Vec<shader_pipeline::gpu::TextureBinding>,
+        textures: IconTextures,
         samples: u32,
     ) -> Self {
         Self {
@@ -500,8 +501,7 @@ impl Player {
                             Ok(None)
                         } else {
                             self.textures
-                                .get(id)
-                                .cloned()
+                                .view(id)
                                 .map(Some)
                                 .ok_or_else(|| format!("font texture {id} is not resident"))
                         }

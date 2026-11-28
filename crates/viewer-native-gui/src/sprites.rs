@@ -22,8 +22,7 @@ use viewer_gpu::{
     icon_tracks::{IconAnchor, Track},
     gpu_contract::{Targets, sampler_entry, texture_entry},
     textures::{
-        Bound, ColorSpace, GuiSource, GuiTexture, upload, upload_gui, upload_gui_sources,
-        upload_gui_sources_tolerant,
+        Bound, ColorSpace, DeferredGui, GuiSource, GuiTexture, upload, upload_gui, upload_gui_sources,
     },
 };
 use super::{free_icons::Present, lazy_icons::{DYNAMIC_BASE, LazyTextures}, text};
@@ -680,20 +679,29 @@ pub fn filter_mode(ui_scale: f32) -> f32 {
     }
 }
 
+#[derive(Clone)]
 pub struct IconTextures {
-    bound: Vec<GuiTexture>,
+    bound: Arc<[GuiTexture]>,
+    deferred: Option<Arc<DeferredGui>>,
     unpack: Arc<wgpu::ComputePipeline>,
     screen: wgpu::Sampler,
-    warnings: Vec<String>,
 }
 
 impl IconTextures {
-    pub fn views(&self) -> Vec<shader_pipeline::gpu::TextureBinding> {
-        self.bound.iter().map(GuiTexture::binding).collect()
+    fn texture(&self, index: usize) -> Option<&GuiTexture> {
+        self.bound.get(index).or_else(|| self.deferred.as_ref()?.get(index))
     }
 
-    pub fn warnings(&self) -> &[String] {
-        &self.warnings
+    pub fn view(&self, index: usize) -> Option<shader_pipeline::gpu::TextureBinding> {
+        self.texture(index).map(GuiTexture::binding)
+    }
+
+    pub fn warnings(&self) -> Vec<String> {
+        self.deferred.as_ref().map_or_else(Vec::new, |pages| pages.warnings())
+    }
+
+    pub fn failure(&self) -> Option<&str> {
+        self.deferred.as_ref()?.failure()
     }
 
     pub fn new(
@@ -703,7 +711,7 @@ impl IconTextures {
     ) -> io::Result<Self> {
         let unpack = viewer_gpu::textures::unpack_pipeline(device);
         let bound = upload_gui(device, queue, images, &unpack)?;
-        Ok(Self::from_bound(device, bound, unpack, Vec::new()))
+        Ok(Self::from_bound(device, bound, unpack, None))
     }
 
     pub fn from_sources(
@@ -713,25 +721,24 @@ impl IconTextures {
     ) -> io::Result<Self> {
         let unpack = viewer_gpu::textures::unpack_pipeline(device);
         let bound = upload_gui_sources(device, queue, images, &unpack)?;
-        Ok(Self::from_bound(device, bound, unpack, Vec::new()))
+        Ok(Self::from_bound(device, bound, unpack, None))
     }
 
-    pub fn from_sources_tolerant(
+    pub fn deferred(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        images: &[GuiSource],
+        images: Arc<[GuiSource]>,
     ) -> io::Result<Self> {
         let unpack = viewer_gpu::textures::unpack_pipeline(device);
-        let mut warnings = Vec::new();
-        let bound = upload_gui_sources_tolerant(device, queue, images, &unpack, &mut warnings)?;
-        Ok(Self::from_bound(device, bound, unpack, warnings))
+        let pages = DeferredGui::new(device, queue, images, Arc::clone(&unpack))?;
+        Ok(Self::from_bound(device, Vec::new(), unpack, Some(Arc::new(pages))))
     }
 
     fn from_bound(
         device: &wgpu::Device,
         bound: Vec<GuiTexture>,
         unpack: Arc<wgpu::ComputePipeline>,
-        warnings: Vec<String>,
+        deferred: Option<Arc<DeferredGui>>,
     ) -> Self {
         let clamp = |label, mip, max_lod| {
             device.create_sampler(&wgpu::SamplerDescriptor {
@@ -748,20 +755,20 @@ impl IconTextures {
             })
         };
         Self {
-            bound,
+            bound: bound.into(),
+            deferred,
             unpack,
             screen: clamp("icon screen sampler", wgpu::MipmapFilterMode::Nearest, 0.0),
-            warnings,
         }
     }
 
-    pub fn bind_all(
+    fn bind_page(
         &self,
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
-    ) -> Vec<wgpu::BindGroup> {
-        self.bound
-            .iter()
+        index: usize,
+    ) -> Option<wgpu::BindGroup> {
+        self.texture(index)
             .map(|texture| {
                 shader_pipeline::gpu::stats::create_bind_group(
                     &device,
@@ -775,7 +782,6 @@ impl IconTextures {
                     },
                 )
             })
-            .collect()
     }
 
     pub fn screen_clamp(&self) -> &wgpu::Sampler {
@@ -783,7 +789,7 @@ impl IconTextures {
     }
 
     pub fn page_count(&self) -> usize {
-        self.bound.len()
+        self.deferred.as_ref().map_or(self.bound.len(), |pages| pages.page_count())
     }
 }
 
@@ -838,10 +844,10 @@ pub struct SpritePass {
     pub native_refusals: BTreeMap<String, u64>,
     pipeline: wgpu::RenderPipeline,
     _pipelines: Arc<SpritePipelines>,
-    bind_groups: Vec<wgpu::BindGroup>,
+    bind_groups: Vec<Option<wgpu::BindGroup>>,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::BindGroup,
-    views: Vec<shader_pipeline::gpu::TextureBinding>,
+    textures: IconTextures,
     empty: Bound,
     lazy: Arc<LazyTextures>,
     synced: Option<u64>,
@@ -1022,7 +1028,7 @@ impl SpritePass {
             SpritePipelines::new(device, format)
         });
         let layout = pipelines.layout.clone();
-        let bind_groups = textures.bind_all(device, &layout);
+        let bind_groups = vec![None; textures.page_count()];
         let sampler = shader_pipeline::gpu::stats::create_bind_group(
             device,
             &wgpu::BindGroupDescriptor {
@@ -1071,7 +1077,7 @@ impl SpritePass {
             bind_groups,
             layout,
             sampler,
-            views: textures.bound.iter().map(GuiTexture::binding).collect(),
+            textures: textures.clone(),
             empty,
             lazy: Arc::clone(lazy),
             synced: None,
@@ -1238,6 +1244,7 @@ impl SpritePass {
     fn group(&self, texture: usize) -> Option<&wgpu::BindGroup> {
         self.bind_groups
             .get(texture)
+            .and_then(Option::as_ref)
             .or_else(|| self.dynamic.get(&texture).map(|page| &page.group))
     }
 
@@ -1249,7 +1256,7 @@ impl SpritePass {
                 array: None,
             });
         }
-        self.views.get(texture).cloned().or_else(|| {
+        self.textures.view(texture).or_else(|| {
             self.dynamic
                 .get(&texture)
                 .map(|page| page.texture.binding())
@@ -1883,6 +1890,11 @@ impl SpritePass {
             return;
         }
         self.reset_stream();
+        if let Some(group) = self.bind_groups.get_mut(quad.texture)
+            && group.is_none()
+        {
+            *group = self.textures.bind_page(device, &self.layout, quad.texture);
+        }
         if self.group(quad.texture).is_none() {
             return;
         }
@@ -2127,6 +2139,9 @@ impl SpritePass {
         view: &wgpu::TextureView,
         size: [u32; 2],
     ) -> Result<(), String> {
+        if let Some(why) = self.textures.failure() {
+            return Err(why.to_owned());
+        }
         if !self.layer {
             return Err("the sprite pass is not drawing a layer".into());
         }

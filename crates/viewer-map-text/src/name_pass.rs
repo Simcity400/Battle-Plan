@@ -915,7 +915,7 @@ pub struct NamePass {
     strategic_names: StrategicNames,
     country_layer: bool,
     compiled: Result<super::name_shader::Names, String>,
-    pages: Vec<shader_pipeline::gpu::TextureBinding>,
+    pages: IconTextures,
     chunks: Vec<wgpu::Buffer>,
     keyed: Option<Keyed>,
     draws: Vec<NativeDraw>,
@@ -956,7 +956,7 @@ impl NamePass {
             strategic_names: StrategicNames::All,
             country_layer,
             compiled,
-            pages: textures.views(),
+            pages: textures.clone(),
             chunks: Vec::new(),
             keyed: None,
             draws: Vec::new(),
@@ -1205,9 +1205,9 @@ impl NamePass {
             .iter()
             .filter(|draw| view.is_none_or(|view| draw.view == view))
         {
-            self.pages
-                .get(draw.page)
-                .ok_or_else(|| invalid(format!("map name font page {} unavailable", draw.page)))?;
+            if draw.page >= self.pages.page_count() {
+                return Err(invalid(format!("map name font page {} unavailable", draw.page)));
+            }
             frames
                 .get(draw.view)
                 .ok_or_else(|| invalid("map name camera view unavailable"))?;
@@ -1247,12 +1247,14 @@ impl NamePass {
         let bindings: Vec<_> = draws
             .iter()
             .map(|draw| {
-                let page = &self.pages[draw.page];
+                let page = self.pages.view(draw.page).ok_or_else(|| {
+                    invalid(self.pages.failure().unwrap_or("map name font page unavailable"))
+                })?;
                 let frame = frames[draw.view];
                 if let Some(retained) = retained {
-                    compiled.retain(&mut retained.borrow_mut(), frame, draw.alpha_offset, page);
+                    compiled.retain(&mut retained.borrow_mut(), frame, draw.alpha_offset, &page);
                 }
-                compiled.bindings(arena, frame, draw.alpha_offset, page)
+                compiled.bindings(arena, frame, draw.alpha_offset, &page)
             })
             .collect::<io::Result<_>>()?;
         let mut pass = viewer_scene_base::shader_scene::surface_pass(

@@ -3,7 +3,7 @@ use content_reader_gui::gui::native::resources;
 use content_reader_image::native::Decode;
 use content_reader_layers::ResolvedLayers;
 use eframe::wgpu;
-use std::{collections::HashMap, io, sync::Arc};
+use std::{collections::HashMap, io, sync::{Arc, OnceLock}};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GuiMeta {
@@ -373,7 +373,7 @@ pub fn upload_gui(
     images: &[dds::Texture],
     unpack: &wgpu::ComputePipeline,
 ) -> io::Result<Vec<GuiTexture>> {
-    upload_gui_items(device, queue, images, unpack, None)
+    upload_gui_items(device, queue, images, unpack, None, None).map(ready_pages)
 }
 
 pub fn upload_gui_sources(
@@ -382,17 +382,11 @@ pub fn upload_gui_sources(
     images: &[GuiSource],
     unpack: &wgpu::ComputePipeline,
 ) -> io::Result<Vec<GuiTexture>> {
-    upload_gui_items(device, queue, images, unpack, None)
+    upload_gui_items(device, queue, images, unpack, None, None).map(ready_pages)
 }
 
-pub fn upload_gui_sources_tolerant(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    images: &[GuiSource],
-    unpack: &wgpu::ComputePipeline,
-    warnings: &mut Vec<String>,
-) -> io::Result<Vec<GuiTexture>> {
-    upload_gui_items(device, queue, images, unpack, Some(warnings))
+fn ready_pages(pages: Vec<Option<GuiTexture>>) -> Vec<GuiTexture> {
+    pages.into_iter().map(|page| page.expect("every source uploaded once")).collect()
 }
 
 fn upload_gui_items<T: GuiUploadItem>(
@@ -401,7 +395,8 @@ fn upload_gui_items<T: GuiUploadItem>(
     images: &[T],
     unpack: &wgpu::ComputePipeline,
     mut warnings: Option<&mut Vec<String>>,
-) -> io::Result<Vec<GuiTexture>> {
+    mut deferred: Option<&mut Vec<GuiGroup>>,
+) -> io::Result<Vec<Option<GuiTexture>>> {
     let mut groups: Vec<(Shape, Vec<usize>)> = Vec::new();
     let mut shapes = HashMap::new();
     let mut output: Vec<Option<GuiTexture>> = (0..images.len()).map(|_| None).collect();
@@ -469,11 +464,16 @@ fn upload_gui_items<T: GuiUploadItem>(
     }
     for (shape, indices) in groups {
         for indices in indices.chunks(device.limits().max_texture_array_layers as usize) {
+            if let Some(groups) = deferred.as_deref_mut() {
+                groups.push(GuiGroup { shape, indices: indices.to_vec(), loaded: OnceLock::new() });
+                continue;
+            }
+            let mut set_page = |index: usize, texture| output[index] = Some(texture);
             upload_group(
                 device,
                 queue,
                 images,
-                &mut output,
+                &mut set_page,
                 shape,
                 indices,
                 unpack,
@@ -481,10 +481,7 @@ fn upload_gui_items<T: GuiUploadItem>(
             )?;
         }
     }
-    Ok(output
-        .into_iter()
-        .map(|image| image.expect("every source uploaded once"))
-        .collect())
+    Ok(output)
 }
 
 #[expect(clippy::too_many_arguments, reason = "device, queue, source slice, output slots, group shape, layer indices, unpack pipeline, and optional warnings sink")]
@@ -492,7 +489,7 @@ fn upload_group<T: GuiUploadItem>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     images: &[T],
-    output: &mut [Option<GuiTexture>],
+    output: &mut impl FnMut(usize, GuiTexture),
     shape: Shape,
     indices: &[usize],
     unpack: &wgpu::ComputePipeline,
@@ -602,7 +599,7 @@ fn upload_group<T: GuiUploadItem>(
                     );
                     if let Some(warnings) = warnings.as_deref_mut() {
                         warnings.push(message);
-                        output[*index] = Some(transparent_placeholder(
+                        output(*index, transparent_placeholder(
                             device,
                             queue,
                             &format!("map icon {index}"),
@@ -621,7 +618,7 @@ fn upload_group<T: GuiUploadItem>(
                     Some(unpack),
                     Some((&texture, layer as u32)),
                 )?;
-                output[*index] = Some(GuiTexture {
+                output(*index, GuiTexture {
                     bound,
                     array: Some((view.clone(), layer as u32)),
                 });
@@ -630,7 +627,7 @@ fn upload_group<T: GuiUploadItem>(
                 if let Some(warnings) = warnings.as_deref_mut() {
                     warnings.push(format!("map icon {index} ({reason})"));
                 }
-                output[*index] = Some(transparent_placeholder(
+                output(*index, transparent_placeholder(
                     device,
                     queue,
                     &format!("map icon {index}"),
@@ -640,6 +637,92 @@ fn upload_group<T: GuiUploadItem>(
         }
     }
     Ok(())
+}
+
+enum GuiPage {
+    Ready(Box<GuiTexture>),
+    Packed { group: usize, layer: usize },
+}
+
+struct GuiGroup {
+    shape: Shape,
+    indices: Vec<usize>,
+    loaded: OnceLock<Option<Vec<GuiTexture>>>,
+}
+
+pub struct DeferredGui {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    unpack: Arc<wgpu::ComputePipeline>,
+    images: Arc<[GuiSource]>,
+    pages: Vec<Option<GuiPage>>,
+    groups: Vec<GuiGroup>,
+    warnings: std::sync::Mutex<Vec<String>>,
+    failure: OnceLock<String>,
+    strict: bool,
+}
+
+impl DeferredGui {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        images: Arc<[GuiSource]>,
+        unpack: Arc<wgpu::ComputePipeline>,
+    ) -> io::Result<Self> {
+        let mut groups = Vec::new();
+        let mut warnings = Vec::new();
+        let mut pages = upload_gui_items(device, queue, &images, &unpack, Some(&mut warnings), Some(&mut groups))?
+            .into_iter()
+            .map(|page| page.map(|texture| GuiPage::Ready(Box::new(texture))))
+            .collect::<Vec<_>>();
+        for (group, plan) in groups.iter().enumerate() {
+            for (layer, &index) in plan.indices.iter().enumerate() {
+                pages[index] = Some(GuiPage::Packed { group, layer });
+            }
+        }
+        Ok(Self {
+            device: device.clone(),
+            queue: queue.clone(),
+            unpack,
+            images,
+            pages,
+            groups,
+            warnings: warnings.into(),
+            failure: OnceLock::new(),
+            strict: content_reader_layers::content::is_strict(),
+        })
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.pages.len()
+    }
+
+    pub fn get(&self, index: usize) -> Option<&GuiTexture> {
+        let (group, layer) = match self.pages.get(index)?.as_ref()? {
+            GuiPage::Ready(texture) => return Some(texture),
+            GuiPage::Packed { group, layer } => (&self.groups[*group], *layer),
+        };
+        group.loaded.get_or_init(|| {
+            let mut warnings = Vec::new();
+            let mut textures = Vec::with_capacity(group.indices.len());
+            let mut load = || {
+                let mut push = |_, texture| textures.push(texture);
+                upload_group(&self.device, &self.queue, &self.images, &mut push, group.shape, &group.indices, &self.unpack, Some(&mut warnings))
+            };
+            let loaded = if self.strict { content_reader_layers::content::strict(load) } else { load() };
+            self.warnings.lock().unwrap_or_else(|error| error.into_inner()).extend(warnings);
+            loaded.map_err(|error| self.failure.get_or_init(|| error.to_string())).ok()?;
+            Some(textures)
+        }).as_ref()?.get(layer)
+    }
+
+    pub fn warnings(&self) -> Vec<String> {
+        self.warnings.lock().unwrap_or_else(|error| error.into_inner()).clone()
+    }
+
+    pub fn failure(&self) -> Option<&str> {
+        self.failure.get().map(String::as_str)
+    }
 }
 
 #[cfg(test)]
