@@ -1023,13 +1023,13 @@ fn coverage_policy_four_verifies_archive_event_tooltip_font_effect_and_volume_ro
 fn overlay_replacement_removes_subdirectories_without_prefix_collisions() {
     let mut effective = BTreeMap::new();
     let base = ["map/a", "map/sub/b", "maps/c", "common/a"].map(|path| path.as_bytes().to_vec());
-    apply_overlay(&mut effective, 0, false, base.iter(), &[], None).unwrap();
+    apply_overlay(&mut effective, 0, false, base.iter().map(Vec::as_slice), &[], None).unwrap();
     let additions = [b"map/new".to_vec(), b"common/a".to_vec()];
     apply_overlay(
         &mut effective,
         1,
         false,
-        additions.iter(),
+        additions.iter().map(Vec::as_slice),
         &[b"MAP".to_vec()],
         None,
     )
@@ -1054,7 +1054,7 @@ fn overlay_refuses_to_guess_folder_and_archive_case_precedence() {
         &mut effective,
         0,
         false,
-        [b"map/file.txt".to_vec()].iter(),
+        [b"map/file.txt".as_slice()].into_iter(),
         &[],
         None,
     )
@@ -1063,7 +1063,7 @@ fn overlay_refuses_to_guess_folder_and_archive_case_precedence() {
         &mut effective,
         1,
         false,
-        [b"map/FILE.txt".to_vec()].iter(),
+        [b"map/FILE.txt".as_slice()].into_iter(),
         &[],
         None,
     )
@@ -1076,7 +1076,7 @@ fn overlay_refuses_to_guess_folder_and_archive_case_precedence() {
             &mut effective,
             2,
             true,
-            [b"map/file.txt".to_vec()].iter(),
+            [b"map/file.txt".as_slice()].into_iter(),
             &[],
             None,
         )
@@ -1086,7 +1086,7 @@ fn overlay_refuses_to_guess_folder_and_archive_case_precedence() {
         &mut effective,
         2,
         true,
-        [b"map/file.txt".to_vec()].iter(),
+        [b"map/file.txt".as_slice()].into_iter(),
         &[],
         Some(&|_: &[u8]| true),
     )
@@ -1189,7 +1189,7 @@ fn listed_paths_keep_case_variants_and_honour_replace_path() {
         );
         for path in files {
             std::sync::Arc::make_mut(&mut layer.files).insert(
-                path.as_bytes().to_vec(),
+                Arc::from(path.as_bytes()),
                 Member {
                     archive_entry: None,
                     size: 0,
@@ -1554,8 +1554,8 @@ fn records_whose_names_decode_alike_stay_apart() {
         };
         let layer = &layers.layers[0];
         assert_eq!(
-            layer.files.keys().collect::<Vec<_>>(),
-            [&cp437.to_vec(), &utf8.to_vec()],
+            layer.files.keys().map(AsRef::as_ref).collect::<Vec<_>>(),
+            [cp437, utf8],
             "{order}"
         );
         for (name, data) in [(cp437, &b"cp437"[..]), (utf8, b"utf8")] {
@@ -2299,6 +2299,16 @@ fn a_covered_folder_file_gone_or_appearing_after_verification_is_a_change() {
         ..ResolvedLayers::default()
     };
     layers.finish().unwrap();
+    let layer = &layers.layers[0];
+    let name = b"common/a.txt".as_slice();
+    let (file, _) = layer.files.get_key_value(name).unwrap();
+    let listed = layer.inventory_paths.as_ref().unwrap().get(name).unwrap();
+    let (folded, authored) = layer.lookup.folders.get_key_value(name).unwrap();
+    let paths: BTreeSet<_> = [file, listed, folded, authored]
+        .into_iter()
+        .map(|path| path.as_ptr())
+        .collect();
+    assert_eq!(paths.len(), 1);
     let assert_changed = |error: io::Error, path: &str| {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
         assert!(
@@ -2415,7 +2425,7 @@ fn a_visual_mods_symbolic_links_are_listed_as_files_and_never_entered() {
         )?;
         Ok(files
             .into_keys()
-            .map(|path| String::from_utf8(path).unwrap())
+            .map(|path| String::from_utf8(path.to_vec()).unwrap())
             .collect())
     };
     assert_eq!(
@@ -2457,7 +2467,7 @@ fn an_unverified_visual_mods_link_to_no_file_passes_to_the_layers_below() {
     let files = std::sync::Arc::make_mut(&mut overlay.files);
     walk_folder(&art, &art.join("gfx"), true, &kind, &mut |relative, _| {
         files.insert(
-            relative,
+            relative.into(),
             Member {
                 archive_entry: None,
                 size: 0,
@@ -2669,7 +2679,7 @@ fn short_name_enumeration_propagates_unexpected_win32_errors() {
     );
     let mut files = BTreeMap::new();
     files.insert(
-        b"sub/file.gfx".to_vec(),
+        Arc::from(b"sub/file.gfx".as_slice()),
         Member {
             archive_entry: None,
             size: 0,

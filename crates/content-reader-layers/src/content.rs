@@ -189,6 +189,7 @@ pub enum LayerSource {
 }
 
 pub type LayerPath = Vec<u8>;
+type InventoryPath = Arc<[u8]>;
 
 pub mod diagnostics;
 
@@ -467,7 +468,7 @@ impl Facts {
 pub struct ResolvedLayer {
     content_digest: [u8; 32],
     inventory_witnesses: Arc<generation::Witnesses>,
-    inventory_paths: Option<Arc<BTreeSet<LayerPath>>>,
+    inventory_paths: Option<Arc<BTreeSet<InventoryPath>>>,
     coverage: CoveragePolicy,
     pub role: LayerRole,
     facts: Option<Facts>,
@@ -475,7 +476,7 @@ pub struct ResolvedLayer {
     pub source: LayerSource,
     pub descriptor: Option<PathBuf>,
     pub replace_paths: Vec<LayerPath>,
-    files: std::sync::Arc<BTreeMap<LayerPath, Member>>,
+    files: std::sync::Arc<BTreeMap<InventoryPath, Member>>,
     lookup: std::sync::Arc<LookupIndex>,
     hashes: std::sync::Arc<BTreeMap<LayerPath, [u8; 32]>>,
     archive_stamp: Option<Stamp>,
@@ -527,7 +528,7 @@ struct Member {
 
 #[derive(Clone, Debug, Default)]
 struct LookupIndex {
-    folders: BTreeMap<LayerPath, LayerPath>,
+    folders: BTreeMap<InventoryPath, InventoryPath>,
     folder_aliases: Arc<std::sync::Mutex<BTreeMap<LayerPath, LayerPath>>>,
     #[cfg(windows)]
     short_names: BTreeMap<(String, String), String>,
@@ -1284,10 +1285,10 @@ fn directory_entries(path: &Path) -> io::Result<Vec<fs::DirEntry>> {
 fn collect_folder(
     root: &Path,
     path: &Path,
-    files: &mut BTreeMap<LayerPath, Member>,
+    files: &mut BTreeMap<InventoryPath, Member>,
     coverage: CoveragePolicy,
     overlay: bool,
-    inventory_paths: &mut BTreeSet<LayerPath>,
+    inventory_paths: &mut BTreeSet<InventoryPath>,
 ) -> io::Result<()> {
     collect_folder_with(
         root,
@@ -1303,11 +1304,11 @@ fn collect_folder(
 fn collect_folder_with(
     root: &Path,
     path: &Path,
-    files: &mut BTreeMap<LayerPath, Member>,
+    files: &mut BTreeMap<InventoryPath, Member>,
     coverage: CoveragePolicy,
     overlay: bool,
     kind: &dyn Fn(&fs::DirEntry) -> io::Result<Listed>,
-    inventory_paths: &mut BTreeSet<LayerPath>,
+    inventory_paths: &mut BTreeSet<InventoryPath>,
 ) -> io::Result<()> {
     let names_folder = |link: &Path| fs::metadata(link).is_ok_and(|metadata| metadata.is_dir());
     let refused = |link: &Path| {
@@ -1331,7 +1332,8 @@ fn collect_folder_with(
         Ok(listed)
     };
     walk_folder(root, path, overlay, &checked, &mut |relative, entry| {
-        inventory_paths.insert(relative.clone());
+        let relative: InventoryPath = relative.into();
+        inventory_paths.insert(Arc::clone(&relative));
         if coverage.covered_path(&relative) {
             let metadata = entry.metadata()?;
             let stamp = (!overlay).then(|| Stamp::of(&metadata).ok()).flatten();
@@ -1418,7 +1420,7 @@ fn check_find_error(dir: &Path, error: io::Error, done: u32) -> io::Result<()> {
 #[cfg(windows)]
 fn collect_folder_short_names(
     root: &Path,
-    files: &BTreeMap<LayerPath, Member>,
+    files: &BTreeMap<InventoryPath, Member>,
 ) -> io::Result<BTreeMap<(String, String), String>> {
     use std::ffi::OsString;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -1682,14 +1684,15 @@ impl ResolvedLayer {
         }
     }
 
-    fn listed_keys(&self) -> impl Iterator<Item = &LayerPath> {
+    fn listed_keys(&self) -> impl Iterator<Item = &[u8]> {
         let facts = self
             .facts
             .as_ref()
             .and_then(|facts| facts.layer().paths().ok())
             .into_iter()
-            .flatten();
-        facts.chain(self.files.keys())
+            .flatten()
+            .map(Vec::as_slice);
+        facts.chain(self.files.keys().map(AsRef::as_ref))
     }
 
     fn inventory(&mut self) -> io::Result<()> {
@@ -1742,7 +1745,7 @@ impl ResolvedLayer {
                     }
                     if self.coverage.covered_path(&entry.name) {
                         std::sync::Arc::make_mut(&mut self.files).insert(
-                            entry.name.clone(),
+                            Arc::from(entry.name.as_slice()),
                             Member {
                                 size: entry.size,
                                 archive_entry: Some(entry.clone()),
@@ -1764,15 +1767,15 @@ impl ResolvedLayer {
     fn finish_inventory(&mut self) -> io::Result<()> {
         let mut folded = BTreeMap::new();
         for path in self.files.keys() {
-            if folded.contains_key(&path.to_ascii_lowercase()) {
-                if self.listed_as_game() {
-                    continue;
-                }
+            let lower = if path.iter().any(u8::is_ascii_uppercase) {
+                Arc::from(path.to_ascii_lowercase())
+            } else {
+                Arc::clone(path)
+            };
+            if self.listed_as_game() && folded.contains_key(&lower) {
+                continue;
             }
-            if folded
-                .insert(path.to_ascii_lowercase(), path.clone())
-                .is_some()
-            {
+            if folded.insert(lower, Arc::clone(path)).is_some() {
                 return Err(invalid(format!(
                     "layer contains case-ambiguous path: {}",
                     display(path)
@@ -1806,7 +1809,7 @@ impl ResolvedLayer {
                     })
                     .collect::<io::Result<Vec<_>>>()?;
                 for (relative, probe) in self.files.keys().zip(cache.probe_all(&paths)) {
-                    hashes.insert(relative.clone(), cache.settle(probe?, stats));
+                    hashes.insert(relative.to_vec(), cache.settle(probe?, stats));
                 }
             }
             LayerSource::Archive(path) => {
@@ -1837,7 +1840,7 @@ impl ResolvedLayer {
                         cache.insert(key, stamp.clone(), digest);
                         digest
                     };
-                    hashes.insert(relative.clone(), digest);
+                    hashes.insert(relative.to_vec(), digest);
                 }
                 if Stamp::read(path)? != stamp {
                     return Err(invalid("archive changed while hashing"));
@@ -1871,8 +1874,8 @@ impl ResolvedLayer {
 
     fn covered_folder_entry(&self, relative: &[u8]) -> Option<LayerPath> {
         let lower = relative.to_ascii_lowercase();
-        if let Some(path) = self.lookup.folders.get(&lower) {
-            return Some(path.clone());
+        if let Some(path) = self.lookup.folders.get(lower.as_slice()) {
+            return Some(path.to_vec());
         }
         if self.verifies() {
             if let Some(path) = self
@@ -1905,8 +1908,8 @@ impl ResolvedLayer {
                     resolved_ascii.extend_from_slice(&canonical.as_bytes().to_ascii_lowercase());
                     parent_folded.push_str(&canonical.to_lowercase());
                 }
-                if let Some(path) = self.lookup.folders.get(&resolved_ascii) {
-                    return Some(path.clone());
+                if let Some(path) = self.lookup.folders.get(resolved_ascii.as_slice()) {
+                    return Some(path.to_vec());
                 }
                 if !parent_folded.is_ascii() {
                     return self
@@ -1917,7 +1920,7 @@ impl ResolvedLayer {
                             std::str::from_utf8(path)
                                 .is_ok_and(|existing| existing.to_lowercase() == parent_folded)
                         })
-                        .cloned();
+                        .map(|path| path.to_vec());
                 }
             }
         }
@@ -1961,11 +1964,23 @@ impl ResolvedLayer {
             }
         };
         if self.verifies() && self.coverage.covered_path(&real) {
-            if self.lookup.folders.get(&real.to_ascii_lowercase()) != Some(&real) {
+            if self
+                .lookup
+                .folders
+                .get(real.to_ascii_lowercase().as_slice())
+                .map(AsRef::as_ref)
+                != Some(real.as_slice())
+            {
                 return Err(changed(&real));
             }
             let lower = relative.to_ascii_lowercase();
-            if self.lookup.folders.get(&lower) != Some(&real) {
+            if self
+                .lookup
+                .folders
+                .get(lower.as_slice())
+                .map(AsRef::as_ref)
+                != Some(real.as_slice())
+            {
                 self.lookup
                     .folder_aliases
                     .lock()
@@ -2042,7 +2057,7 @@ impl ResolvedLayer {
             covered += 1;
             if self
                 .files
-                .get(&entry.name)
+                .get(entry.name.as_slice())
                 .and_then(|member| member.archive_entry.as_ref())
                 != Some(entry)
             {
@@ -2053,7 +2068,7 @@ impl ResolvedLayer {
             let gone = self
                 .files
                 .keys()
-                .find(|name| !mounted.entries.iter().any(|entry| entry.name == **name))
+                .find(|name| !mounted.entries.iter().any(|entry| entry.name.as_slice() == name.as_ref()))
                 .cloned()
                 .unwrap_or_default();
             return Err(changed(&gone));
@@ -2099,7 +2114,7 @@ impl ResolvedLayer {
         observed: &ReadObservation,
     ) -> ObservedResult<Option<ReadSuccess<Vec<u8>>>> {
         let context = |error: io::Error| invalid(format!("{}: {error}", display(request)));
-        if self.verifies() && self.files.contains_key(&entry.name) {
+        if self.verifies() && self.files.contains_key(entry.name.as_slice()) {
             let record = record_digest_observed(archive, entry, observed)
                 .map_err(|failure| failure.context(context))?;
             let digest = match &record {
@@ -2176,7 +2191,7 @@ impl ResolvedLayer {
             Some((entry, password)) => {
                 let opening = archive.opening(entry)?;
                 if self.verifies()
-                    && self.files.contains_key(&entry.name)
+                    && self.files.contains_key(entry.name.as_slice())
                     && self
                         .lookup
                         .archive
@@ -2193,7 +2208,7 @@ impl ResolvedLayer {
                         password: password.map(<[u8]>::to_vec),
                     }));
                 }
-                if self.verifies() && self.files.contains_key(&entry.name) {
+                if self.verifies() && self.files.contains_key(entry.name.as_slice()) {
                     match self.read_archive_entry(&mut archive, entry, password, request, observed)?
                     {
                         Some(bytes) => return bytes.verified(Err(changed(request))).map(|_| None),
@@ -2216,7 +2231,7 @@ impl ResolvedLayer {
             Some((entry, password)) => {
                 let opening = archive.opening(entry)?;
                 if self.verifies()
-                    && self.files.contains_key(&entry.name)
+                    && self.files.contains_key(entry.name.as_slice())
                     && self
                         .lookup
                         .archive
@@ -3162,7 +3177,7 @@ impl ResolvedLayers {
                         below(&lower, root) && (!overlay || self.overlay_sees(&lower))
                     })
                 {
-                    listed.insert(path.clone());
+                    listed.insert(path.to_vec());
                 }
             }
             hidden.extend(
@@ -3452,7 +3467,12 @@ impl ResolvedLayers {
             && self.covered_path(layer.record_name(&hit.path))
             && match layer.source {
                 LayerSource::Folder(_) => {
-                    layer.lookup.folders.get(&hit.path.to_ascii_lowercase()) == Some(&hit.path)
+                    layer
+                        .lookup
+                        .folders
+                        .get(hit.path.to_ascii_lowercase().as_slice())
+                        .map(AsRef::as_ref)
+                        == Some(hit.path.as_slice())
                 }
                 LayerSource::Archive(_) => true,
             })
@@ -4681,7 +4701,7 @@ fn listed_files(
             {
                 for relative in inventory_paths.iter() {
                     if !layer.fact_path(relative) {
-                        admit(relative.clone())?;
+                        admit(relative.to_vec())?;
                     }
                 }
             } else {
@@ -4721,7 +4741,7 @@ fn apply_overlay<'a>(
     effective: &mut BTreeMap<LayerPath, EffectiveFile>,
     index: usize,
     archive: bool,
-    paths: impl Iterator<Item = &'a LayerPath>,
+    paths: impl Iterator<Item = &'a [u8]>,
     replace_paths: &[LayerPath],
     sees: Option<Sees<'_>>,
 ) -> io::Result<()> {
@@ -4738,7 +4758,7 @@ fn apply_overlay<'a>(
         if !overlay
             && effective
                 .get(&path.to_ascii_lowercase())
-                .is_some_and(|old| old.path != *path && (old.archive || archive))
+                .is_some_and(|old| old.path != path && (old.archive || archive))
         {
             return Err(invalid(format!(
                 "folder and archive layers have case-dependent path precedence: {}",
@@ -4749,7 +4769,7 @@ fn apply_overlay<'a>(
             path.to_ascii_lowercase(),
             EffectiveFile {
                 layer: index,
-                path: path.clone(),
+                path: path.to_vec(),
                 archive,
             },
         );
