@@ -24,11 +24,12 @@ struct Plan {
     view: String,
     page: String,
     viewport: Value,
+    country: Value,
     requests: Vec<Request>,
     reasons: Vec<String>,
 }
 
-#[derive(Deserialize, PartialEq)]
+#[derive(Deserialize, Serialize, PartialEq)]
 struct Ask {
     product: String,
     params: Value,
@@ -46,6 +47,15 @@ enum Request {
         hours: Vec<(i32, Ask)>,
         proof: Option<usize>,
     },
+}
+
+impl Request {
+    fn describe(&self) -> Value {
+        match self {
+            Self::Follow { name, query } => json!({ "mode": "follow", "name": name, "query": query }),
+            Self::Read { name, hours, .. } => json!({ "mode": "read", "name": name, "first": hours.first() }),
+        }
+    }
 }
 
 fn encode(out: &mut impl Write, value: &impl Serialize) -> io::Result<()> {
@@ -111,6 +121,9 @@ impl UiRequests {
         self.send(context)?;
         loop {
             let mut value = self.receive()?;
+            if let Some(reason) = value["reason"].as_str() {
+                return Err(io::Error::other(reason.to_owned()));
+            }
             if let Some(views) = value
                 .as_object_mut()
                 .and_then(|fields| fields.remove("views"))
@@ -347,10 +360,13 @@ impl View {
             counts.rows += packet.rows;
             counts.bytes += packet.bytes;
             if let Some(payload) = packet.payload {
-                if let (Reader::Direct(direct), Payload::Direct(body)) = (reader, &payload)
-                    && let (Some(proof), Some(at)) = (direct.proof, direct.at)
-                {
-                    direct.through = Some(ui.through(proof, at, body)?);
+                if let Reader::Direct(direct) = reader {
+                    counts.exact_requests += 1;
+                    if let Payload::Direct(body) = &payload
+                        && let (Some(proof), Some(at)) = (direct.proof, direct.at)
+                    {
+                        direct.through = Some(ui.through(proof, at, body)?);
+                    }
                 }
                 received.push(payload.reply(*id, hour));
             }
@@ -596,6 +612,7 @@ struct Counts {
     opens: u64,
     restores: u64,
     bytes: u64,
+    exact_requests: u64,
 }
 
 impl Counts {
@@ -677,6 +694,7 @@ struct Options {
     steps: i32,
     branch: Option<String>,
     start: Option<i32>,
+    views: Vec<String>,
 }
 
 impl Options {
@@ -686,6 +704,7 @@ impl Options {
             steps: 48,
             branch: None,
             start: None,
+            views: Vec::new(),
         };
         let mut args = flags.iter();
         while let Some(flag) = args.next() {
@@ -709,6 +728,7 @@ impl Options {
                 }
                 "--branch" => out.branch = Some(value.clone()),
                 "--start" => out.start = Some(integer()?),
+                "--view" => out.views.push(value.clone()),
                 _ => return Err(io::Error::other(format!("Unknown option {flag}"))),
             }
         }
@@ -812,7 +832,7 @@ pub(super) fn run(
                 &load,
                 &json!({
                     "metadata": metadata, "branch": branch.id, "country": tag,
-                    "first": first, "last": last, "quantum": quantum,
+                    "first": first, "last": last, "quantum": quantum, "views": options.views,
                 }),
             )
         })?;
@@ -862,7 +882,8 @@ impl Rig {
         let mut views = Vec::with_capacity(plans.len());
         let mut declared = BTreeMap::new();
         for (index, plan) in plans.into_iter().enumerate() {
-            let key = json!({ "kind": plan.kind, "view": plan.view, "page": plan.page, "viewport": plan.viewport });
+            let key = json!({ "kind": plan.kind, "view": plan.view, "page": plan.page, "viewport": plan.viewport, "country": plan.country });
+            let requests: Vec<_> = plan.requests.iter().map(Request::describe).collect();
             let (view, reasons) = self.source.in_scope(|| {
                 View::open(&self.source, &self.load, identity, plan, index as u32 + 1)
             });
@@ -871,7 +892,7 @@ impl Rig {
                 out,
                 &json!({
                     "event": "view", "quantum": quantum, "index": index, "key": key,
-                    "slots": view.slots, "reasons": reasons,
+                    "slots": view.slots, "reasons": reasons, "requests": requests,
                 }),
             )?;
             views.push(view);

@@ -237,6 +237,8 @@ def benchmark(args):
         value = getattr(args, flag)
         if value is not None:
             flags.extend((f"--{flag}", str(value)))
+    for view in args.view:
+        flags.extend(("--view", view))
     seen = set()
     for fixture in args.recording:
         name, recording = fixture.split("=", 1)
@@ -281,7 +283,10 @@ def main():
     measure.add_argument("--game-dir", type=Path, required=True)
     measure.add_argument("--user-dir", type=Path, required=True)
     measure.add_argument("--out", type=Path, required=True)
-    measure.add_argument("--country", default="auto", help="recorded player by default")
+    measure.add_argument("--country", default="auto", metavar="TAG|player|auto",
+                         help="select a tag or the recorded player for country-specific views (auto keeps widget defaults)")
+    measure.add_argument("--view", action="append", default=[], metavar="KIND[/VIEW]",
+                         help="measure only the named widget kind or view (repeatable)")
     measure.add_argument("--branch", help="main branch by default")
     measure.add_argument("--start", type=int, help="30%% into the selected branch by default")
     measure.add_argument("--steps", type=int, default=48)

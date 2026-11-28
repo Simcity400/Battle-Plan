@@ -89,13 +89,13 @@ function countryState(widget, policy, track, slots, groups) {
   };
 }
 
-async function viewRequests(placement, track, slots, getGroups, first, last, quantum) {
+async function viewRequests(placement, track, slots, getGroups, first, last, quantum, explicitCountry) {
   const { kind, view, meta } = placement;
   const page = PAGES.filter(page => page.panels.some(([widget]) => widget === kind)).map(page => page.label).join(', ') || meta.category || 'Catalogue';
   const defaultGridWidth = 1920 - 232 - 8;
   const width = Math.round(((defaultGridWidth + 6) / GRID_COLUMNS.lg) * meta.defaultSize.w - 6);
   const height = 32 * meta.defaultSize.h - 6 - 38;
-  const result = { kind, view, page, viewport: { width, height }, requests: [], reasons: [] };
+  const result = { kind, view, page, viewport: { width, height }, country: null, requests: [], reasons: [] };
   const entry = manifestFamilyView(kind, view);
   if (!entry) {
     result.reasons.push('Native renderer has no dashboard product request.');
@@ -109,6 +109,7 @@ async function viewRequests(placement, track, slots, getGroups, first, last, qua
     const options = widgetViewOptions(kind, widget.options, view);
     const policy = declaration?.countries ?? { mode: 'none' };
     const single = gatedByCountry(policy, options);
+    if (single && explicitCountry) widget.countries = { kind: 'selected' };
     const following = widget.time.mode === 'follow';
     const branch = track.branch;
     const gate = trackGate(track);
@@ -121,6 +122,7 @@ async function viewRequests(placement, track, slots, getGroups, first, last, qua
     if (single && !countryTag) throw new Error(countrySubject === null
       ? policy.choose ?? 'This view requires a selected country.'
       : 'The chosen country has no recorded holder at hour ' + planHour + '.');
+    if (single) result.country = { tag: countryTag, ref: country };
     const selection = widget.countries;
     const groups = policy.mode === 'filter' || policy.mode === 'multi' && (policy.factions || policy.everyOnTop
       || (policy.requireGroupsWhen ? policy.requireGroupsWhen(widget, options) : selection.kind === 'group'))
@@ -189,15 +191,17 @@ async function viewRequests(placement, track, slots, getGroups, first, last, qua
 }
 
 try {
-  const { metadata, branch, country, first, last, quantum } = await receive();
+  const { metadata, branch, country, first, last, quantum, views: selectedViews = [] } = await receive();
   const source = { id: 'native-bench', revision: '1', path: metadata.path, metadata };
   const chosen = metadata.branches.find(candidate => candidate.id === branch);
   const slots = new SlotTags(await answer('country-identities', { branchId: branch }));
-  const selectedSlot = country === 'auto'
+  const player = country === 'auto' || country === 'player';
+  const selectedSlot = player
     ? metadata.playerCountryId === null ? null : Number(metadata.playerCountryId)
     : slots.slotOf(country, first);
-  if (country !== 'auto' && selectedSlot === null) {
-    throw new Error('The selected country ' + country + ' has no recorded holder at hour ' + first + '.');
+  if (country !== 'auto' && (!Number.isSafeInteger(selectedSlot) || slots.tagAt(selectedSlot, first) === null)) {
+    const subject = player ? 'The recorded player country' : 'The selected country ' + country;
+    throw new Error(subject + ' has no recorded holder at hour ' + first + '.');
   }
   const track = {
     id: 'main', roleId: 'primary', branch: chosen, source, axisOffset: 0, selectedSlot,
@@ -206,9 +210,16 @@ try {
   const client = { product: async request => ({ ...request, data: await answer(request.product, request.params) }) };
   let groups;
   const getGroups = () => groups ??= loadCountryGroups(client, source, branch, new AbortController().signal);
+  const placements = await enumerateWidgetPlacements({ mode: 'all-views' });
+  const matches = (placement, name) => placement.kind === name || `${placement.kind}/${placement.view}` === name;
+  for (const name of selectedViews) {
+    if (!placements.some(placement => matches(placement, name))) throw new Error('Unknown widget view ' + name);
+  }
   const views = [];
-  for (const placement of await enumerateWidgetPlacements({ mode: 'all-views' })) {
-    views.push(await viewRequests(placement, track, slots, getGroups, first, last, quantum));
+  for (const placement of placements) {
+    if (!selectedViews.length || selectedViews.some(name => matches(placement, name))) {
+      views.push(await viewRequests(placement, track, slots, getGroups, first, last, quantum, country !== 'auto'));
+    }
   }
   send({ views });
   for await (const line of lines) {
@@ -223,6 +234,8 @@ try {
       send({ reason: error instanceof Error ? error.message : String(error) });
     }
   }
+} catch (error) {
+  send({ reason: error instanceof Error ? error.message : String(error) });
 } finally {
   input.close();
 }

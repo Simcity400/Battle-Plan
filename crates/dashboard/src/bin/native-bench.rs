@@ -136,7 +136,7 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
     let [recording, game, user, cache, tag, flags @ ..] = &args[..] else {
-        return Err(io::Error::other("native-bench RECORDING GAME_DIR USER_DIR CACHE_DIR TAG [--audit|--capacity|--hourly-check|--heaviest30 [--quantum N] [--steps N] [--product NAME]|--all-views [--quantum 24|3|1] [--steps N] [--branch ID] [--start HOUR]]"));
+        return Err(io::Error::other("native-bench RECORDING GAME_DIR USER_DIR CACHE_DIR TAG [--audit|--capacity|--hourly-check|--heaviest30 [--quantum N] [--steps N] [--product NAME]|--all-views [--quantum 24|3|1] [--steps N] [--branch ID] [--start HOUR] [--view KIND[/VIEW]]...]"));
     };
     if let Some(options) = flags.strip_prefix(&["--all-views".into()]) {
         #[cfg(feature = "bench-counts")]
