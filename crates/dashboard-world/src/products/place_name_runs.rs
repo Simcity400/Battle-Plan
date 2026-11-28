@@ -105,6 +105,69 @@ fn answer_of(reading: Result<Option<Name>, String>) -> Answer {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PlacePoint {
+    State(u32, i32),
+    Province(u32, i32),
+}
+
+impl PlacePoint {
+    fn hour(self) -> i32 {
+        match self { Self::State(_, hour) | Self::Province(_, hour) => hour }
+    }
+}
+
+const BROKER_WINDOW_HOURS: i64 = 720;
+
+pub fn names_at(source: &Source, query: &dashboard_query::Query<'_>, load: &LoadContext, points: &BTreeSet<PlacePoint>, cancelled: &AtomicBool) -> io::Result<BTreeMap<PlacePoint, Name>> {
+    let mut names = BTreeMap::new();
+    let missing = |reason: String| Name { name: None, missing: Some(reason) };
+    let mut windows = BTreeMap::<_, Vec<_>>::new();
+    for &point in points {
+        if (query.timeline.first..=query.timeline.last).contains(&point.hour()) {
+            let first = i64::from(point.hour()).div_euclid(BROKER_WINDOW_HOURS) * BROKER_WINDOW_HOURS;
+            windows.entry(first.max(i64::from(query.timeline.first)) as i32).or_default().push(point);
+        } else {
+            names.insert(point, missing("Place name not answered".into()));
+        }
+    }
+    for (from, asked) in windows {
+        let mut params = PlaceNameRunsParams {
+            branch_id: query.timeline.id.to_string(), land: false, from,
+            to: asked.iter().map(|point| point.hour()).max().expect("asked window"), states: Vec::new(), provinces: Vec::new(),
+        };
+        for &point in &asked {
+            match point {
+                PlacePoint::State(id, _) => params.states.push(id),
+                PlacePoint::Province(id, _) => params.provinces.push(id),
+            }
+        }
+        let runs = PlaceNameRuns::load(source, &params, load, cancelled);
+        for point in asked {
+            check_cancel(cancelled)?;
+            let hour = point.hour();
+            let name = match &runs {
+                Ok(reply) => {
+                    if let Some(gap) = reply.unknown.iter().find(|gap| gap.first_hour <= hour && hour <= gap.last_hour) {
+                        names.insert(point, missing(gap.reason.clone()));
+                        continue;
+                    }
+                    let (id, places) = match point {
+                        PlacePoint::State(id, _) => (id, &reply.states),
+                        PlacePoint::Province(id, _) => (id, &reply.provinces),
+                    };
+                    places.binary_search_by_key(&id, |place| place.id).ok()
+                        .and_then(|at| places[at].runs.iter().find(|run| run.first_hour <= hour && hour <= run.last_hour))
+                        .map_or_else(|| missing("Place name not answered".into()), |run| Name { name: run.name.clone(), missing: run.missing.clone() })
+                }
+                Err(why) => missing(why.to_string()),
+            };
+            names.insert(point, name);
+        }
+    }
+    Ok(names)
+}
+
 pub fn extend_runs(runs: &mut Vec<NameRun>, first: i32, last: i32, answer: &Answer, unknown: &[RecordingGap]) {
     if let Some(held) = runs.last_mut()
         && held.name == answer.name
@@ -346,7 +409,7 @@ mod tests {
             frame
         }).collect();
         let (source, load) = dashboard_base::test_fixtures::source_with_content(frames, &folder.0);
-        let params = PlaceNameRunsParams { branch_id: "1".into(), land: false, from: 100, to: 104, states: vec![7, 8, 9, 10], provinces: vec![1] };
+        let params = PlaceNameRunsParams { branch_id: "1".into(), land: false, from: 100, to: 104, states: vec![7, 8, 9, 10, 11], provinces: vec![1] };
         let executable = dashboard_text::catalogue::tests::script_game::executable().build();
         let reply = engine_executable::executable_tables::scope(Some(executable), || PlaceNameRuns::load(&source, &params, &load, &AtomicBool::new(false))).unwrap();
         let runs = |i: usize| reply.states[i].runs.iter().map(|run| (run.first_hour, run.last_hour, run.name.as_deref())).collect::<Vec<_>>();
@@ -357,6 +420,44 @@ mod tests {
         assert_eq!(runs(2), [(100, 104, Some("Plain Reach"))]);
         assert_eq!(runs(3), [(100, 104, Some("Recorded Reach"))]);
         assert_eq!(reply.provinces[0].runs.iter().map(|run| (run.first_hour, run.last_hour, run.name.as_deref())).collect::<Vec<_>>(), runs(0));
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let points = BTreeSet::from([
+            PlacePoint::State(7, 100), PlacePoint::State(7, 103), PlacePoint::State(8, 102),
+            PlacePoint::State(11, 100), PlacePoint::Province(1, 103),
+        ]);
+        let cancelled = AtomicBool::new(false);
+        let actual = engine_executable::executable_tables::scope(Some(executable), || names_at(&source, &query, &load, &points, &cancelled)).unwrap();
+        assert_eq!(actual.len(), points.len(), "resolve only the places and hours carried by the rows");
+        for point in &points {
+            let (id, hour, places) = match *point {
+                PlacePoint::State(id, hour) => (id, hour, &reply.states),
+                PlacePoint::Province(id, hour) => (id, hour, &reply.provinces),
+            };
+            let expected = places.iter().find(|place| place.id == id).unwrap().runs.iter()
+                .find(|run| run.first_hour <= hour && hour <= run.last_hour).unwrap();
+            assert_eq!(actual[point], Name { name: expected.name.clone(), missing: expected.missing.clone() }, "{point:?}");
+        }
+        let no_content = LoadContext { content: None };
+        let reason = PlaceNameRuns::load(&source, &params, &no_content, &cancelled).unwrap_err().to_string();
+        let withheld = names_at(&source, &query, &no_content, &points, &cancelled).unwrap();
+        assert!(withheld.values().all(|name| name.name.is_none() && name.missing.as_deref() == Some(reason.as_str())));
+
+        let unrecorded = (100..=104).map(|hour| {
+            let mut frame = dashboard_core::test_fixtures::source(1, hour, Some(1));
+            *frame.tables[TableId::States.index()] = TableView::NotRecorded { mode: replay_data::scope::CaptureMode::Full };
+            *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![ProvinceRow { id: 1, state: 7, ..Default::default() }]));
+            *frame.tables[TableId::ProvinceNames.index()] = TableView::Complete(TableRows::ProvinceNames(vec![]));
+            frame
+        }).collect();
+        let (source, load) = dashboard_base::test_fixtures::source_with_content(unrecorded, &folder.0);
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let params = PlaceNameRunsParams { states: Vec::new(), ..params };
+        let reply = PlaceNameRuns::load(&source, &params, &load, &cancelled).unwrap();
+        let wanted = PlacePoint::Province(1, 103);
+        let points = names_at(&source, &query, &load, &BTreeSet::from([wanted]), &cancelled).unwrap();
+        let missing = &reply.provinces[0].runs[0].missing;
+        assert!(missing.as_deref().is_some_and(|reason| reason.contains("hour 100")), "{missing:?}");
+        assert_eq!(&points[&wanted].missing, missing, "an interior point keeps the run's exact refusal reason");
     }
 
     #[test]

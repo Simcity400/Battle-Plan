@@ -67,6 +67,7 @@ fn fixture_source(frames: Vec<DecodedFrame>) -> (Source, LoadContext, std::path:
         ("map/default.map", "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp"),
         ("map/definition.csv", &definitions),
         ("map/strategicregions/1.txt", "strategic_region={id=1 name=\"REG_SEA\" provinces={17 21}}"),
+        ("map/strategicregions/2.txt", "strategic_region={id=2 name=\"REG_WITHOUT_NAME\" provinces={20}}"),
         ("history/states/mod.txt", "state={id=64 name=MOD_STATE provinces={17 18 19}}"),
         (
             "localisation/mod_l_english.yml",
@@ -138,6 +139,18 @@ fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a
 
     let run = query.timeline.stretches[0].run;
     let history = PlaceHistory::load(query.replay.recording(), run, 100, 110, Keys::All, Keys::All, true, &AtomicBool::new(false)).unwrap();
+    let regions = content.regions.as_ref().unwrap();
+    let resolved_regions = || regions.by_region.values().filter(|name| name.get().is_some()).count();
+    assert_eq!(history.province_name(&content, 18, ProvinceMode::Place, 105).name.as_deref(), Some("Renamed town"));
+    assert_eq!(resolved_regions(), 0, "a recorded rename needs no region name");
+    assert_eq!(history.province_name(&content, 21, ProvinceMode::Place, 105).name.as_deref(), Some("Sample Sea"));
+    assert_eq!(resolved_regions(), 1, "a fallback resolves just its strategic region");
+    let absent = super::super::region_names::region_name(&content.cat, &regions.definitions, 2).unwrap_err();
+    assert!(absent.contains("REG_WITHOUT_NAME"), "{absent}");
+    for _ in 0..2 {
+        assert_eq!(content.region(2).as_deref(), Err(&absent), "the result retains the missing region name reason");
+        assert_eq!(resolved_regions(), 2);
+    }
     assert_eq!(history.province_change_hours(17, 100, 110), vec![100, 106]);
     assert_eq!(history.province_name(&content, 17, ProvinceMode::Land, 105).name.as_deref(), Some("Original town"));
     assert_eq!(history.province_name(&content, 17, ProvinceMode::Land, 106).name.as_deref(), Some("Switched town"));

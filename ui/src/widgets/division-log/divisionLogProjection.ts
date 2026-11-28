@@ -5,7 +5,7 @@ import { contentSet, setToken } from '../../dashboard/options.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, newIdentityBoundary, resolveName } from '../../families/table/identityCell.ts';
+import { artKindCell, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logDateCell, occurrenceSelection, pagedTailEntry, projectPagedSlots, urlArtHandle } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
@@ -46,7 +46,7 @@ function divisionRow(view: BoundedReadView, row: DivisionLogRow, boundary: Retur
   }
   const child = row.parent !== null;
   const place: TableCell = e.province !== null && e.placeHour !== null
-    ? { value: resolveName(view, 'province', String(e.province), { atHour: e.placeHour, boundary }).value, glyph: 'place', missingFigure: 'Place',
+    ? { value: row.placeName?.trim() ? knownValue(row.placeName) : notRecorded(row.placeName === undefined ? row.placeMissing ?? 'Name not recorded' : 'Name not recorded'), glyph: 'place', missingFigure: 'Place',
       ...(e.kind === 0 || e.exact ? {} : { tooltipLabel: 'Last seen at' }) }
     : { value: notRecorded('Location not recorded'), missingFigure: 'Place', ...(e.kind === 0 || e.exact ? {} : { tooltipLabel: 'Last seen at' }) };
   const name = e.name?.trim() ? knownValue(e.name)
@@ -132,7 +132,7 @@ export const divisionLogDeclaration: TableWidgetDeclaration<Options> = {
     const templates = selected.filter(key => key.startsWith(prefix)).map(key => Number(key.slice(prefix.length))).filter(Number.isSafeInteger);
     const expanded = contentSet(ctx.options.expanded);
     const ask = {
-      ...occurrenceSelection(ctx), events: eventsOf(ctx.options.events),
+      ...occurrenceSelection(ctx), events: eventsOf(ctx.options.events), placeNames: true,
       ...(selected.length ? { templates } : {}), ...(expanded.length ? { expanded } : {}), ...(ctx.options.totals === true ? { totals: true } : {}),
     };
     return {
