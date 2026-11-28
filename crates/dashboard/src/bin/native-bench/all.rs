@@ -160,6 +160,7 @@ struct Panel {
     groups: Vec<(GroupKey, u32)>,
     input: Option<Arc<PanelData>>,
     delivered: Option<Arc<PanelData>>,
+    confirmed: Option<(u64, i32)>,
 }
 
 struct Direct {
@@ -222,6 +223,7 @@ impl View {
                             groups: Vec::new(),
                             input: None,
                             delivered: None,
+                            confirmed: None,
                         }))))
                     });
                     (name, panel)
@@ -363,12 +365,20 @@ impl View {
             {
                 let reason = (record.kind == dated::REFUSED)
                     .then(|| String::from_utf8_lossy(record.body).into_owned());
-                received.push(Reply::new(record.id, record.hour, record.body, reason));
+                let mut reply = Reply::new(record.id, record.hour, record.body, reason);
+                reply.kind = Some(record.kind);
+                received.push(reply);
             }
         }
 
         let mut changed = false;
         for reply in &received {
+            if reply
+                .kind
+                .is_some_and(|kind| matches!(kind, dated::AGAIN | dated::STANDS))
+            {
+                continue;
+            }
             changed |= self.held.insert(reply.id, reply.hash) != Some(reply.hash);
             if let Some(reason) = &reply.reason {
                 self.reasons.insert(reply.id, reason.clone());
@@ -431,6 +441,7 @@ impl Payload {
                     id,
                     hour,
                     hash,
+                    kind: None,
                     reason: Some(reason),
                 }
             }
@@ -505,10 +516,24 @@ impl Panel {
                 declared,
             )
         };
+        let epoch = context.step.epoch();
+        let unread_from = self
+            .confirmed
+            .filter(|(seen_epoch, _)| !reset && *seen_epoch == epoch)
+            .map(|(_, through)| through.saturating_add(1));
+        let from = reading.from.min(hour);
+        let at = if self.groups.is_empty() {
+            unread_from.map_or(from, |next| from.max(next)).min(hour)
+        } else {
+            hour
+        };
         self.input = Some(reading.value);
         if let Some((kind, body)) = self.delivery.update(reset, &value) {
-            batch.changed(id, hour, kind, body);
+            batch.changed(id, at, kind, body);
+        } else if unread_from.is_some_and(|next| from > next) {
+            batch.changed(id, at, dated::AGAIN, &[]);
         }
+        self.confirmed = Some((epoch, hour));
         self.delivery.commit();
         self.delivered = Some(value);
         Ok(Packet {
@@ -603,6 +628,8 @@ struct Reply {
     hour: i32,
     #[serde(serialize_with = "write_hash")]
     hash: blake3::Hash,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<u8>,
     reason: Option<String>,
 }
 
@@ -617,6 +644,7 @@ impl Reply {
             id,
             hour,
             hash,
+            kind: None,
             reason,
         }
     }
@@ -786,7 +814,7 @@ pub(super) fn run(
         encode(
             &mut out,
             &json!({
-                "event": "run", "recording": recording, "campaign": metadata.campaign_key,
+                "event": "run", "trace_version": 2, "recording": recording, "campaign": metadata.campaign_key,
                 "recording_bytes": path.metadata()?.len(), "format": metadata.format, "branch": branch.id,
                 "country": tag, "requested_start": start, "first": first, "last": last, "quantum": quantum,
                 "step_threads": 2, "fetch_threads": 1, "service_threads": 1,

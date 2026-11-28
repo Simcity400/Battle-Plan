@@ -125,18 +125,20 @@ mod tests {
 
         let initial = (exact.advance)(10, true, &cancel, None);
         assert!(initial.fresh);
+        assert_eq!(initial.rows, 3);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         for quiet_hour in 11..20 {
             let step = (exact.advance)(quiet_hour, false, &cancel, None);
             assert!(!step.fresh, "quiet hour {quiet_hour} must return fresh=false");
-            assert_eq!(step.rows, 3);
+            assert_eq!(step.rows, 0);
             assert!(Arc::ptr_eq(&step.value, &initial.value));
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1, "quiet forward steps inside proved interval must not call inner reader");
 
         let at_boundary = (exact.advance)(20, false, &cancel, None);
         assert!(at_boundary.fresh);
+        assert_eq!(at_boundary.rows, 3);
         assert_eq!(calls.load(Ordering::SeqCst), 2, "boundary hour must call inner reader once");
 
         for tail_hour in 21..=25 {

@@ -43,7 +43,7 @@ class View:
         for reply in sample["replies"]:
             self.answered.add(str(reply["id"]))
             slot = self.slots.get(str(reply["id"]), f"live cells {reply['id']}")
-            self.replies.setdefault(reply["hour"], []).append((slot, reply["hash"]))
+            self.replies.setdefault(event["hour"], []).append((slot, reply["hour"], reply.get("kind"), reply["hash"]))
         if event["seed"]:
             return
         for key, value in sample["counts"].items():
@@ -145,7 +145,7 @@ def comparison(before, after, output):
     differs = False
     for key in sorted(before):
         left, right = before[key], after[key]
-        for field_name in ("recording_bytes", "format", "branch", "country", "first", "last", "recording_sha256"):
+        for field_name in ("trace_version", "recording_bytes", "format", "branch", "country", "first", "last", "recording_sha256"):
             if left.spec.get(field_name) != right.spec.get(field_name):
                 raise ValueError(f"{key}: {field_name} differs across runs")
         for widget in sorted(left.views.keys() | right.views.keys()):
