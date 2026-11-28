@@ -1333,7 +1333,6 @@ impl<P: PlaybackProducts> MapSide<P> {
         let apply_lap = replay_frame::cpu::scope("side.apply", Some("other"));
         let mut compose = vec![false; self.layers.len()];
         let mut applied = Vec::with_capacity(steps.len());
-        let mut restored_restep = 0;
         let (resets_before, applied_before) = (self.resets_taken, self.applied);
         let (mut waiting, mut after_reset, mut crossing) = (self.composing, false, false);
         let mut moved = viewer_unit_reads::counter_move::MovedHours::default();
@@ -1350,13 +1349,8 @@ impl<P: PlaybackProducts> MapSide<P> {
             let restored = !reset && !step.gap() && self.applied == Some(step.last()) && self.epoch == step.epoch()
                 && step.first() > step.last() && !step.tables().is_empty()
                 && step.tables().iter().all(|change| change.reset() && change.renumber().is_none());
-            let (crossed, restored) = self.take_step(&step, &mut frame, &mut compose, restored);
-            crossing |= crossed;
-            if restored {
-                restored_restep = restored_restep.max(step.restep());
-            } else {
-                applied.push(step);
-            }
+            crossing |= self.take_step(&step, &mut frame, &mut compose, restored);
+            applied.push(step);
             (waiting, after_reset) = (waiting || reset, after_reset || reset);
         }
         if self.superseded && self.resets_taken == resets_before {
@@ -1473,7 +1467,7 @@ impl<P: PlaybackProducts> MapSide<P> {
                         self.consumer.ahead(&mut steps);
                         steps
                     });
-                    let restep = applied.iter().chain(lent.iter()).map(|step| step.restep()).max().unwrap_or(0).max(restored_restep);
+                    let restep = applied.iter().chain(lent.iter()).map(|step| step.restep()).max().unwrap_or(0);
                     if restep > self.resteps[at] {
                         if self.offered[at].is_some_and(|offered| self.applied.is_none_or(|applied| offered > applied)) {
                             layer.void_ahead(mirrors, applied_before);
@@ -2074,7 +2068,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         }
     }
 
-    fn take_step(&mut self, step: &Arc<Step>, frame: &mut Frame, compose: &mut [bool], mut restored: bool) -> (bool, bool) {
+    fn take_step(&mut self, step: &Arc<Step>, frame: &mut Frame, compose: &mut [bool], mut restored: bool) -> bool {
         let mut reset_tables = BTreeSet::new();
         let mut compare = Vec::new();
         let mut judged: Vec<(usize, Box<Mirror>)> = Vec::new();
@@ -2170,7 +2164,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         for (wanted, reads) in compose.iter_mut().zip(&self.reads) {
             *wanted |= reads.as_ref().is_ok_and(|tables| step.reset() || tables.iter().any(|table| reset_tables.contains(table)));
         }
-        (crossing, restored)
+        crossing
     }
 
     fn compose_here(&mut self, compose: &[bool], frame: &mut Frame) {
