@@ -110,6 +110,7 @@ interface RawMeta {
   readonly empty?: string | null;
   readonly emptyDetail?: string | null;
   readonly emptyKind?: 'empty' | 'unavailable';
+  readonly playbackUnavailable?: true;
   readonly summaryText?: string | null;
   readonly summaryPartial?: string | null;
   readonly notes?: readonly string[];
@@ -1221,6 +1222,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const empty = raw?.empty ?? null;
       const emptyDetail = raw?.emptyDetail ?? null;
       const emptyKind = raw?.emptyKind ?? 'empty';
+      const playbackUnavailable = raw?.playbackUnavailable;
       const summaryText = raw?.summaryText ?? null;
       const summaryPartial = raw?.summaryPartial ?? null;
       const notes = raw?.notes ?? NO_STRINGS;
@@ -1228,10 +1230,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const shown = metaRef.current;
       const sameBody =
         shown.mode === mode && shown.reason === reason && shown.failureOrigin === failureOrigin
-        && shown.empty === empty && shown.emptyDetail === emptyDetail && shown.emptyKind === emptyKind
+        && shown.empty === empty && shown.emptyDetail === emptyDetail && shown.emptyKind === emptyKind && shown.playbackUnavailable === playbackUnavailable
         && sameStrings(shown.notes, notes) && sameStrings(shown.warnings, warnings);
       if (sameBody && shown.summaryText === summaryText && shown.summaryPartial === summaryPartial) return;
-      const next: FamilyMetaState = { mode, reason, failureOrigin, empty, emptyDetail, emptyKind, summaryText, summaryPartial, notes, warnings };
+      const next: FamilyMetaState = { mode, reason, failureOrigin, empty, emptyDetail, emptyKind, ...(playbackUnavailable ? { playbackUnavailable } : {}), summaryText, summaryPartial, notes, warnings };
       metaRef.current = next;
       if (sameBody && shown.summaryText?.trim() && summaryText?.trim() && !summaryPartial && !shown.summaryPartial && !notes.length) {
         const label = summaryText.trim();
@@ -1982,11 +1984,12 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   });
 
   const hasBodyState = Boolean(bodyStateNode);
+  const keepRefusedCanvas = !blockedState && meta.mode === 'picture' && meta.playbackUnavailable === true;
   useLayoutEffect(() => {
     if (useShared && sharedHost && pipe !== null) {
-      sharedHost.setActive(pipe, !hasBodyState);
+      sharedHost.setActive(pipe, !hasBodyState || keepRefusedCanvas);
     }
-  }, [useShared, sharedHost, pipe, hasBodyState]);
+  }, [useShared, sharedHost, pipe, hasBodyState, keepRefusedCanvas]);
 
   const headerSummary = meta.mode === 'picture' && !meta.empty && !bodyStateNode
     ? resolveHeaderSummary(metaRef.current)

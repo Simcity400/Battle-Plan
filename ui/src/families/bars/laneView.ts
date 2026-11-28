@@ -310,7 +310,7 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     const fixedHour = dataHour ?? (payload.hour !== undefined && payload.hour !== frame.model.hour ? payload.hour : undefined);
     return { rowKey: target.key, payload, ...(fixedHour !== undefined ? { hour: fixedHour } : {}) };
   },
-  structure({ model, layout }) {
+  structure({ model, layout, exactPlayback }) {
     const regions = barsRegionRows(model, layout);
     return {
       ...(regions ? { regions } : {}),
@@ -327,6 +327,7 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
         empty: model.empty ?? null,
         emptyDetail: model.emptyDetail ?? null,
         emptyKind: model.emptyKind ?? 'empty',
+        ...(exactPlayback && model.emptyKind === 'unavailable' ? { playbackUnavailable: true } : {}),
         notes: model.notes ?? [],
         warnings: model.warnings ?? [],
       },

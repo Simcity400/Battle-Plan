@@ -1,7 +1,7 @@
 import type { Fact } from '../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../dashboard/follow/message';
 import { sameRevision, type Revisions } from '../dashboard/follow/payloads.ts';
-import type { PlaybackPaint, PlaybackPicture, LaneView, Painted, PaintInput, Scene, Surface, Value as LaneValue } from '../draw/lane.ts';
+import type { PlaybackPaint, PlaybackPicture, PlaybackRenderer, LaneView, Painted, PaintInput, Scene, Surface, Value as LaneValue } from '../draw/lane.ts';
 import { markCanvasPainted } from '../draw/laneDispatch.ts';
 import { setContextSlot, snapCanvasText } from '../draw/kit.ts';
 import { LaneArtCache, LaneArtPool, type LaneArtFetcher } from './art/laneCache.ts';
@@ -986,7 +986,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       }
       keep.lastTarget = activeTarget;
 
-      let playback: PlaybackPaint | undefined;
+      let playback: PlaybackRenderer | undefined;
       if (animation && !playbackOwnsPixels) {
         const base = sceneSources(binding, projection.validateTail);
         const tiles = new SceneTiles();
@@ -994,6 +994,10 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         const cache: Visual[] = [];
         let artRevision = keep.artRevision;
         const modelAt = (sample: PlaybackPicture): Visual | null => {
+          if (artRevision !== keep.artRevision) {
+            cache.length = 0;
+            artRevision = keep.artRevision;
+          }
           let found: Visual | undefined;
           const dates = binding.tiledBySource ? sample.pictures.map(picture => picture.c) : [];
           for (const item of cache) {
@@ -1018,11 +1022,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           }
           return null;
         };
-        playback = (current, next, position, target, inspect, diagnostic) => {
-          if (artRevision !== keep.artRevision) {
-            cache.length = 0;
-            artRevision = keep.artRevision;
-          }
+        const paint: PlaybackPaint = (current, next, position, target, inspect, diagnostic) => {
           const exact = modelAt(current);
           if (!exact) {
             if (diagnostic) diagnostic.reason = 'modelValidity';
@@ -1034,7 +1034,6 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
             return 'release';
           }
           const unavailable = animation.unavailable(exact.model);
-          if (unavailable && !current.proven) return { unavailableFrom: exact.from };
           const begin = exact.from;
           const to = !unavailable && next && position > begin && position < next.hour && exact.until >= next.hour ? modelAt(next) : null;
           const fraction = to && next ? (position - begin) / (next.hour - begin) : 0;
@@ -1047,11 +1046,19 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           drawCanvas(moving || recorded, target);
           return moving ? 'interpolated' : 'exact';
         };
+        playback = {
+          paint,
+          unavailableFrom(picture) {
+            const visual = modelAt(picture);
+            return visual && animation.unavailable(visual.model) ? visual.from : undefined;
+          },
+        };
       }
 
       const tPaint = timed ? performance.now() : 0;
       const fields: Record<string, Field> = { ...keep.demandFields };
-      const structureKey = [model, layout];
+      const playbackUnavailable = animation?.unavailable(model) === true;
+      const structureKey = [model, layout, playbackUnavailable];
       const structureChanged = !sameKey(keep.structureKey, structureKey);
       if (structureChanged) {
         keep.structureKey = structureKey;
@@ -1154,6 +1161,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         motion: keep.motion,
         ...(playback ? { playback } : {}),
         ...(playbackOwnsPixels ? { playbackOwnsPixels: true } : {}),
+        ...(playbackUnavailable ? { playbackUnavailable: true } : {}),
         repainted,
         ...(keep.motion || Number.isFinite(keep.expiry) ? { ephemeral: true } : {}),
         hit: keep.hit,

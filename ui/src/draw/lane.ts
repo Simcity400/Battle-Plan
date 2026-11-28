@@ -74,7 +74,7 @@ type StagedSlot = {
 };
 
 type StagedPicture = {
-  readonly slot: StagedSlot; readonly pixels: ImageBitmap; readonly overwroteDirect: boolean; readonly playback?: PlaybackPaint;
+  readonly slot: StagedSlot; readonly pixels: ImageBitmap; readonly overwroteDirect: boolean; readonly playback?: PlaybackRenderer;
 };
 const MAX_STAGED_PICTURES = MAX_EARLY + 1;
 
@@ -164,7 +164,12 @@ export type PlaybackPaint = (
   target: PaintInput['sharedSurface'],
   inspect: string | null,
   diagnostic?: { reason?: MotionSkip },
-) => 'exact' | 'interpolated' | 'empty' | 'release' | { unavailableFrom: number };
+) => 'exact' | 'interpolated' | 'empty' | 'release';
+
+export interface PlaybackRenderer {
+  paint: PlaybackPaint;
+  unavailableFrom(picture: PlaybackPicture): number | undefined;
+}
 
 export interface Painted {
   surfaces: readonly ({ source: Bitmapped; content: string } | null)[];
@@ -177,8 +182,9 @@ export interface Painted {
   reason?: string;
   nextChangeAt?: number;
   waiting?: true;
-  playback?: PlaybackPaint;
+  playback?: PlaybackRenderer;
   playbackOwnsPixels?: true;
+  playbackUnavailable?: true;
   viewport?: InstalledViewport;
   hit?: (point: readonly [number, number]) => string | null;
 }
@@ -252,7 +258,7 @@ interface Widget {
   validWindow: Window | null;
   start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; deferrals: number; halted: number | null; parked: Sent | null;
   withdrawn: number | null;
-  playback?: { paint: PlaybackPaint; binding: Binding; supply: number; seek: number; canvas: OffscreenCanvas };
+  playback?: { renderer: PlaybackRenderer; binding: Binding; supply: number; seek: number; canvas: OffscreenCanvas };
 }
 
 interface Held { kind: 'follow' | 'panels'; native: number; seek: number; hour: number; id: number; records: Uint8Array[]; size: number; completed?: number }
@@ -2154,6 +2160,16 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return null;
   }
 
+  private recordedPlayback(widget: Widget, hour: number, renderer: PlaybackRenderer): PlaybackPicture | null {
+    let picture = this.playbackPicture(widget, hour);
+    while (picture && !picture.proven) {
+      const start = renderer.unavailableFrom(picture);
+      if (start === undefined) break;
+      picture = this.playbackPicture(widget, hour, start - 1);
+    }
+    return picture;
+  }
+
   private paintPlayback() {
     const clock = this.playbackClock;
     if (!clock?.playing || clock.seek < this.pageSeek || this.seekSuperseded(clock.seek)) return;
@@ -2182,19 +2198,15 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const pos = position + widget.binding.offset;
       const hour = Math.floor(pos);
       try {
-        let current = this.playbackPicture(widget, hour);
+        const current = this.recordedPlayback(widget, hour, held.renderer);
         const end = current?.proven && current.pictures.every(isPlaybackReading) ? current.through + 1 : Infinity;
         const next = Number.isFinite(end) && end <= (clock.lastHour ?? Infinity) + widget.binding.offset
           ? this.playbackPicture(widget, end) : null;
         const diagnostic: { reason?: MotionSkip } | undefined = diagnostics ? {} : undefined;
         const nextProven = next?.proven && next.pictures.every(isPlaybackReading) ? next : null;
-        let painted = current && current.pictures.every(picture => stopOf(picture) === null)
-          ? held.paint(current, nextProven, pos, target.shared, widget.inspect, diagnostic)
+        const painted = current && current.pictures.every(picture => stopOf(picture) === null)
+          ? held.renderer.paint(current, nextProven, pos, target.shared, widget.inspect, diagnostic)
           : 'empty';
-        while (typeof painted === 'object') {
-          current = this.playbackPicture(widget, hour, painted.unavailableFrom - 1);
-          painted = current ? held.paint(current, null, pos, target.shared, widget.inspect, diagnostic) : 'empty';
-        }
         if (painted === 'empty') this.clearDirectSlot(target.shared?.lane ?? null, target.shared?.slot, target.shared ? undefined : this.activeWorkerCanvas(id));
         if (diagnostics) {
           if (current) diagnostics.proof = { widget: id, from: current.from, through: current.through, next: nextProven?.hour ?? null };
@@ -2246,11 +2258,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return this.playbackOwners.has(widget.id) && !this.ownsPlayback(widget, request.seek, request.speed > 0);
   }
 
-  private rememberPlayback(widget: Widget, paint: PlaybackPaint | undefined, seek: number, playing: boolean) {
-    const target = paint && this.playbackTarget(widget.id);
-    if (paint && target) {
+  private rememberPlayback(widget: Widget, renderer: PlaybackRenderer | undefined, seek: number, playing: boolean) {
+    const target = renderer && this.playbackTarget(widget.id);
+    if (renderer && target) {
       this.windowSafeDirty ||= !this.ownsPlayback(widget, seek, playing);
-      widget.playback = { paint, binding: widget.binding, supply: widget.supply, seek, canvas: target.canvas };
+      widget.playback = { renderer, binding: widget.binding, supply: widget.supply, seek, canvas: target.canvas };
       this.playbackWidgets.add(widget.id);
       if (playing) this.playbackOwners.add(widget.id);
       this.armPlayback();
@@ -2532,7 +2544,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.paintKeptDirect(widget, request, now, selected, true);
   }
 
-  private completePlaybackDraw(widget: Widget, request: FrameRequest, playback: PlaybackPaint | undefined) {
+  private completePlaybackDraw(widget: Widget, request: FrameRequest, playback: PlaybackRenderer | undefined) {
     this.playbackOwners.delete(widget.id);
     this.pausedBars.delete(widget.id);
     this.rememberPlayback(widget, playback, request.seek, request.speed > 0);
@@ -2818,7 +2830,15 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const key = inspect.get(widget.id) ?? null, target = pause ? this.targetOf(widget, request.now) : this.requestHourFor(widget, request);
       const refresh = widget.playback !== undefined && widget.motion;
       const route = this.routeOf(widget);
-      const selected = this.select(widget, target);
+      let selected = this.select(widget, target);
+      if (selected && target > selected.c && widget.playback && this.ownsPlayback(widget, request.seek, request.speed > 0)) {
+        const { renderer } = widget.playback;
+        const expired = { pictures: selected.pictures, from: selected.h, hour: selected.c, through: selected.c, proven: false };
+        if (selected.pictures.some(part => refusalOf(part) !== null) || renderer.unavailableFrom(expired) !== undefined) {
+          const picture = this.recordedPlayback(widget, target, renderer);
+          if (picture) selected = { pictures: [...picture.pictures], h: picture.from, c: picture.through, window: [picture.hour, selected.window[1]] };
+        }
+      }
       const restore = this.restorePlayback(widget, request);
       if (!selected) {
         let next = Infinity;
@@ -3067,6 +3087,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
             }
             mode = 'failed'; failureOrigin = 'local';
           }
+        }
+        if (painted.playbackUnavailable && actual <= activeSelected.c && activeSelected.c < activeSelected.window[1]) {
+          activeSelected = { ...activeSelected, window: [activeSelected.window[0], activeSelected.c] };
         }
         widget.validWindow = activeSelected.window;
         const paintMs = this.time() - start;

@@ -297,10 +297,13 @@ function fixture(budget: number) {
       painted.push(args[0].widget);
       const result = view.paint(...args);
       const playback = result.playback;
-      return playback ? { ...result, playback: (...visual: Parameters<typeof playback>) => {
-        now += paintCost;
-        sampled.push(args[0].widget);
-        return playback(...visual);
+      return playback ? { ...result, playback: {
+        ...playback,
+        paint(...visual: Parameters<typeof playback.paint>) {
+          now += paintCost;
+          sampled.push(args[0].widget);
+          return playback.paint(...visual);
+        },
       } } : result;
     },
   };
