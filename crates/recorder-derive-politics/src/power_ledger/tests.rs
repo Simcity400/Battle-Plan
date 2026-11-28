@@ -2345,4 +2345,33 @@ fn republished_changes_are_deduped_large_gains_split_daily_gains_survive_change_
             "second consecutive idle unavailable hour must keep {derived:?} unavailable"
         );
     }
+
+    let startup_outage = |store: &mut Store, hour: i32| {
+        let complete = |store: &mut Store, table: TableId| store.status(table.index(), Status::Complete, true, Some(hour), true).unwrap();
+        match hour {
+            0 => {
+                for table in [TableId::Countries, TableId::CountryPowerDaily, TableId::CountryPowerDailyCosts, TableId::CountryCommandPower, TableId::CountryPowerChanges, TableId::PoliticsCaptureCoverage] {
+                    complete(store, table);
+                }
+                testing::put(store, TableId::Countries, &CountryRow { id: 1, canonical_slot: 10, ..Default::default() }, TEXTS).unwrap();
+                store.status(TableId::CountryLinks.index(), Status::Unavailable { reason: 1 }, false, None, false).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+            }
+            1 => {
+                complete(store, TableId::CountryLinks);
+                testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 1, canonical_slot: 10 }, TEXTS).unwrap();
+                testing::remove(store, TableId::CountryPowerChanges, (1_u128 << 64) | 10).unwrap();
+            }
+            2 => {
+                testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+            }
+            _ => {}
+        }
+    };
+    let (s0, _) = run_custom(0, startup_outage);
+    assert_eq!(s0.view(TableId::PowerSpendGains.index()).status(), Status::Unavailable { reason: 1 });
+    let (s2, _) = run_custom(2, startup_outage);
+    assert!(keys(&s2, TableId::PowerSpendGains).is_empty(), "a pre-attachment backlog grant captured while CountryLinks was unavailable on hour 0 must not be counted if republished after recovery");
+    assert_eq!(spend(&s2, 10, POLITICAL, Total::GAINS, "gained"), None);
+    assert_resumes_match(&[0, 1], 2, startup_outage);
 }

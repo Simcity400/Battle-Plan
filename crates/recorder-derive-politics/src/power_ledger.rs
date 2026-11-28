@@ -22,8 +22,8 @@ use inputs::{Witness, invalid};
 use tally::{DayRuns, ItemDays, Payment, midnight};
 
 const READS: &[Read] = &[
-    Read { table: TableId::Countries, columns: Columns::These(&inputs::COUNTRY_SLOT), watch: Watch::Changed, required: true },
-    Read { table: TableId::CountryLinks, columns: Columns::These(&inputs::LINK_SLOT), watch: Watch::Changed, required: true },
+    Read { table: TableId::Countries, columns: Columns::These(&inputs::COUNTRY_SLOT), watch: Watch::Changed, required: false },
+    Read { table: TableId::CountryLinks, columns: Columns::These(&inputs::LINK_SLOT), watch: Watch::Changed, required: false },
     Read { table: TableId::CountryPowerChanges, columns: Columns::Every, watch: Watch::Changed, required: false },
     Read { table: TableId::CountryPowerDaily, columns: Columns::Every, watch: Watch::Dropped, required: false },
     Read { table: TableId::CountryPowerDailyCosts, columns: Columns::Every, watch: Watch::Changed, required: false },
@@ -2165,6 +2165,41 @@ impl Writer for PowerLedger {
         let at = hour.hour;
         if hour.first || self.run_first.is_none() {
             self.run_first = Some(at);
+        }
+        let missing_identity = [TableId::Countries, TableId::CountryLinks]
+            .into_iter()
+            .find_map(|table| {
+                let status = hour.status(table);
+                (status != Status::Complete).then_some((table, status))
+            });
+        if let Some((table, status)) = missing_identity {
+            for log in [TableId::PowerSpendDays, TableId::PowerSpendPayments, TableId::PowerSpendGains] {
+                recorder_derive_framework::forces::forget_listed(hour, out, log);
+            }
+            if hour.first {
+                for row in inputs::changes(hour)?.rows {
+                    if instant_gain(&row).is_some() || charge(&row).is_some() {
+                        self.seen_changes.entry((row.country, row.epoch)).or_default().insert(row.sequence);
+                    }
+                }
+            }
+            let reason = match status {
+                Status::NotRecorded => format!("{}: not recorded", table.words()),
+                Status::Truncated { missing } => format!("{}: read only in part ({missing} rows not read)", table.words()),
+                Status::Unavailable { .. } => format!("{}: not available", table.words()),
+                Status::Complete => unreachable!(),
+            };
+            for output in TABLES {
+                match status {
+                    Status::Unavailable { .. } => out.status(output.table(), status),
+                    _ => out.unavailable(output.table(), reason.as_bytes()),
+                }
+            }
+            self.rebuild = true;
+            self.recover |= !hour.first;
+            self.idle = false;
+            self.last = None;
+            return Ok(());
         }
         let whole = hour.fresh || self.rebuild;
         let adjacent = !hour.fresh && self.last.and_then(|last| last.checked_add(1)) == Some(at);
