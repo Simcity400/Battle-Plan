@@ -9,6 +9,9 @@ use crate::{Source, products::scoped_text::{Lexical, read_with_lexical}};
 
 const MAX_CACHED_TABLE_DATES: usize = 256;
 
+mod variable;
+use variable::VariableDates;
+
 thread_local! {
     static READ_DATES: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
@@ -208,9 +211,21 @@ pub struct ReadDates {
     order: VecDeque<(TableId, Selection)>,
     links: Option<OwnerHistory>,
     countries: Option<OwnerHistory>,
+    variables: Option<Arc<Mutex<VariableDates>>>,
 }
 
+#[derive(Default)]
+struct ScriptedReadDates(Arc<Mutex<ReadDates>>);
+
 impl ReadDates {
+    pub fn for_scripted_source(source: &Source) -> Arc<Mutex<Self>> {
+        let kept = source.state::<ScriptedReadDates>();
+        let dates = Arc::clone(&kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0);
+        dates.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .variables.get_or_insert_with(|| source.state::<VariableDates>());
+        dates
+    }
+
     fn insert_dates(&mut self, table: TableId, selection: Selection, dates: Vec<i32>) {
         let key = (table, selection);
         if self.tables.contains_key(&key) {
@@ -317,7 +332,14 @@ impl ReadDates {
         }
         for (table, selection) in uncached {
             check_cancel(cancelled)?;
-            let Ok(dates) = selection.dates(replay, run, table, first, last) else { return Ok(hour) };
+            let indexed = match self.variables.as_ref() {
+                Some(variables) if table == TableId::ScriptVariableValues => {
+                    variables.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .dates(replay.recording(), run, first, last, &selection, cancelled)?
+                }
+                _ => None,
+            };
+            let Ok(dates) = indexed.map_or_else(|| selection.dates(replay, run, table, first, last), Ok) else { return Ok(hour) };
             let next = dates.get(dates.partition_point(|&at| at <= hour)).copied();
             self.insert_dates(table, selection, dates);
             if let Some(next) = next {
@@ -346,6 +368,12 @@ impl ScriptedInputs {
 
     pub fn with_lexical(mut self, source: &Source) -> Self {
         self.lexical = Some(Lexical::for_source(source));
+        self
+    }
+
+    pub fn with_variable_dates(mut self, source: &Source) -> Self {
+        self.dates.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .variables = Some(source.state::<VariableDates>());
         self
     }
 
