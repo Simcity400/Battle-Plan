@@ -641,6 +641,11 @@ fn a_typed_view_spare_keeps_only_the_next_patch_candidate() {
 
     assert!(!first.is_shared(), "the first snapshot can drop when its last reader lets go");
     assert!(second.is_shared(), "the predecessor can still supply the next patch");
+
+    made.built = Some((made.stamp, make()));
+    made.touched = Ok(super::Touched::default());
+    made.make(COUNTRIES.index(), super::view::EVERY, (&mirror, &entry.kinds()[COUNTRIES.index()], false), &mut Vec::new(), &mut super::Made::default());
+    assert!(!second.is_shared(), "a step that reuses the current view releases the spare");
 }
 
 #[test]
@@ -656,9 +661,11 @@ fn a_mirror_short_of_the_posted_hour_makes_no_frame_of_that_hour() {
     apart.post_at(4);
     assert_eq!(reader.frame().map(|frame| frame.hour), Some(3), "no frame of hour 4 from mirrors standing at 3");
     assert!(views.held().iter().any(|&(table, bytes)| table == COMBATS && bytes > 0));
+    super::lock(&views.shared.jobs).made.told.push((COMBATS.index(), super::view::EVERY, Some(vec![(1, 1)])));
     drop(apart);
     assert!(views.held().is_empty(), "a handle outliving its store cannot keep the built views alive");
     assert!(reader.frame().is_none());
+    assert!(super::lock(&views.shared.jobs).made.told.is_empty(), "a retired store keeps no pending row changes");
 }
 
 #[test]

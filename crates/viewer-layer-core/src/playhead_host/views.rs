@@ -314,10 +314,10 @@ impl Columns {
     }
 
     pub fn remake(&mut self, table: TableId, columns: u64, previous: Option<SharedView>, since: Result<&[(u128, u64)], Whole>, from: Source<'_>, order: &mut Vec<(u128, u32)>) -> (TableView, view::Made, Make) {
-        let spare = self.spare.take();
         let (previous, touched) = match (previous, since) {
             (Some(previous), Ok(touched)) if holds_rows(&previous) => (previous, touched),
             (previous, since) => {
+                self.spare = None;
                 let why = match (previous, since) {
                     (_, Err(why)) => why,
                     (None, _) => Whole::First,
@@ -330,7 +330,7 @@ impl Columns {
         let shared = previous.is_shared();
         let on_newest = self.costs.patching(touched.len(), if shared { rows } else { 0 });
         let mut made = view::Made::default();
-        if let Some((spare, since)) = spare.filter(|(spare, _)| !spare.is_shared()) {
+        if let Some((spare, since)) = self.spare.take().filter(|(spare, _)| !spare.is_shared()) {
             let anew = touched::merge(since.into_iter().chain(touched.iter().copied()).collect());
             let on_spare = self.costs.patching(anew.len(), 0);
             if on_spare < on_newest && on_spare < rows as f64 {
@@ -1186,7 +1186,7 @@ impl Drop for Store {
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
-        lock(&self.shared.jobs).from = None;
+        *lock(&self.shared.jobs) = Jobs { stop: true, ..Jobs::default() };
         writing(&self.shared).iter_mut().for_each(|kept| *kept = None);
         lock(&self.shared.readers).clear();
     }
