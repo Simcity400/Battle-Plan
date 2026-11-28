@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Canvas2D } from '../../charts/textWidth.ts';
 import { followedProduct, refusedHours, type FollowQuery } from '../../dashboard/regionTime.ts';
+import { Facts } from '../../dashboard/follow/facts.ts';
 import { computeTimeAxisTicks, ROW_SECTION_HEIGHT } from '../../draw/kit.ts';
 import { displayedHour } from '../boundedView.ts';
 import { buildExactRequests, buildStripKeyframe, compileFollowPlan, exactEntries } from '../broker.ts';
@@ -89,6 +90,13 @@ test('heat timelines follow the head and read only closed days with reusable ran
     if (declaration === supremacyTimelineDeclaration) {
       assert.deepEqual(subscriptions.map(sub => sub.name), ['now', ...plan.entries.slice(1).map(entry => entry.name)]);
       assert.equal(subscriptions.length, 58);
+      const tiles = subscriptions.slice(1);
+      assert.ok(tiles.every(tile => tile.channel === 'panel' && tile.product === 'naval-supremacy' && tile.query.panel === tile.product));
+      const facts = new Facts<unknown>();
+      facts.follow(1, 1, tiles[0]!.channel);
+      const historyPrefix = { firstHour, lastHour: 23 };
+      facts.panels(1, 0, [{ kind: 'data', id: 1, hour: 24, value: historyPrefix }]);
+      assert.equal(facts.select(1, 24)?.value, historyPrefix);
       assert.deepEqual(subscriptions[1]?.query, { panel: 'naval-supremacy', branchId: '1', country: 'AAA', firstHour, lastHour: DAY_TILE_HOURS - 1 });
       for (const hour of [firstHour, 24, DAY_TILE_HOURS - 1, DAY_TILE_HOURS, DAY_TILE_HOURS + 24, lastHour]) {
         assert.equal(ask(hour).length, 0, 'a followed tile never makes an exact playback request');
