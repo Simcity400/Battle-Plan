@@ -1116,6 +1116,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn equipment_pools_share_only_within_the_same_recorded_stack() {
+        use content_reader_layers::content::{Generation, visual::fixtures::Machine};
+
+        content_reader_script::test_game::enter();
+        let _generation = Generation::enter();
+        let machine = Machine::new("equipment-pool-sharing");
+        for (layer, model) in [("base", "first"), ("mod", "second")] {
+            machine.write(
+                &format!("{layer}/gfx/interface/equipmentdesigner/graphic_db/pools.txt"),
+                format!("default = {{ tank = {{ pool = {{ models = {{ {model} }} }} }} }}").as_bytes(),
+            );
+        }
+        let base = machine.recorded(&["base"]);
+        let modded = machine.recorded(&["base", "mod"]);
+        let first = Content::load(&base, &names()).unwrap();
+        let repeated = Content::load(&base, &names()).unwrap();
+        let second = Content::load(&modded, &names()).unwrap();
+        let pool = |content: &Content| content.models().next().unwrap().model.as_ptr();
+        assert_eq!(first.models().next().unwrap().model, "first");
+        assert_eq!(second.models().next().unwrap().model, "second");
+        assert_eq!(pool(&first), pool(&repeated));
+        assert_ne!(pool(&first), pool(&second));
+    }
+
     fn content(text: &[u8]) -> io::Result<Content> {
         let mut content = Content::default();
         let key_names = KeyNames {

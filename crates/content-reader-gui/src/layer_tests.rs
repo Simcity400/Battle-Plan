@@ -141,15 +141,20 @@ fn bootstrap_files_open_by_their_literal_paths() {
 #[test]
 fn a_mods_interface_file_with_refusals_reads_the_recordings_file() {
     content_reader_script::test_game::enter();
+    let _generation = content_reader_layers::content::Generation::enter();
     let machine = Machine::new("interface-fallback");
     machine.write(
         "base/interface/a.gfx",
         br#"spriteTypes = { spriteType = { name = "GFX_a" texturefile = "gfx/a.dds" } }"#,
     );
     machine.local("art.mod", "name=\"Art\"", "art");
+    machine.write(
+        "recorded/interface/z.gfx",
+        br#"spriteTypes = { spriteType = { name = "GFX_a" texturefile = "gfx/recorded.dds" } }"#,
+    );
     let zeros = ["0"; 12].join(" ");
     machine.write(
-        "art/interface/a.gfx",
+        "art/interface/z.gfx",
         format!(
             "spriteTypes = {{ spriteType = {{ name = \"GFX_a\" texturefile = \"gfx/b.dds\" \
              anchor = {{ {zeros} 5 }} }} }}"
@@ -160,7 +165,7 @@ fn a_mods_interface_file_with_refusals_reads_the_recordings_file() {
         "art/interface/b.gfx",
         br#"spriteTypes = { spriteType = { name = "GFX_b" texturefile = "gfx/b.dds" } }"#,
     );
-    let mut layers = machine.recorded(&["base"]);
+    let mut layers = machine.recorded(&["base", "recorded"]);
     let reads = layers.report_uncovered_reads();
     apply(
         &mut layers,
@@ -181,9 +186,24 @@ fn a_mods_interface_file_with_refusals_reads_the_recordings_file() {
     let a = file("interface/a.gfx").get(b"GFX_a").unwrap();
     assert!(a.refusals.is_empty(), "{:?}", a.refusals);
     assert!(file("interface/b.gfx").get(b"GFX_b").is_some());
+    use crate::gui::native::{resources::Registry, sprites::read_object_layers};
+    let presentation = layers.presentation();
+    let window = Registry::load(presentation).unwrap();
+    let map = Registry::from_files(read_object_layers(presentation).unwrap());
+    for registry in [&window, &map] {
+        assert_eq!(registry.sprite_file(b"GFX_a"), Some("interface/z.gfx"));
+        let sprite = registry.sprite(b"GFX_a").unwrap();
+        assert_eq!(sprite.kind.plain().unwrap().texture, b"gfx/recorded.dds");
+        assert!(sprite.refusals.is_empty());
+    }
+    let combat = Registry::with_sprites(std::sync::Arc::new(map), "generated".into(), Vec::new());
+    assert!(std::ptr::eq(
+        window.sprite(b"GFX_a").unwrap(),
+        combat.sprite(b"GFX_a").unwrap()
+    ));
     let refusals = reads.overlay_refusals().unwrap();
     assert!(
-        refusals.contains("interface file interface/a.gfx ("),
+        refusals.contains("interface file interface/z.gfx ("),
         "{refusals}"
     );
 }
