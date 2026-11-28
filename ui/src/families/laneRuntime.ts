@@ -805,6 +805,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         reportInvalidPlayback(binding);
         animation = undefined;
       }
+      const metadataOnly = playbackOwnsPixels || (animation !== undefined && input.deferPlaybackDraw === 'handover');
       const playbackUnavailable = animation?.unavailable(model) === true;
       const status = family.status(model);
       const settlePlayback = input.restorePlayback;
@@ -971,7 +972,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           keep.artShown = shownKey;
           keep.art.requestVisible(shown, keep.artUrls ?? projected.artUrls);
         }
-        const canKeep = playbackOwnsPixels || (input.deferExpiredPlaybackRefusal && playbackUnavailable)
+        const canKeep = metadataOnly || (input.deferPlaybackDraw === 'expired-refusal' && playbackUnavailable)
           || (!settlePlayback && !input.playbackOwnsPixels && !slotDirty && keep.content && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame));
         const painted = canKeep ? { drew: false, next: false } : drawCanvas();
         const incremental = typeof painted === 'object';
@@ -983,7 +984,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.drawn = { binding, model, layout, hour: drawn };
         keep.drawKey = drawKey;
         keep.hit = point => family.hit(frame, point);
-        if (!incremental || painted.drew || !keep.content || (playbackOwnsPixels && drawChanged)) keep.content = content();
+        if (!incremental || painted.drew || !keep.content || (metadataOnly && drawChanged)) keep.content = content();
       }
       keep.lastTarget = activeTarget;
 
@@ -1163,7 +1164,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         fields,
         motion: keep.motion,
         ...(playback ? { playback } : {}),
-        ...(playbackOwnsPixels ? { playbackOwnsPixels: true } : {}),
+        ...(metadataOnly ? { playbackOwnsPixels: true } : {}),
         ...(playbackUnavailable ? { playbackUnavailable: true } : {}),
         repainted,
         ...(keep.motion || Number.isFinite(keep.expiry) ? { ephemeral: true } : {}),

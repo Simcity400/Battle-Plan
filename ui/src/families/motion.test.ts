@@ -284,6 +284,7 @@ function fixture(budget: number) {
   const presented: Presented<TestBitmap>[] = [];
   const served: Parameters<NonNullable<LaneHost<TestBitmap>['served']>>[0][] = [];
   const hits: (string | null)[] = [];
+  const hoverUpdates: number[] = [];
   const released: number[] = [];
   const sampled: number[] = [];
   const painted: number[] = [];
@@ -322,7 +323,7 @@ function fixture(budget: number) {
     } },
      crop: async () => [], release: bytes => released.push(bytes),
     present: reply => presented.push(reply), served: reply => served.push(reply),
-    hit: (_id, key) => hits.push(key), fail: assert.fail, later: fn => later.push(fn),
+    hit: (_id, key) => hits.push(key), playbackHover: id => hoverUpdates.push(id), fail: assert.fail, later: fn => later.push(fn),
     clock: () => now, budget,
   });
   const window = lane.facts.window.bind(lane.facts);
@@ -388,7 +389,7 @@ function fixture(budget: number) {
   };
   const barWidth = () => Number(bar().args[2]);
   return {
-    lane, canvas, record, request, clock, tick, operations, bar, barWidth, presented, served, hits, released, bind, mount, sampled, painted, drain, spendOnFactSelection,
+    lane, canvas, record, request, clock, tick, operations, bar, barWidth, presented, served, hits, hoverUpdates, released, bind, mount, sampled, painted, drain, spendOnFactSelection,
     selectionCost: (value: number) => { selectionCost = value; selections = 0; },
     selections: () => selections,
     finishArtwork: () => settleArtwork({ width: 20, height: 13, close() {} } as ImageBitmap),
@@ -838,6 +839,60 @@ describe('Ordered bar playback', () => {
     assert.deepEqual(f.hits, ['row:GER', null, 'row:FRA']);
   }));
 
+  it('refreshes stationary hover when the exact pause picture installs', async () => withLane(async f => {
+    f.record(100, { value: 100, france: 50 });
+    f.record(101, { value: 100, france: 200 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const first = f.presented.at(-1)!.entries[0]!;
+    await f.request(100, 1, 1, true);
+    f.tick(0);
+    const point = topRowPoint(first.fields.nav);
+    f.lane.pointer(1, 0, point, first.id, true);
+    assert.deepEqual(f.hits, ['row:GER']);
+    f.clock(101.5, 1);
+    f.tick(0);
+    assert.deepEqual(f.hoverUpdates, [1], 'the changed row invalidates the old tooltip');
+    f.lane.pointer(1, 0, point, first.id, true);
+    assert.deepEqual(f.hits, ['row:GER', null]);
+
+    f.clock(101, 0);
+    await f.request(101);
+    const paused = f.presented.at(-1)!.entries[0]!;
+    assert.equal(paused.lo, 101);
+    assert.deepEqual(f.hoverUpdates, [1]);
+    await f.request(101, 0, 1, [paused]);
+    assert.deepEqual(f.hoverUpdates, [1, 1], 'the paused installation rechecks the same point');
+    f.lane.pointer(1, 0, point, paused.id, true);
+    assert.equal(f.hits.at(-1), 'row:FRA');
+  }));
+
+  it('does not invalidate a stationary hover against an older acknowledgement', async () => withLane(async f => {
+    f.record(100, { value: 100, france: 50 });
+    f.record(101, { value: 100, france: 200 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    await f.request(100, 1, 1, true);
+    f.clock(101, 1);
+    f.tick(0);
+    await f.request(101, 1);
+    const newer = f.presented.at(-1)!.entries[0]!;
+    assert.equal(newer.lo, 101);
+    const point = topRowPoint(newer.fields.nav);
+    f.lane.pointer(1, 0, point, newer.id, true);
+    assert.equal(f.hits.at(-1), 'row:FRA');
+    for (let i = 0; i < 4; i++) f.tick(10);
+    assert.deepEqual(f.hoverUpdates, [], 'the page-named installation stays authoritative while its acknowledgement is deferred');
+    await f.request(101, 1, 1, [newer]);
+    assert.deepEqual(f.hoverUpdates, []);
+
+    f.lane.mount(1, [1], 'bars');
+    assert.deepEqual(f.hoverUpdates, [1], 'remounting invalidates the tracked hover before the new binding paints');
+    f.bind();
+    await f.request(101, 1);
+    assert.deepEqual(f.hoverUpdates, [1, 1], 'the tracked point survives the remount and can match the new paint');
+  }));
+
   it('does not paint or publish newly segmented rows between page requests', async () => withLane(async f => {
     f.bind(1, 1, false, true);
     f.record(100, { value: 100 });
@@ -1109,6 +1164,13 @@ describe('Ordered bar playback', () => {
       f.canvas.clearOps();
       f.tick(0);
       assert.ok(!f.operations().some(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE), cut);
+
+      if (cut === 'proof hole') {
+        f.canvas.clearOps();
+        f.lane.supply(1, { statics: {} });
+        await f.request(125, 1, 2, false, false, 126);
+        assert.ok(!f.operations().some(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE), 'reacquiring the renderer cannot bring the carried bar back');
+      }
 
       f.clock(126.5, 1, 2, true);
       f.tick(0);
