@@ -2610,16 +2610,18 @@ impl Viewer {
         self.playhead_map.as_ref().is_some_and(|side| side.on_screen().is_some_and(|on| on.drawn.is_some()))
     }
 
+    fn uses_map_seed(&self) -> bool {
+        (self.embedded.is_some() || self.dashboard_map)
+            && self.capture.is_none()
+            && !self.options.window_dump
+    }
+
     fn complete_first_picture(&mut self, playback: &mut viewer_playback::playback::Playback) {
         if self.shown_whole || !self.playhead.is_some_and(|head| self.picture_whole(head, self.playing)) {
             return;
         }
         self.shown_whole = true;
-        if (self.embedded.is_some() || self.dashboard_map)
-            && self.capture.is_none()
-            && !self.options.window_dump
-            && let Some(frame) = playback.release_bootstrap_frame()
-        {
+        if self.uses_map_seed() && let Some(frame) = playback.release_bootstrap_frame() {
             self.retire(frame);
         }
     }
@@ -3050,6 +3052,7 @@ impl Viewer {
         self.options.replay = Some(path.clone());
         let options = self.options.clone();
         let service = self.service();
+        let map_seed = self.uses_map_seed();
         let verify_revision = service.is_some();
         let config = self.config.clone();
         let mut content = self
@@ -3083,6 +3086,7 @@ impl Viewer {
                 );
                 drop(startup_content);
                 let initial = InitialHour {
+                    map_seed,
                     branch: options.branch,
                     hour: options.hour,
                     hour_fraction: options.hour_fraction,

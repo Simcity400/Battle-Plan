@@ -15,6 +15,7 @@ fn the_window_lets_go_of_its_load_time_frame_after_its_first_complete_draw() -> 
         fixture.document.content.clone(),
         fixture.document.playback.replay_handle(),
         &crate::document::InitialHour {
+            map_seed: false,
             branch: Some(fixture.input.branch),
             hour: Some(fixture.input.hour),
             hour_fraction: 0.,

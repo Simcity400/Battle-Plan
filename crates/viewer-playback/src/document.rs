@@ -87,6 +87,7 @@ pub struct InitialHour {
     pub branch: Option<BranchId>,
     pub hour: Option<replay_data::Hour>,
     pub hour_fraction: f32,
+    pub map_seed: bool,
 }
 
 pub struct Document {
@@ -1602,10 +1603,12 @@ impl Document {
             None,
         )?;
         document.bind_source(&source);
-        if !matches!(
-            document.playback.current(),
-            crate::map_source::Current::Frame(_)
-        ) {
+        if !initial.map_seed
+            && !matches!(
+                document.playback.current(),
+                crate::map_source::Current::Frame(_)
+            )
+        {
             let (branch, hour) = (document.playback.branch(), document.playback.hour());
             document.playback.seek(branch, hour)?;
         }
@@ -3181,7 +3184,11 @@ impl Document {
     }
 
     fn initial_playback(replay: Arc<Replay>, initial: &InitialHour) -> io::Result<Playback> {
-        let mut playback = Playback::shared(replay)?;
+        let mut playback = if initial.map_seed {
+            Playback::unloaded(replay)?
+        } else {
+            Playback::shared(replay)?
+        };
         if let Some(hour) = initial.hour {
             let branch = if let Some(branch) = initial.branch {
                 branch
@@ -3191,8 +3198,13 @@ impl Document {
                     .replay()
                     .timelines()
                     .map(|timelines| timelines.main);
+                const CAMPAIGN: &[replay_data::rows::TableId] = &[replay_data::rows::TableId::Campaign];
+                let tables = initial.map_seed.then_some(CAMPAIGN);
                 if let Some(main) = main
-                    && matches!(playback.replay().seek(main, hour)?, SeekResult::Frame(_))
+                    && matches!(
+                        playback.replay().seek_selected(main, hour, tables)?,
+                        SeekResult::Frame(_)
+                    )
                 {
                     candidates.push(main);
                 }
@@ -3201,7 +3213,7 @@ impl Document {
                         continue;
                     }
                     if matches!(
-                        playback.replay().seek(branch.id, hour)?,
+                        playback.replay().seek_selected(branch.id, hour, tables)?,
                         SeekResult::Frame(_)
                     ) {
                         candidates.push(branch.id);
@@ -3221,7 +3233,17 @@ impl Document {
                     }
                 }
             };
-            playback.seek(branch, hour)?;
+            if initial.map_seed {
+                playback.seek_map_seed(branch, hour)?;
+            } else {
+                playback.seek(branch, hour)?;
+            }
+        } else if initial.map_seed {
+            let branch = initial.branch.unwrap_or_else(|| playback.branch());
+            let (hour, _) = playback
+                .range(branch)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("unknown branch {branch}")))?;
+            playback.seek_map_seed(branch, hour)?;
         } else if let Some(branch) = initial.branch {
             playback.select_branch(branch)?;
         }
@@ -5259,6 +5281,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn map_bootstrap_reads_only_the_seed_and_an_explicit_seek_reads_the_full_frame() {
+        let replay = Arc::new(
+            crate::playback::tests::fixture()
+                .into_timelines(&Default::default())
+                .unwrap(),
+        );
+        let initial = InitialHour {
+            branch: None,
+            hour: Some(105),
+            hour_fraction: 0.0,
+            map_seed: true,
+        };
+        let mut playback = Document::initial_playback(replay, &initial).unwrap();
+        let frame = playback.frame().unwrap();
+        assert_eq!((frame.branch, frame.hour), (1, 105));
+        assert_eq!(frame.tables.iter().filter(|view| !view.is_not_selected()).count(), 8);
+        assert!(frame.complete::<replay_data::rows::tables::Countries>().is_ok());
+        assert!(frame.tables[replay_data::rows::TableId::Provinces.index()].is_not_selected());
+        assert!(!playback.holds_source());
+
+        playback.seek(1, 105).unwrap();
+        assert!(playback.frame().unwrap().complete::<replay_data::rows::tables::Provinces>().is_ok());
+    }
+
+    #[test]
     fn overlay_air_reuses_camera_independent_products_for_the_exact_selection() {
         let mut cached = OverlayAir {
             selected: Arc::new(Vec::new()),
@@ -5802,6 +5849,7 @@ mod tests {
                 &options,
                 false,
                 &InitialHour {
+                    map_seed: false,
                     branch: Some(initial.branch),
                     hour: Some(initial.first_hour),
                     hour_fraction: 0.0,

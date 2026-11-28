@@ -657,6 +657,7 @@ fn run(request: Request, window: Window) -> io::Result<()> {
         &resolve,
         options.allow_unverified,
         &crate::document::InitialHour {
+            map_seed: false,
             branch: options.branch,
             hour: options.hour,
             hour_fraction: 0.0,

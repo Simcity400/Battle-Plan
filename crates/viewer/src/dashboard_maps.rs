@@ -1032,6 +1032,7 @@ impl DashboardMaps {
                     return;
                 }
                 let initial = InitialHour {
+                    map_seed: true,
                     branch: None,
                     hour: None,
                     hour_fraction: 0.0,
