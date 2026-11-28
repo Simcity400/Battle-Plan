@@ -805,3 +805,31 @@ pub fn dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json:
         }
     }))
 }
+
+#[cfg(test)]
+#[test]
+fn dated_window_keeps_gap_position_before_a_paginated_row() {
+    let entries = [100, 104].into_iter().enumerate().map(|(at, hour)| Occurrence {
+        id: at as u128,
+        date: hour,
+        observed: hour,
+        kind: u16::from(DivisionEventRow::CREATED),
+        roles: Box::new([]),
+        subjects: Box::new([]),
+        states: Box::new([(hour, SINGLE)]),
+        sort_keys: Box::new([]),
+        text: Default::default(),
+        payload: Line::Single(at),
+    }).collect();
+    let gap = MissingSpan { first_hour: 102, last_hour: 102, reason: "fixture gap".into() };
+    let index = Arc::new(Index::new(entries, vec![gap], &[]).unwrap());
+    let holders = Holders::default();
+    let ask = Ask {
+        hour: 104, from: None, to: None, gap_end: None, selection: None, subject: None, kinds: None, states: Some(&[SINGLE]),
+        search: None, order: Order::Date(Direction::Descending), live_first: false, offset: 1, limit: 1, chips: &[],
+    };
+    let exact = index.ask(&holders, &ask).unwrap();
+    assert_eq!(exact.gaps[0].before, "1");
+    let mut cursor = index.dated_cursor(&holders, &ask).unwrap();
+    assert_eq!(dated_window(&index, &ask, cursor.advance(ask.hour)), exact);
+}

@@ -48,9 +48,8 @@ fn sightings_and_removals_follow_the_observation_hour_with_separate_coverage() {
                 (TableId::DivisionEquipmentDeletions, TableRows::DivisionEquipmentDeletions(deletions), 106),
             ] {
                 frame.metrics.table_ns[id.index()] = 1;
-                *frame.tables[id.index()] = if hour == missing || id == TableId::DivisionEquipmentDeletions && hour == 104 {
-                    TableView::Unavailable { reason: "fixture gap".into() }
-                } else { TableView::Complete(rows) };
+                *frame.tables[id.index()] =
+                    if hour == missing { TableView::Unavailable { reason: "fixture gap".into() } } else { TableView::Complete(rows) };
             }
             frame
         })
@@ -99,7 +98,6 @@ fn sightings_and_removals_follow_the_observation_hour_with_separate_coverage() {
     assert_eq!(lost.rows.len(), 1);
     assert_eq!(lost.rows[0].event.as_ref().unwrap().status, "merged");
     assert!(lost.missing.iter().any(|gap| gap.first_hour == 106 && gap.reason.contains("deletions")));
-    assert!(lost.missing.iter().any(|gap| gap.first_hour == 104 && gap.before == "1"));
     let created = ask(107, json!({"events": "created"}));
     assert!(created.missing.iter().all(|gap| !gap.reason.contains("deletions")));
     assert!(created.missing.iter().any(|gap| gap.first_hour == 107 && gap.reason.contains("census")));
