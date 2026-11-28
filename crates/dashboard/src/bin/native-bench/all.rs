@@ -732,6 +732,8 @@ impl Options {
                 _ => return Err(io::Error::other(format!("Unknown option {flag}"))),
             }
         }
+        out.views.sort_unstable();
+        out.views.dedup();
         Ok(out)
     }
 }
@@ -841,7 +843,8 @@ pub(super) fn run(
             &json!({
                 "event": "run", "trace_version": 2, "recording": recording, "campaign": metadata.campaign_key,
                 "recording_bytes": path.metadata()?.len(), "format": metadata.format, "branch": branch.id,
-                "country": tag, "requested_start": start, "first": first, "last": last, "quantum": quantum,
+                "country": tag, "view_selectors": options.views, "requested_start": start,
+                "first": first, "last": last, "quantum": quantum,
                 "step_threads": 2, "fetch_threads": 1, "service_threads": 1,
             }),
         )?;
