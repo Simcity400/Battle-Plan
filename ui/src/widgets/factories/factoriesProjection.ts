@@ -108,7 +108,6 @@ function buildPartSegments(
   baseColor: string | undefined,
 ): Pick<BarsDataRow, 'segments' | 'segmentsIncomplete'> & { readonly tooltipItems: TooltipListItem[] } {
   if (!options.split && options.mode !== 'built') return { tooltipItems: [] };
-  if (total <= 0) return { tooltipItems: [] };
 
   const tooltipItems: TooltipListItem[] = [];
   if (!options.split) {
@@ -116,9 +115,10 @@ function buildPartSegments(
     if (damaged === null) return { tooltipItems, segmentsIncomplete: true };
     const amount = numericOf(damaged);
     if (amount === null) {
-      tooltipItems.push({ label: 'Damaged', missingReason: reasonOf(damaged) });
+      if (total > 0) tooltipItems.push({ label: 'Damaged', missingReason: reasonOf(damaged) });
       return { tooltipItems, segmentsIncomplete: true };
     }
+    if (total <= 0) return { tooltipItems };
     const hurt = Math.min(total, Math.max(0, amount));
     tooltipItems.push({ label: 'Damaged', value: countText(hurt) });
     if (hurt <= 0) return { tooltipItems };
@@ -139,17 +139,18 @@ function buildPartSegments(
     const amount = numericOf(value);
     if (amount === null) {
       unknownReason ??= reasonOf(value);
-      tooltipItems.push({ label: spec.label, swatch: spec.color, missingReason: reasonOf(value) });
+      if (total > 0) tooltipItems.push({ label: spec.label, swatch: spec.color, missingReason: reasonOf(value) });
       continue;
     }
+    const damagedValue = spec.damagedSource ? partValue(index, spec.damagedSource, wireName) : null;
+    const damaged = damagedValue === null ? null : numericOf(damagedValue);
+    damageUnknown ||= spec.damagedSource !== undefined && damaged === null;
+    if (total <= 0) continue;
     const whole = Math.max(0, amount);
     known += whole;
     tooltipItems.push({ label: spec.label, swatch: spec.color, value: countText(whole) });
     if (whole <= 0) continue;
-    const damagedValue = spec.damagedSource ? partValue(index, spec.damagedSource, wireName) : null;
-    const damaged = damagedValue === null ? null : numericOf(damagedValue);
     const damagedLabel = damagedGroupLabel({ label: spec.label });
-    damageUnknown ||= spec.damagedSource !== undefined && damaged === null;
     if (damagedValue !== null && damaged === null) {
       tooltipItems.push({ label: damagedLabel, swatch: spec.color, missingReason: reasonOf(damagedValue) });
     }

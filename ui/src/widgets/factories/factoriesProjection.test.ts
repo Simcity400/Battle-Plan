@@ -146,17 +146,28 @@ test('a missing part leaves the rest of the proven total as not recorded, and mi
   assert.equal(unknownDamage.segments, undefined, 'the whole bar stays one known total');
   assert.equal(unknownDamage.segmentsIncomplete, true);
   assert.deepEqual(unknownDamage.tooltip?.items?.find(item => item.label === 'Damaged'), { label: 'Damaged', missingReason: 'Damage not recorded' });
+  const zeroTotal = factoriesProjection.project(partsView(300, panelOf(300, [['GER', 0, 'Damage not recorded']], ['built7', 'damaged7'])), built).rows[0] as BarsDataRow;
+  assert.equal(zeroTotal.segmentsIncomplete, true, 'a zero total does not prove the damage reading');
+  assert.equal(zeroTotal.tooltip?.items?.length, 1, 'the recorded zero retains its existing readout');
 
-  const partDamage = factoriesProjection.project(
-    partsView(300, panelOf(300, [['GER', 100, 60, 10, 30, 6, 'Damage not recorded', 0]], ['built7', 'free1', 'free2', 'free4', 'damaged1', 'damaged2', 'damaged4'])), {
-      ...built,
-      split: true,
-      parts: BASE_OPTS.parts.map((part, at) => ({ ...part, damagedSource: `damaged${[1, 2, 4][at]}` })),
-    }).rows[0] as BarsDataRow;
+  const builtSplit = {
+    ...built,
+    split: true,
+    parts: BASE_OPTS.parts.map((part, at) => ({ ...part, damagedSource: `damaged${[1, 2, 4][at]}` })),
+  };
+  const measures = ['built7', 'free1', 'free2', 'free4', 'damaged1', 'damaged2', 'damaged4'];
+  const partDamage = factoriesProjection.project(partsView(300, panelOf(300, [
+    ['GER', 100, 60, 10, 30, 6, 'Damage not recorded', 0],
+  ], measures)), builtSplit).rows[0] as BarsDataRow;
   assert.deepEqual(partDamage.segments?.map(s => [s.key, Math.round(s.share * 100)]), [
     ['military', 54], ['damaged:military', 6], ['naval', 10], ['civilian', 30],
   ]);
   assert.equal(partDamage.segmentsIncomplete, true, 'the visible parts cannot establish the missing damage share');
+  const zeroGroup = factoriesProjection.project(partsView(300, panelOf(300, [
+    ['GER', 100, 60, 0, 40, 6, 'Damage not recorded', 0],
+  ], measures)), builtSplit).rows[0] as BarsDataRow;
+  assert.equal(zeroGroup.segmentsIncomplete, true, 'a zero-width factory group can lack recorded damage');
+  assert.ok(!zeroGroup.segments?.some(item => item.key.includes('naval')));
 });
 
 test('the one reply is read and indexed once per picture, not once per country and part', () => {
