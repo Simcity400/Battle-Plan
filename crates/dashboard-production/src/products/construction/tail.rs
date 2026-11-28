@@ -22,7 +22,7 @@ use dashboard_query::{
     series::ranked::GroupSelection,
     timeline::Timeline,
 };
-use dashboard_world::products::{place_name_runs::{PlacePoint, names_at}, place_names::Name};
+use dashboard_world::products::place_name_runs::{PlacePoint, RowNames};
 use replay::campaign::Replay;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -109,13 +109,17 @@ pub struct ConstructionPlaceAt {
 
 impl ConstructionPlaceAt {
     fn points(&self) -> [Option<PlacePoint>; 2] {
-        let state = |id| PlacePoint::State(id, self.at_hour);
-        let first = self.state.map(state);
-        if self.kind == ProjectKind::Railway {
-            [first, self.to_state.filter(|&id| Some(id) != self.state).map(state)]
-        } else {
-            [first.or_else(|| self.province.map(|id| PlacePoint::Province(id, self.at_hour))), None]
-        }
+        place_points(self.kind, (self.state, self.to_state, self.province), self.at_hour)
+    }
+}
+
+fn place_points(kind: ProjectKind, (state, to_state, province): (Option<u32>, Option<u32>, Option<u32>), hour: i32) -> [Option<PlacePoint>; 2] {
+    let at_state = |id| PlacePoint::State(id, hour);
+    let first = state.map(at_state);
+    if kind == ProjectKind::Railway {
+        [first, to_state.filter(|&id| Some(id) != state).map(at_state)]
+    } else {
+        [first.or_else(|| province.map(|id| PlacePoint::Province(id, hour))), None]
     }
 }
 
@@ -327,6 +331,25 @@ fn sum_levels(list: &[LevelsBuilt], until: i32) -> u32 {
     list.iter().filter(|levels| levels.known_at <= until).fold(0u32, |acc, levels| acc.saturating_add(levels.count))
 }
 
+fn level_events(project: &ConstructionProject) -> impl Iterator<Item = &LevelsBuilt> {
+    project.built.iter().chain(&project.unaccounted).chain(&project.possible)
+}
+
+fn place_hints(project: &ConstructionProject, order_start: bool) -> impl Iterator<Item = PlacePoint> + '_ {
+    let origin = project.output_origin.as_ref();
+    let start = project.created_hour.unwrap_or(project.first_read);
+    let dates = [Some(start), origin.map(|_| project.first_read)].into_iter().flatten();
+    let changes = (!order_start).then(|| {
+        level_events(project).filter(|levels| !levels.carried).map(|levels| levels.hour.unwrap_or(levels.known_at))
+            .chain(project.end.as_ref().map(|end| end.hour.unwrap_or(end.known_at)))
+    });
+    let locations = std::iter::once((project.state, project.to_state, project.province))
+        .chain(origin.map(|origin| (origin.state, origin.to_state, origin.province)));
+    dates.chain(changes.into_iter().flatten()).flat_map(move |hour| {
+        locations.clone().flat_map(move |location| place_points(project.kind, location, hour).into_iter().flatten())
+    })
+}
+
 fn project_state_at(project: &ConstructionProject, hour: i32) -> Option<ProjectState> {
     if hour < project.first_read {
         return None;
@@ -367,7 +390,7 @@ fn project_state_at(project: &ConstructionProject, hour: i32) -> Option<ProjectS
     let rep = last.map_or(0, |r| r.repair_levels.max(0) as u32);
     let total = before.saturating_add(rem).saturating_add(rep).saturating_add(added_later);
 
-    let known_iter = || project.built.iter().chain(&project.unaccounted).chain(&project.possible).filter(|levels| levels.known_at <= hour);
+    let known_iter = || level_events(project).filter(|levels| levels.known_at <= hour);
     let repaired = runs.iter().any(|r| r.repair_levels > 0)
         || known_iter().any(|levels| levels.repair)
         || project.first_repair_tick.is_some_and(|tick| tick <= hour);
@@ -764,7 +787,7 @@ fn tail(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, can
 struct Prepared {
     tail: Arc<Tail>,
     selection: Option<Selection>,
-    places: Mutex<BTreeMap<PlacePoint, Name>>,
+    places: Mutex<RowNames>,
 }
 
 fn prepare(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, params: &ConstructionLogTailParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
@@ -898,9 +921,7 @@ fn attach_places(
     let points: BTreeSet<_> = reply.rows.iter().filter_map(|row| row.place.as_ref()).filter(|place| place.at_hour <= hour)
         .flat_map(|place| place.points().into_iter().flatten()).collect();
     let mut held = prepared.places.lock().unwrap_or_else(PoisonError::into_inner);
-    held.retain(|point, _| points.contains(point));
-    let needed = points.into_iter().filter(|point| !held.contains_key(point)).collect();
-    held.extend(names_at(source, query, load, &needed, cancelled)?);
+    held.update(source, query, load, points, cancelled)?;
     for place in reply.rows.iter_mut().filter_map(|row| row.place.as_mut()) {
         let [first, last] = place.points();
         if place.at_hour > hour {
@@ -920,8 +941,7 @@ fn attach_places(
             }
         }
     }
-    let text_bytes: usize = held.values().map(|name| name.name.as_ref().map_or(0, String::capacity) + name.missing.as_ref().map_or(0, String::capacity)).sum();
-    if text_bytes > dashboard_base::products::MAX_PRODUCT_REPLY_BYTES { held.clear(); }
+    held.trim();
     Ok(())
 }
 
@@ -1092,7 +1112,14 @@ pub fn dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json:
     let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
     let (finish, prepared) = dashboard_base::products::Finish::open(source, load, ConstructionLogTail::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, &params, &AtomicBool::new(false)));
-    let prepared = prepared.map_err(|error| error.to_string())?;
+    let mut prepared = prepared.map_err(|error| error.to_string())?;
+    if params.place_names == Some(true) {
+        let mut places = RowNames::following();
+        let index = &prepared.tail.index;
+        let order_start = params.order == Some(ConstructionOrder::Start);
+        places.hints((0..index.len() as u32).flat_map(|at| place_hints(&index.get(at).payload.project, order_start)));
+        prepared.places = Mutex::new(places);
+    }
     let owned = Owned { replay: source.replay(), timeline: Arc::clone(&query.timeline), holders: Arc::clone(&query.holders) };
     let opened = (params.place_names == Some(true)).then(|| Arc::downgrade(source));
     let load = LoadContext { content: load.content.clone() };
@@ -1274,6 +1301,57 @@ mod tests {
             order: None,
             place_names: None,
         }
+    }
+
+    #[test]
+    fn a_new_construction_location_reuses_the_followed_place_history() {
+        use dashboard_base::test_fixtures::{source, source_with_content, visual_mods::Machine};
+        use replay_data::rows::{StateRow, TableRows};
+        use replay_frame::frame::TableView;
+        use replay_recording::cells::count_reads;
+
+        let machine = Machine::new("construction_place_history");
+        let frames = (718..=720).map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            let project = |id, created_hour, state, queue_ordinal| BuildingConstructionRow {
+                id, country: 9001, queue_ordinal, active_factories: 1, amount: 1, created_hour,
+                building_type: 300, target_location: state, target_state: state, ..Default::default()
+            };
+            let mut buildings = vec![project(10, 718, 64, 0)];
+            if hour >= 720 {
+                buildings.push(project(11, 719, 65, 1));
+            }
+            for rows in [
+                TableRows::Clock(vec![ClockRow { hour, ..Default::default() }]),
+                TableRows::States(vec![
+                    StateRow { id: 64, custom_name: b"North Reach".to_vec(), ..Default::default() },
+                    StateRow { id: 65, custom_name: b"South Reach".to_vec(), ..Default::default() },
+                ]),
+                TableRows::BuildingConstruction(buildings),
+                TableRows::RailwayConstruction(vec![]),
+            ] {
+                let table = rows.table();
+                frame.tables[table.index()] = TableView::Complete(rows).into();
+                frame.metrics.table_ns[table.index()] = 1;
+            }
+            frame
+        }).collect();
+        let (source, load) = source_with_content(frames, &machine.root);
+        let source = Arc::new(source);
+        let cancelled = AtomicBool::new(false);
+        let panel = dated_panel(&source, &load, &serde_json::json!({ "panel": "construction-log-tail", "branchId": "1", "limit": 64, "placeNames": true })).unwrap();
+        let reader = panel.exact().unwrap();
+        let seed = (reader.advance)(718, true, &cancelled, None);
+        let seed = seed.value.as_ref().as_ref().unwrap();
+        assert_eq!(seed["rows"][0]["place"]["name"], "North Reach");
+        let (followed, warm) = count_reads(|| (reader.advance)(720, false, &cancelled, None));
+        let params = ConstructionLogTailParams { place_names: Some(true), ..ask(720) };
+        let (exact, cold) = count_reads(|| ConstructionLogTail::load(&source, &params, &load, &cancelled).unwrap());
+        assert!(exact.rows.iter().any(|row| row.place.as_ref().and_then(|place| place.name.as_deref()) == Some("South Reach")));
+        assert_eq!(followed.value.as_ref().as_ref().unwrap()["rows"], serde_json::to_value(&exact.rows).unwrap());
+        let state_reads = |reads: &replay_recording::cells::ReadCounts| reads.get(&TableId::States).map_or((0, 0), |stats| (stats.opened, stats.restores));
+        assert!(state_reads(&cold).0 > 0, "the exact lookup needs recorded state operands");
+        assert_eq!(state_reads(&warm), (0, 0), "the newly shown location was in the retained broker window");
     }
 
     #[test]
