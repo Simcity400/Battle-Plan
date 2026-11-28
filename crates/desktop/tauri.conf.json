@@ -17,7 +17,8 @@
       "height": 950,
       "minWidth": 1000,
       "minHeight": 650,
-      "dragDropEnabled": false
+      "dragDropEnabled": false,
+      "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --disable-skia-graphite"
     }],
     "security": {
       "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' http://artwork.localhost data:; connect-src http://push.localhost http://artwork.localhost ipc: http://ipc.localhost http://localhost:1420 http://127.0.0.1:1420 ws://localhost:1420 ws://127.0.0.1:1420; object-src 'none'; frame-src 'none'; base-uri 'self'",
