@@ -22,7 +22,7 @@ function sampleRow(overrides: Partial<ConstructionLogRow> = {}): ConstructionLog
     buildingName: 'Civilian Factory',
     buildingMissing: null,
     icon: null,
-    place: { kind: 'building', state: 358, toState: null, province: null, atHour: hour },
+    place: { kind: 'building', state: 358, toState: null, province: null, atHour: hour, name: 'New York' },
     placeMissing: null,
     levels: { built: 2, total: 3, unknown: 0, possible: 0, added: 0, earlierUnknown: false, countersUnread: false },
     levelsMissing: null,
@@ -113,7 +113,7 @@ test('construction projection formats levels, railway routes, live factories, st
       kind: 'railway',
       buildingToken: 'rail_way',
       buildingName: 'Railways',
-      place: { kind: 'railway', state: 10, toState: 11, province: null, atHour: 100 },
+      place: { kind: 'railway', state: 10, toState: 11, province: null, atHour: 100, name: 'Illinois', toName: 'Indiana' },
       levels: { built: 8, total: 9, unknown: 0, possible: 0, added: 0, earlierUnknown: false, countersUnread: false },
       factories: 15,
       status: 'building',
@@ -156,13 +156,7 @@ test('construction projection formats levels, railway routes, live factories, st
   const readView = createBoundedReadView({
     hour: 150,
     rows: new Map([['main', source]]),
-    identity: makeIdentity((kind, key, hour) => {
-      if (kind === 'state' && key === '10') return hour < 120 ? 'Illinois' : 'Renamed Illinois';
-      if (kind === 'state' && key === '11') return 'Indiana';
-      if (kind === 'state' && key === '358') return 'New York';
-      if (kind === 'country' && key === 'USA') return 'United States';
-      return null;
-    }),
+    identity: makeIdentity((kind, key) => kind === 'country' && key === 'USA' ? 'United States' : null),
   });
   const model = constructionLogProjection.project(readView, { artwork: false, selected: [] });
   assert.equal(model.rows.length, 4);
@@ -210,6 +204,7 @@ test('constructionLogDeclaration sends filters, work kind, queue toggle, order, 
     assert.equal(entry.read.tailQuery.product, 'construction-log-tail');
     assert.deepEqual(entry.read.tailQuery.ask, {
       buildingTypes: ['industrial_complex', 'arms_factory'],
+      placeNames: true,
       projects: 'repair',
       inQueue: true,
       order: 'start',
@@ -247,43 +242,34 @@ test('a line shows its factories of the recorded most a line takes, and the coun
   assert.deepEqual(project({ factoryCap: 15, factoryCapMissing: null }, false, sampleRow({ key: '4', hour: 100, live: true, kind: 'building', factories: 0, status: 'waiting' })).cells.factories?.value, { kind: 'known', value: '0 / 15' }, 'a building line always takes the define');
 });
 
-test('pending state or province lookup stays pending in construction place cell, railway endpoints, and Place hover', () => {
-  const pendingIdentity: IdentityProvider = {
-    resolve(kind: EntityKind, key: string, atHour: DisplayedHour): IdentityResult {
-      if (kind === 'state' && key === '10') {
-        return { kind, key, holder: { status: 'absent', reason: 'not set' }, name: { status: 'ready', value: 'Illinois' }, validInterval: [atHour, atHour], nextChangeAt: Infinity };
-      }
-      return {
-        kind,
-        key,
-        holder: { status: 'absent', reason: 'not set' },
-        name: kind === 'state' || kind === 'province' ? { status: 'pending' } : { status: 'ready', value: key },
-        validInterval: [atHour, atHour],
-        nextChangeAt: Infinity,
-      };
-    },
-  };
+test('place cells and tooltips use the names and refusals delivered with the page', () => {
+  let placeLookups = 0;
+  const identity = makeIdentity((kind, key) => {
+    if (kind === 'state' || kind === 'province') placeLookups += 1;
+    return key;
+  });
   const rows: ConstructionLogRow[] = [
-    sampleRow({ key: 'p-state', place: { kind: 'building', state: 77, toState: null, province: null, atHour: 100 } }),
-    sampleRow({ key: 'p-rail-both', kind: 'railway', place: { kind: 'railway', state: 77, toState: 88, province: null, atHour: 100 } }),
-    sampleRow({ key: 'p-rail-mixed', kind: 'railway', place: { kind: 'railway', state: 10, toState: 88, province: null, atHour: 100 } }),
-    sampleRow({ key: 'p-rail-half-null', kind: 'railway', place: { kind: 'railway', state: 10, toState: null, province: null, atHour: 100 } }),
+    sampleRow({ key: 'p-state', place: { kind: 'building', state: 77, toState: null, province: null, atHour: 100, name: 'Oslofjord' } }),
+    sampleRow({ key: 'p-province', place: { kind: 'building', state: null, toState: null, province: 30, atHour: 99, name: 'Norway' } }),
+    sampleRow({ key: 'p-rail-mixed', kind: 'railway', place: { kind: 'railway', state: 10, toState: 88, province: null, atHour: 100, name: 'Illinois', toNameMissing: 'State 88 was not recorded' } }),
+    sampleRow({ key: 'p-rail-half-null', kind: 'railway', place: { kind: 'railway', state: 10, toState: null, province: null, atHour: 100, name: 'Illinois' } }),
   ];
   const source = buildRowSourceFromHead('test:construction:pending-place', sampleReply(rows), undefined, 100)!;
   const model = constructionLogProjection.project(
-    createBoundedReadView({ hour: 100, rows: new Map([['main', source]]), identity: pendingIdentity }),
+    createBoundedReadView({ hour: 100, rows: new Map([['main', source]]), identity }),
     { artwork: false, selected: [] },
   );
   const tipOf = (idx: number) => {
     const extra = model.rows[idx]!.tooltipExtra;
     return (typeof extra === 'function' ? extra() : extra) ?? [];
   };
-  assert.deepEqual(model.rows[0]!.cells.place?.value, { kind: 'pending', reason: 'Name is loading' });
-  assert.deepEqual(tipOf(0).find(item => item.label === 'Place')?.value, { kind: 'pending', reason: 'Name is loading' });
-  assert.deepEqual(model.rows[1]!.cells.place?.value, { kind: 'pending', reason: 'Name is loading' });
-  assert.deepEqual(tipOf(1).find(item => item.label === 'Place')?.value, { kind: 'pending', reason: 'Name is loading' });
-  assert.deepEqual(model.rows[2]!.cells.place?.value, { kind: 'partial', value: 'Illinois', reason: 'Name is loading' });
-  assert.deepEqual(tipOf(2).find(item => item.label === 'Place')?.value, { kind: 'partial', value: 'Illinois', reason: 'Name is loading' });
+  assert.deepEqual(model.rows[0]!.cells.place?.value, { kind: 'known', value: 'Oslofjord' });
+  assert.deepEqual(tipOf(0).find(item => item.label === 'Place')?.value, { kind: 'known', value: 'Oslofjord' });
+  assert.deepEqual(model.rows[1]!.cells.place?.value, { kind: 'known', value: 'Norway' });
+  assert.deepEqual(tipOf(1).find(item => item.label === 'Place')?.value, { kind: 'known', value: 'Norway' });
+  assert.deepEqual(model.rows[2]!.cells.place?.value, { kind: 'partial', value: 'Illinois', reason: 'State 88 was not recorded' });
+  assert.deepEqual(tipOf(2).find(item => item.label === 'Place')?.value, { kind: 'partial', value: 'Illinois', reason: 'State 88 was not recorded' });
   assert.deepEqual(model.rows[3]!.cells.place?.value, { kind: 'partial', value: 'Illinois', reason: 'Railway endpoint was not recorded' });
   assert.deepEqual(tipOf(3).find(item => item.label === 'Place')?.value, { kind: 'partial', value: 'Illinois', reason: 'Railway endpoint was not recorded' });
+  assert.equal(placeLookups, 0);
 });
