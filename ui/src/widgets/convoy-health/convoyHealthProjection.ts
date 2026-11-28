@@ -16,6 +16,7 @@ import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { regionLabel } from '../../families/heat/scale.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { countrySubject, noRegionsBody, regionLanes } from '../../families/regions/regionRows.ts';
+import { trackGate } from '../../families/sources.ts';
 import { formatExactRational, formatProgress } from '../../families/valueFormat.ts';
 import type { ConvoyCellRun, ConvoyCellState, ConvoyCountry, ConvoyHealthReply, ConvoyView, HourSpan } from '../../generated/dashboard';
 
@@ -367,7 +368,7 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
   icon: 'anchor',
   countries: { mode: 'single' },
   unavailable: ctx => (ctx.countryTag ? null : 'Choose a country in widget settings.'),
-  sources: (ctx): SourcePlan => {
+  sources: (ctx, viewport): SourcePlan => {
     const view = convoyView(ctx.options);
     if (!ctx.countryTag) return { owner: `convoy-health:${ctx.branch.id}:none`, entries: [], unavailable: 'Choose a country in widget settings.' };
     const top = typeof ctx.options.rowCount === 'number' ? ctx.options.rowCount : CONVOY_TOP_DEFAULT;
@@ -375,21 +376,28 @@ export const convoyHealthDeclaration: HeatLanesWidgetDeclaration<ConvoyProjectio
     const params = { branchId: ctx.branch.id, view, country: countryFromKey(ctx.countryTag) };
     const shown = view === 'regions' ? { ...params, ...regions, top } : { ...params, listFrom: ctx.staticSpan?.[0] ?? ctx.branch.firstHour };
     const { pinnedRegions: _pinned, hiddenRegions: _hidden, ...rankMissing } = regions;
-    return {
-      owner: `convoy-health:${JSON.stringify(shown)}`,
-      entries: dayTileEntries(ctx, {
-        product: 'convoy-health',
-        span: (base, first, last) => ({ ...base, from: first, to: last }),
-        now: {
-          params: shown,
-          coverage: view === 'regions' ? { mode: 'population', form: 'top', limit: top } : { mode: 'population', form: 'all' },
-        },
-        tile: {
-          params: view === 'regions' ? { ...params, ...rankMissing, every: true } : params,
-          coverage: { mode: 'population', form: 'all' },
-        },
-      }),
-    };
+    const entries = dayTileEntries(ctx, {
+      product: 'convoy-health',
+      span: (base, first, last) => ({ ...base, from: first, to: last }),
+      now: {
+        params: shown,
+        coverage: view === 'regions' ? { mode: 'population', form: 'top', limit: top } : { mode: 'population', form: 'all' },
+      },
+      tile: {
+        params: view === 'regions' ? { ...params, ...rankMissing, every: true } : params,
+        coverage: { mode: 'population', form: 'all' },
+      },
+    });
+    const owner = `convoy-health:${JSON.stringify(shown)}`;
+    if (!viewport.following) return { owner, entries };
+    const terminal = trackGate({ source: ctx.track.source, branch: ctx.branch }).recorded(ctx.lastRecordedHour ?? ctx.branch.lastHour);
+    if (terminal === null) return { owner, entries };
+    return { owner, entries: entries.flatMap<SourcePlan['entries'][number]>(entry => {
+      const { read } = entry;
+      if (read.shape !== 'point' || !read.dayTile || !read.params) return [entry];
+      const bounds = read.buildExactParams?.(read.params, terminal, 'exact');
+      return bounds ? [{ ...entry, read: { ...read, followQuery: { panel: 'convoy-health', ...bounds } } }] : [];
+    }) };
   },
   projection: convoyHealthProjection,
   projectionOptions: (ctx, extra) => ({ view: convoyView(ctx.options), surface: extra.surface, country: ctx.countryTag, historyStart: ctx.staticSpan?.[0] ?? ctx.branch.firstHour, tiles: dayTileCount(ctx.branch) }),

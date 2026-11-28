@@ -664,7 +664,91 @@ pub(crate) fn without(spans: &[HourSpan], gaps: &[(HourSpan, &str)]) -> Vec<Hour
 }
 
 fn history(recording: &Recording, run: u32, table: TableId, columns: &[usize], keys: Keys<'_>, first: i32, last: i32) -> io::Result<History> {
-    dashboard_query::cost::storage(|| lanes::history(recording, run, table, columns, keys, first, last))
+    dashboard_query::cost::storage(|| lanes::history(recording, run, table, columns, keys, first, last)).inspect(|read| at_hour::count_rows(|| read.keys.iter().map(|(_, steps)| steps.len() as u64).sum()))
+}
+
+const CLIENT_ROUTES: &[usize] = &[CLIENT_CATEGORY, CLIENT_OWNER, CLIENT_OTHER, 3, 4, 5, CLIENT_ASSIGNED];
+const DISCOVERY_TABLES: [(TableId, &[usize]); 3] = [
+    (TableId::CountryLinks, &[LINK_SLOT]),
+    (TableId::ConvoyClients, CLIENT_ROUTES),
+    (TableId::ResourceOrigins, &[0, 5]),
+];
+
+fn is_client(cells: &[Cell], history: &History, raw: &HashSet<u32>) -> bool {
+    let ours = |column| number(cells, at(history, column)).and_then(|v| u32::try_from(v).ok()).is_some_and(|id| raw.contains(&id));
+    match number(cells, at(history, CLIENT_CATEGORY)) {
+        Some(1 | 2) => ours(CLIENT_OWNER),
+        Some(4 | 6) => ours(CLIENT_OTHER),
+        _ => false,
+    }
+}
+
+fn discover_steps(steps: &[lanes::Step], first: i32, last: i32, clipped: bool) -> impl Iterator<Item = (i32, Option<&[Cell]>)> + Clone {
+    let at = steps.partition_point(|step| step.hour <= first);
+    let start = steps[..at].last()
+        .filter(|step| !clipped || step.cells.is_some())
+        .map(|step| (first, step.cells.as_deref()));
+    start.into_iter().chain(steps[at..].iter().take_while(move |step| step.hour <= last).map(|step| (step.hour, step.cells.as_deref())))
+}
+
+struct TrafficDiscovery {
+    owner: (u32, u32, u32),
+    first: i32,
+    last: i32,
+    tables: [History; 3],
+}
+
+impl TrafficDiscovery {
+    fn read(recording: &Recording, owner: (u32, u32, u32), first: i32, last: i32) -> io::Result<Self> {
+        let [(links, link_fields), (clients, client_fields), (origins, origin_fields)] = DISCOVERY_TABLES;
+        let run = owner.0;
+        let links = history(recording, run, links, link_fields, Keys::All, first, last)?;
+        let clients = history(recording, run, clients, client_fields, Keys::All, first, last)?;
+        let origins = history(recording, run, origins, origin_fields, Keys::All, first, last)?;
+        Ok(Self { owner, first, last, tables: [links, clients, origins] })
+    }
+
+    fn retain_owner(&mut self) {
+        let (_, slot, id) = self.owner;
+        let [links, clients, origins] = &mut self.tables;
+        let slot_i = at(links, LINK_SLOT);
+        links.keys.retain(|(_, steps)| steps.iter().any(|step| step.cells.as_deref().is_some_and(|cells| number(cells, slot_i) == Some(i64::from(slot)))));
+        let raw: HashSet<_> = std::iter::once(id).chain(links.keys.iter().filter_map(|(key, _)| u32::try_from(*key).ok())).collect();
+        let keys = std::mem::take(&mut clients.keys);
+        clients.keys = keys.into_iter().filter(|(_, steps)| steps.iter().any(|step| step.cells.as_deref().is_some_and(|cells| is_client(cells, clients, &raw)))).collect();
+        origins.keys.retain(|(key, _)| raw.contains(&(*key as u32)));
+        for table in &mut self.tables {
+            table.keys.shrink_to_fit();
+        }
+    }
+}
+
+fn traffic_discovery(source: &Source, recording: &Recording, owner: (u32, u32, u32), first: i32, last: i32, advancing: bool) -> io::Result<Arc<TrafficDiscovery>> {
+    if advancing {
+        let state = source.state::<Option<Arc<TrafficDiscovery>>>();
+        if let Some(held) = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
+            .filter(|held| held.owner == owner && held.first <= first && last <= held.last)
+        {
+            return Ok(Arc::clone(held));
+        }
+        let max = last.saturating_add(6 * DAY).min(recording.run(owner.0)?.last_hour());
+        if max > last {
+            let end = DISCOVERY_TABLES.iter().try_fold(max, |end, &(table, _)| {
+                complete_spans(recording, owner.0, table, first, end)
+                    .map(|spans| spans.first().filter(|&&(start, _)| start == first).map_or(first.saturating_sub(1), |&(_, end)| end))
+            });
+            if let Ok(end) = end
+                && end > last
+                && let Ok(mut batch) = TrafficDiscovery::read(recording, owner, first, end)
+            {
+                batch.retain_owner();
+                let batch = Arc::new(batch);
+                *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&batch));
+                return Ok(batch);
+            }
+        }
+    }
+    TrafficDiscovery::read(recording, owner, first, last).map(Arc::new)
 }
 
 fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from, to): (i32, i32), cancelled: &AtomicBool, mut step: Option<&mut at_hour::DatedStep<'_>>) -> io::Result<(Gathered, Vec<(i32, i32)>)> {
@@ -718,38 +802,33 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                             eval_hours.insert(a);
                             eval_hours.insert(b);
                         }
-                        let links_h = history(recording, run, TableId::CountryLinks, &[LINK_SLOT], Keys::All, first, last)?;
-                        let slot_i = at(&links_h, LINK_SLOT);
+                        let advancing = step.as_ref().and_then(|step| step.step).is_some_and(|input| !input.step.reset() && !input.step.gap());
+                        let discovery = traffic_discovery(source, recording, (run, slot, id), first, last, advancing)?;
+                        let [links_h, clients_h, origins_h] = &discovery.tables;
+                        let clipped = discovery.first != first;
+                        let slot_i = at(links_h, LINK_SLOT);
                         let mut raw_ids = HashSet::from([id]);
                         for (key, steps) in &links_h.keys {
-                            let ours = steps.iter().any(|step| step.cells.as_deref().is_some_and(|cells| number(cells, slot_i) == Some(i64::from(slot))));
+                            let steps = discover_steps(steps, first, last, clipped);
+                            let ours = steps.clone().any(|(_, cells)| cells.is_some_and(|cells| number(cells, slot_i) == Some(i64::from(slot))));
                             if ours && let Ok(raw) = u32::try_from(*key) {
                                 raw_ids.insert(raw);
-                                eval_hours.extend(steps.iter().map(|step| step.hour));
+                                eval_hours.extend(steps.map(|(hour, _)| hour));
                             }
                         }
-                        let clients_h = history(recording, run, TableId::ConvoyClients, &[CLIENT_CATEGORY, CLIENT_OWNER, CLIENT_OTHER, 3, 4, 5, CLIENT_ASSIGNED], Keys::All, first, last)?;
                         let mut route_keys: Vec<u128> = Vec::new();
                         let mut client_keys = Vec::new();
-                        let cat_i = at(&clients_h, CLIENT_CATEGORY);
-                        let own_i = at(&clients_h, CLIENT_OWNER);
-                        let oth_i = at(&clients_h, CLIENT_OTHER);
-                        let rc_i = at(&clients_h, 3);
-                        let rcty_i = at(&clients_h, 4);
-                        let roth_i = at(&clients_h, 5);
-                        let held_raw = |value: Option<i64>| value.and_then(|v| u32::try_from(v).ok()).is_some_and(|raw| raw_ids.contains(&raw));
+                        let rc_i = at(clients_h, 3);
+                        let rcty_i = at(clients_h, 4);
+                        let roth_i = at(clients_h, 5);
                         for (key, steps) in &clients_h.keys {
-                            let relevant = steps.iter().any(|step| {
-                                step.cells.as_deref().is_some_and(|cells| {
-                                    let cat = number(cells, cat_i);
-                                    matches!(cat, Some(1 | 2)) && held_raw(number(cells, own_i)) || matches!(cat, Some(4 | 6)) && held_raw(number(cells, oth_i))
-                                })
-                            });
+                            let steps = discover_steps(steps, first, last, clipped);
+                            let relevant = steps.clone().any(|(_, cells)| cells.is_some_and(|cells| is_client(cells, clients_h, &raw_ids)));
                             if relevant {
                                 client_keys.push(*key);
-                                for step in steps {
-                                    eval_hours.insert(step.hour);
-                                    if let Some(cells) = step.cells.as_deref()
+                                for (hour, cells) in steps {
+                                    eval_hours.insert(hour);
+                                    if let Some(cells) = cells
                                         && let (Some(rc), Some(rcty), Some(roth)) = (
                                             number(cells, rc_i).and_then(|v| u8::try_from(v).ok()),
                                             number(cells, rcty_i).and_then(|v| u32::try_from(v).ok()),
@@ -761,17 +840,15 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                                 }
                             }
                         }
-                        let origins_h = history(recording, run, TableId::ResourceOrigins, &[0, 5], Keys::All, first, last)?;
                         let mut origin_keys = Vec::new();
                         for (key, steps) in &origins_h.keys {
                             let raw = *key as u32;
-                            if raw_ids.contains(&raw) {
+                            let mut steps = discover_steps(steps, first, last, clipped).peekable();
+                            if raw_ids.contains(&raw) && steps.peek().is_some() {
                                 origin_keys.push(*key);
                                 let state = (*key >> 32) as u32;
                                 route_keys.push((u128::from(raw) << 40) | u128::from(state));
-                                for step in steps {
-                                    eval_hours.insert(step.hour);
-                                }
+                                eval_hours.extend(steps.map(|(hour, _)| hour));
                             }
                         }
                         route_keys.sort_unstable();
@@ -822,6 +899,10 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
                                     frame
                                 } else {
                                     cold = dashboard_query::cost::storage(|| seeker.frame(run, hour, &traffic_tables))?;
+                                    at_hour::count_rows(|| TRAFFIC_TABLES.iter().map(|&(table, _)| match cold.tables[table.index()].held() {
+                                        replay_frame::frame::TableView::Complete(rows) | replay_frame::frame::TableView::Truncated { rows, .. } => rows.len() as u64,
+                                        _ => 0,
+                                    }).sum());
                                     &cold
                                 };
                                 let proof = traffic_in_frame(frame, slot);
