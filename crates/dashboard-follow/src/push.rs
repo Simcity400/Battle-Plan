@@ -1,9 +1,9 @@
 
 use crate::{answer, invalid, panel};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     io::{self, Read, Write},
-    sync::{Condvar, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak},
     time::Instant,
 };
 
@@ -129,6 +129,8 @@ struct Queued {
 
 struct State {
     charge: playhead::Charge,
+    reply_charge: playhead::Charge,
+    reply_leads: HashMap<u32, (Weak<playhead::ReplyLeadHold>, bool)>,
     queue: VecDeque<Queued>,
     bytes: usize,
     sent: u64,
@@ -160,7 +162,9 @@ fn lock(held: &Mutex<State>) -> MutexGuard<'_, State> {
 
 impl State {
     fn new(budget: std::sync::Arc<playhead::ByteBudget>) -> Self {
-        Self { charge: budget.charge(), queue: VecDeque::new(), bytes: 0, sent: 0, released: 0, credit: budget.limit() / 2, session: 0, heads: std::collections::HashMap::new(), admitted: std::collections::HashMap::new(), next: 0, pressed: None, stopped: false, failed: None, counters: PushCounters::default() }
+        let credit = budget.limit() / 2;
+        let reply_charge = playhead::ByteBudget::new(credit / 2).charge();
+        Self { charge: budget.charge(), reply_charge, reply_leads: HashMap::new(), queue: VecDeque::new(), bytes: 0, sent: 0, released: 0, credit, session: 0, heads: std::collections::HashMap::new(), admitted: std::collections::HashMap::new(), next: 0, pressed: None, stopped: false, failed: None, counters: PushCounters::default() }
     }
 
     fn reached(&self, stream: Stream) -> bool {
@@ -176,6 +180,22 @@ impl State {
 
     fn charged(&mut self) {
         self.charge.resize(self.bytes + self.in_flight());
+        self.charge_replies();
+    }
+
+    fn charge_replies(&mut self) {
+        let full = self.reply_charge.full();
+        self.reply_charge.resize(self.bytes + self.in_flight());
+        if full != self.reply_charge.full() { self.update_reply_leads(); }
+    }
+
+    fn update_reply_leads(&mut self) {
+        let full = self.reply_charge.full() && !self.stopped;
+        self.reply_leads.retain(|_, (hold, playing)| {
+            let Some(hold) = hold.upgrade() else { return false };
+            hold.set(full && !*playing);
+            true
+        });
     }
 
     fn sendable(&self) -> Option<usize> {
@@ -314,6 +334,7 @@ impl Push {
         let session = state.session;
         state.queue.push_back(Queued { stream, kind, bytes, sequence, offered: Instant::now(), kept: false, session });
         state.compact(stream);
+        if stream == Stream::Notice { state.charge_replies(); }
         state.counters.most_queued = state.counters.most_queued.max(state.queue.len() as u64);
         drop(state);
         self.ready.notify_one();
@@ -368,7 +389,28 @@ impl Push {
     }
 
     pub fn head(&self, route: u32, seek: u32, hour: i32) {
+        self.clock(route, seek, hour, true);
+    }
+
+    pub(crate) fn watch_reply_lead(&self, route: u32, playing: bool, hold: &Arc<playhead::ReplyLeadHold>) {
         let mut state = lock(&self.state);
+        if let Some((previous, _)) = state.reply_leads.insert(route, (Arc::downgrade(hold), playing))
+            && let Some(previous) = previous.upgrade()
+        {
+            previous.set(false);
+        }
+        hold.set(!playing && !state.stopped && state.reply_charge.full());
+    }
+
+    pub(crate) fn clock(&self, route: u32, seek: u32, hour: i32, playing: bool) {
+        let mut state = lock(&self.state);
+        let full = state.reply_charge.full() && !state.stopped;
+        if let Some((hold, held_playing)) = state.reply_leads.get_mut(&route)
+            && *held_playing != playing
+        {
+            *held_playing = playing;
+            if let Some(hold) = hold.upgrade() { hold.set(full && !playing); }
+        }
         if state.heads.insert(route, (seek, hour)) == Some((seek, hour)) { return; }
         state.merge_passed();
         if state.failed.is_none() {
@@ -425,7 +467,10 @@ impl Push {
     }
 
     pub fn stop(&self) {
-        lock(&self.state).stopped = true;
+        let mut state = lock(&self.state);
+        state.stopped = true;
+        state.update_reply_leads();
+        drop(state);
         self.ready.notify_all();
     }
 
@@ -449,7 +494,8 @@ impl Push {
                 state.queue.clear();
                 state.bytes = 0;
                 state.released = state.sent;
-                state.charge.resize(0);
+                state.charged();
+                state.update_reply_leads();
                 return Err(error);
             }
         }

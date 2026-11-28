@@ -10,7 +10,7 @@ use serde_json::Value;
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};
 use playhead::{
-    Declared, Playhead, Reader, Watcher,
+    Declared, Playhead, Reader, ReplyLeadHold, Watcher,
     pages::Pages,
 };
 use replay_data::Hour;
@@ -634,6 +634,7 @@ pub struct PlayheadHost<E: Send + Sync + 'static> {
     follow: Follow,
     reader: Reader,
     held: Vec<bool>,
+    reply_lead: Arc<ReplyLeadHold>,
     stop: Arc<AtomicBool>,
     driver_gate: Arc<WaitGate>,
     panel_gate: Arc<WaitGate>,
@@ -767,6 +768,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
         }));
         playhead.share_budget(budget)?;
         playhead.lead(crate::lead::LEAD);
+        let reply_lead = playhead.reply_lead_hold();
         let driver_gate = Arc::new(WaitGate::new());
         let panel_gate = Arc::new(WaitGate::new());
         let panel_work = Arc::new(AtomicU64::new(0));
@@ -799,7 +801,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                     (!held.products.is_empty() || !held.shown.is_empty() || follow_ref.has_work(), held.push.clone().map(|push| (push, held.stamp.1, held.stamp.3)))
                 };
                 let head = playhead.head(Instant::now());
-                if let Some((push, route, seek)) = told { push.head(route, seek, head); }
+                if let Some((push, route, seek)) = told { push.clock(route, seek, head, playing); }
                 let release = if playing { head.saturating_add(playhead.step_hours().saturating_mul(crate::lead::RELEASE_FRAMES)) } else { head };
                 let advance_ok = consumer.try_advance(release);
                 let take_ok = consumer.try_take(release, &mut taken).is_some();
@@ -823,7 +825,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             }
         })?;
 
-        Ok(Arc::new(Self { owner, panels, reads, get, anchored, follow, reader, held, stop, driver_gate, panel_gate, panel_work, _driver_watch: driver_watch, _panel_watch: panel_watch, driver: Mutex::new(Some(driver)) }))
+        Ok(Arc::new(Self { owner, panels, reads, get, anchored, follow, reader, held, reply_lead, stop, driver_gate, panel_gate, panel_work, _driver_watch: driver_watch, _panel_watch: panel_watch, driver: Mutex::new(Some(driver)) }))
     }
 
     fn install_panel(&self, id: u32, panel: Box<dyn Panel>, lanes: u32, reader: Option<Box<dyn PanelReader>>) -> Result<(), String> {
@@ -950,6 +952,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
     }
 
     pub fn show_panels(&self, rows: Arc<dyn PanelRows>, push: Arc<Push>) {
+        push.watch_reply_lead(self.follow.route(), self.playhead().playing(), &self.reply_lead);
         rows.on_publish({
             let panel_gate = Arc::clone(&self.panel_gate);
             let panel_work = Arc::clone(&self.panel_work);
