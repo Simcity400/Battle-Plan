@@ -448,7 +448,7 @@ impl TableReader {
             + (self.marks.0.capacity() + self.marks.1.capacity()) * size_of::<(u16, u32)>())
     }
 
-    pub fn walk_exact(&mut self, recording: &Recording, to: u32) -> io::Result<Option<bool>> {
+    pub fn walk_exact(&mut self, recording: &Recording, to: u32, mut on_change: impl FnMut(&Changes, &TableState)) -> io::Result<Option<bool>> {
         let Some(from) = self.ordinal else { return Ok(None) };
         if self.log.is_some() || self.tracking || self.absent || self.withheld_before.is_some()
             || !(from..self.ordinals).contains(&to) || self.status != Status::Complete
@@ -468,8 +468,12 @@ impl TableReader {
             if !self.step(recording)? || self.status != Status::Complete {
                 return Ok(None);
             }
-            changed |= self.changes.anew || !self.changes.inserted.is_empty() || !self.changes.deleted.is_empty()
-                || self.changes.written.iter().any(|slots| !slots.is_empty());
+            if self.changes.anew || !self.changes.inserted.is_empty() || !self.changes.deleted.is_empty()
+                || self.changes.written.iter().any(|slots| !slots.is_empty())
+            {
+                changed = true;
+                on_change(&self.changes, &self.cells);
+            }
         }
         Ok(Some(changed))
     }

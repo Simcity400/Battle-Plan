@@ -9,6 +9,8 @@ fn fixture() -> Vec<u8> {
     fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(), b"exact lexical", &RUNS, &[TABLE, TableId::States], |synthetic, _, ordinal| {
         let mut rows = vec![LexicalTokenRow { token: 1, literal: if ordinal < 51 { b"one" } else { b"uno" }.to_vec() }];
         if ordinal >= 51 { rows.push(LexicalTokenRow { token: 2, literal: b"two".to_vec() }); }
+        if ordinal >= 75 { rows.push(LexicalTokenRow { token: 3, literal: b"three".to_vec() }); }
+        if ordinal >= 100 { rows.insert(0, LexicalTokenRow { token: 0, literal: b"zero".to_vec() }); }
         let input = if ordinal == 123 {
             Input::Unavailable { reason: "lexical reader refused the sample", read: true, sample: Sample::Reset }
         } else { Input::Snapshot {
@@ -64,6 +66,13 @@ fn lexical_playback_reuses_the_reader_and_unchanged_views() {
             assert_eq!(rows, if offset - step < 51 && offset >= 51 { 2 } else { 0 });
             assert_eq!(cache.0.held.as_ref().unwrap().reader.restores(), 1);
         }
+        let (_, rows) = compared(&mut cache, &recording, 0, START + 72 + step.max(3));
+        assert_eq!(rows, 1);
+        let held = cache.0.held.as_ref().unwrap();
+        assert_eq!(held.view_bytes, view_heap_bytes(held.view.held()) + size_of::<TableView>() + 2 * size_of::<usize>());
+        let (_, rows) = compared(&mut cache, &recording, 0, START + 100);
+        assert_eq!(rows, 4);
+        assert_eq!(cache.0.held.as_ref().unwrap().reader.restores(), 1);
     }
 }
 
