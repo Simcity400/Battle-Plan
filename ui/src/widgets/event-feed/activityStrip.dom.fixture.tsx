@@ -10,6 +10,7 @@ import { installedModel, pipelineOf } from '../../dashboard/follow/useFollowed.t
 import type { EngineFrame, FrameEngine } from '../../engine/frame';
 import type { FamilyPlanContext } from '../../families/contract';
 import type { CountryGroupReply } from '../../generated/dashboard';
+import { measureWith, PerfRecorder } from '../../shell/perf.ts';
 import EventFeedActivityStrip from './EventFeedActivityStrip';
 import { eventFeedDeclaration } from './eventFeedProjection';
 import EventFeed from './index';
@@ -38,7 +39,7 @@ function whenShown(container: HTMLElement, ready: () => Element | null) {
   });
 }
 
-async function run(selection: CountrySelection, integrated: boolean, hours = 0, unknownMembership = false, hoursPerFrame = 1) {
+async function run(selection: CountrySelection, integrated: boolean, hours = 0, unknownMembership = false, hoursPerFrame = 1, audited = false) {
   const asked: ProductRequest[] = [];
   let ports: readonly MessagePort[] = [];
   let follow: { id: number; route: number; query: Record<string, any>; previous?: string } | null = null;
@@ -80,7 +81,12 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
     asked.push(request);
     const params = request.params as Record<string, any>;
     let data: unknown;
-    if (request.product === 'event-feed-activity') data = activity(params.from, params.binHours, params.hour);
+    if (request.product === 'event-feed-activity') {
+      const exact = activity(params.from, params.binHours, params.hour);
+      if (audited && params.hour === 118) exact.lines[0]!.bins = [[0, 1]];
+      if (audited && params.hour === 119) exact.missing[0]!.lastHour = 118;
+      data = exact;
+    }
     else if (request.product === 'follow-clock') data = { available: true };
     else if (request.product === 'follow' && params.query?.panel === 'event-feed-activity') {
       follow = { id: params.id, route: params.route, query: params.query };
@@ -108,12 +114,15 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
   const container = document.body.appendChild(document.createElement('div'));
   container.style.cssText = 'width:800px;height:600px';
   const root = createRoot(container);
+  const perf = audited ? new PerfRecorder() : null;
+  if (perf) measureWith(perf);
   root.render(integrated
     ? <EventFeed.render {...{ widget, runtime, active: true, options: { politics: true, warsPeace: false, diplomacy: false, milestones: false }, manifestDeclaration: eventFeedDeclaration } as unknown as FamilyViewProps} />
-    : <EventFeedActivityStrip {...{ widget, track, runtime, active: true, categories: ['politics'], from: 100, pinnedHour: 191, context }} />);
+    : <EventFeedActivityStrip {...{ widget, track, runtime, active: true, categories: ['politics'], from: 100, pinnedHour: hours ? null : 191, context }} />);
   const pipeline = pipelineOf(clock, client);
   try {
     await whenShown(container, () => container.querySelector(hours > 0 || !integrated ? '.efs-strip' : '.efs-strip, [data-state="refused"]'));
+    await perf?.beginAudit();
     const before = asked.filter(request => request.product === 'event-feed-activity').length;
     const beforeBins = container.querySelectorAll('.efs-bars > span').length;
     if (hours > 0) {
@@ -131,7 +140,8 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
       };
       let tick: number;
       const advance = () => {
-        const elapsed = Math.min(hoursPerFrame, target - clock.getHour());
+        const hour = clock.getHour();
+        const elapsed = audited && pipeline.view(placement)?.through !== hour ? 0 : Math.min(hoursPerFrame, target - hour);
         now += 1000 * elapsed;
         runPhase('clock');
         if (elapsed > 0) push();
@@ -148,9 +158,11 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
         stop();
       }
     }
+    const duringPlayback = asked.filter(request => request.product === 'event-feed-activity').length;
+    const audits = await perf?.auditPictures();
     return {
       hour: clock.getSnapshot().hour, beforeBins, lastConfirmation,
-      before, count: asked.filter(request => request.product === 'event-feed-activity').length,
+      before, count: duringPlayback, audits,
       activities: asked.filter(request => request.product === 'event-feed-activity').map(request => request.params),
       followed: asked.flatMap(request => {
         const query = (request.params as { query?: Record<string, unknown> } | undefined)?.query;
@@ -166,6 +178,7 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
     };
   } finally {
     clock.stop(); root.unmount(); container.remove(); pipeline.close();
+    if (perf) measureWith(null);
     performance.now = realNow;
   }
 }

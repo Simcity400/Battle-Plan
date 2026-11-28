@@ -1,4 +1,4 @@
-import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { panelReply } from '../../dashboard/follow/panel.ts';
 import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import { PreparingPage } from '../../dashboard/preparing.ts';
@@ -11,9 +11,12 @@ import { failureText } from '../../dashboard/queryError.ts';
 import { useGate } from '../../dashboard/regionGate.ts';
 import type { BoundHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
+import { canonicalAuditData } from '../../families/audit.ts';
 import type { FamilyPlanContext } from '../../families/contract.ts';
 import { occurrenceSelection } from '../../families/table/logHelpers.ts';
 import type { EventFeedActivityReply } from '../../generated/dashboard';
+import type { ModelField } from '../../draw/views/fields';
+import { perfLog } from '../../shell/perf.ts';
 import {
   activityDisplayedHour,
   activityRequestPlan,
@@ -61,18 +64,21 @@ export default function EventFeedActivityStrip(props: EventFeedActivityStripProp
 }
 
 const activityReply = (data: unknown) => data as EventFeedActivityReply;
+const activityCounts = ({ firstHour, binHours, lines, missing }: EventFeedActivityReply) =>
+  canonicalAuditData([firstHour, binHours, lines.map(({ category, bins }) => [category, bins]), missing]);
 
 function FollowedActivityStrip({ widget, track, runtime, active, categories, excludedKinds, context, refusal }: EventFeedActivityStripProps) {
   const gate = useGate(runtime, widget);
   const preparing = useContext(PreparingPage);
-  const selection = context ? occurrenceSelection(context) : null;
-  const asked = CATEGORIES.filter(cat => categories.includes(cat.value)).map(cat => cat.value);
-  const checked = active && !preparing && track && !refusal && selection !== null && asked.length && selection?.countries?.length !== 0
-    ? gate.checkFollow({
-      panel: 'event-feed-activity', branchId: track.branch.id, binHours: 24, categories: asked,
+  const selection = useMemo(() => context ? occurrenceSelection(context) : null, [context?.countries, context?.widget, context?.track]);
+  const asked = useMemo(() => CATEGORIES.filter(cat => categories.includes(cat.value)).map(cat => cat.value), [categories]);
+  const params = useMemo(() => track && selection !== null && asked.length && selection?.countries?.length !== 0
+    ? {
+      branchId: track.branch.id, binHours: 24, categories: asked,
       ...(excludedKinds?.length ? { exclude: excludedKinds } : {}),
       ...selection,
-    }) : null;
+    } : null, [track, selection, asked, excludedKinds]);
+  const checked = active && !preparing && !refusal && params ? gate.checkFollow({ panel: 'event-feed-activity', ...params }) : null;
   const pipeline = usePipeline(runtime.clock, runtime.client);
   const widgetKey = useWidgetKey();
   const bounds = track ? [track.branch.firstHour, track.branch.lastHour] as const : null;
@@ -83,6 +89,28 @@ function FollowedActivityStrip({ widget, track, runtime, active, categories, exc
   const view = useInstalled(pipeline, placement);
   const panel = !view?.dim && view?.mode === 'picture' ? installedPanel(installedModel(view, sub)) : undefined;
   const { data, error } = panelReply(panel, activityReply);
+  useLayoutEffect(() => {
+    if (!perfLog || !pipeline || placement === null || sub === undefined || !track || !params) return;
+    pipeline.audit(placement, sub, fields => {
+      const installed = installedPanel(fields[`model:${sub}`] as ModelField | undefined);
+      const { data } = panelReply(installed, activityReply);
+      return data ? [{ row: 'activity', key: 'activity', value: activityCounts(data) }] : undefined;
+    });
+    const stopReader = perfLog.reader(placement, sub, async hour => {
+      const cutoff = gate.recorded(hour);
+      if (cutoff === null) return null;
+      const request = productRequest({
+        sourceId: track.source.id,
+        revision: track.source.revision,
+        product: 'event-feed-activity',
+        params: { ...params, from: activityStripStart(track.branch.firstHour, null, hour) as BoundHour, hour: cutoff },
+      });
+      const reply = await runtime.client.product(request, new AbortController().signal);
+      const exact = activityReply(validateProductReply(reply, request).data);
+      return { values: new Map([['activity', activityCounts(exact)]]) };
+    }, pipeline.generation);
+    return () => { stopReader(); pipeline.audit(placement, sub, null); };
+  }, [pipeline, placement, sub, track, params, runtime.client, gate.recorded]);
   const subscribeHour = useCallback((changed: () => void) => {
     if (!pipeline || placement === null) return () => {};
     const stopInstall = pipeline.onInstall(placement, changed);
