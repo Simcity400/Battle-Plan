@@ -32,7 +32,7 @@ fn stockpile_type_list_distinguishes_empty_from_unread_stock_and_keeps_witnesses
         *frame.tables[TableId::LogisticsEquipment.index()] = logistics;
         let replay = replay(vec![baseline, frame]).into_timelines(&Default::default()).unwrap();
         let source = super::Source::from_replay(dashboard_base::SourceKey { source_id: "stockpile-types".into(), revision: "1".into() }, "synthetic.battleplan".into(), std::sync::Arc::new(replay), &false.into()).unwrap();
-        super::load(&source, &super::StockpileTypesParams { branch_id: "1".into(), country: super::Country::Slot(7), hour }, &super::LoadContext { content: None }, &false.into(), None).unwrap()
+        super::load(&source, &super::StockpileTypesParams { branch_id: "1".into(), country: super::Country::Slot(7), hour }, &super::LoadContext { content: None }, &false.into()).unwrap()
     };
     let known = || TableView::Complete(TableRows::LogisticsEquipment(vec![]));
     let empty = ask(&[], Some(&[]), known());
@@ -51,6 +51,77 @@ fn stockpile_type_list_distinguishes_empty_from_unread_stock_and_keeps_witnesses
     let partial = ask(&[], Some(&[]), TableView::Truncated { rows: TableRows::LogisticsEquipment(vec![logistics]), missing: 2 });
     assert_eq!(partial.rows.len(), 1, "a partially read logistics table still identifies equipment in need");
     assert!(partial.rows[0].balance.missing.as_deref().is_some_and(|reason| reason.contains("2 rows")));
+}
+
+#[test]
+fn followed_stockpile_bars_keep_unchanged_naming_rows_between_dated_replies() {
+    use dashboard_base::{SourceKey, test_fixtures::{played, replay, slot_hour, stockpile_frame}};
+    use replay_data::rows::TableId;
+    use std::sync::Arc;
+
+    let first = slot_hour(TableId::Stockpiles) + 24;
+    let replay = replay((first - 1..=first + 3)
+        .map(|hour| stockpile_frame(hour, true, &[(20, 100_000)], Some(&[])))
+        .collect()).into_timelines(&Default::default()).unwrap();
+    let cancelled = false.into();
+    let source = Arc::new(super::Source::from_replay(SourceKey { source_id: "stockpile-bars-warm-names".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap());
+    let context = super::LoadContext { content: None };
+    let panel = super::panel(&source, &context, &serde_json::json!({ "panel": "equipment-stockpile-types", "branchId": "1", "country": 7 })).unwrap();
+    let steps = played(source.replay_ref(), panel.exact().unwrap(), first, first + 3);
+    let mut warm = 0;
+    for step in steps {
+        let params = super::StockpileTypesParams { branch_id: "1".into(), country: super::Country::Slot(7), hour: step.hour };
+        let exact = <super::EquipmentStockpileTypes as super::Product>::load(&source, &params, &context, &cancelled).unwrap();
+        assert!(!exact.rows.is_empty(), "the requested stock is present");
+        assert_eq!(step.value.as_ref(), &Ok(serde_json::to_value(exact).unwrap()));
+        if step.hour > first {
+            assert_eq!((step.rows, step.visited), (0, 0), "the numeric and naming inputs were held");
+            warm += 1;
+        }
+    }
+    assert!(warm > 0);
+}
+
+#[test]
+fn followed_stockpile_bars_report_holder_before_stock_history_damage() {
+    use dashboard_base::{SourceKey, test_fixtures::{replay, slot_hour, stockpile_frame}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{TableId, TableRows};
+    use replay_frame::frame::TableView;
+    use replay_recording::columnar_frames::Damage;
+    use std::sync::Arc;
+
+    let first = slot_hour(TableId::Stockpiles) + 24 - 1;
+    let mut before = stockpile_frame(first, true, &[], Some(&[]));
+    *before.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![]));
+    *before.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![]));
+    let clean = replay(vec![before, stockpile_frame(first + 1, true, &[(20, 100_000)], Some(&[]))]);
+    let table = TableId::StockByVariant;
+    let page = clean.recording().table_entry(0, 0, table.index()).unwrap();
+    let amount = replay_columnar::unit::column_stream(dashboard_declare::field(table, "amount").unwrap());
+    let frame = page.unit.parts.iter().flat_map(|part| &part.frames).find(|frame| frame.streams.contains(&amount)).unwrap();
+    let mut bytes = clean.bytes().to_vec();
+    bytes[(frame.offset + u64::from(frame.stored / 2)) as usize] ^= 0x40;
+    let replay = Replay::open(bytes).unwrap().into_timelines(&Default::default()).unwrap();
+    let cancelled = false.into();
+    let source = Arc::new(super::Source::from_replay(SourceKey { source_id: "stockpile-bars-damage".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap());
+    let context = super::LoadContext { content: None };
+    let exact_error = |hour| {
+        let params = super::StockpileTypesParams { branch_id: "1".into(), country: super::Country::Slot(7), hour };
+        super::load(&source, &params, &context, &cancelled).err().unwrap()
+    };
+    let earlier = exact_error(first);
+    assert_eq!(earlier.to_string(), "Equipment stockpile country is unavailable at this hour");
+    let damage = exact_error(first + 1);
+    assert!(Damage::of(&damage).is_some(), "{damage}");
+    let panel = super::panel(&source, &context, &serde_json::json!({ "panel": "equipment-stockpile-types", "branchId": "1", "country": 7 })).unwrap();
+    let followed = panel.exact().unwrap();
+    for (hour, expected) in [(first - 1, exact_error(first - 1)), (first, earlier), (first + 1, damage)] {
+        assert_eq!((followed.advance)(hour, true, &cancelled, None).value.as_ref(), &Err(expected.to_string()));
+        assert_eq!((followed.cold)(hour, &cancelled), Err(expected.to_string()));
+    }
 }
 
 #[test]
