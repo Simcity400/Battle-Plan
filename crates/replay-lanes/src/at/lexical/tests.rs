@@ -118,10 +118,52 @@ fn a_damaged_checkpoint_cannot_be_bypassed_by_a_lexical_reader() {
     bytes[(frame.offset + u64::from(frame.stored) / 2) as usize] ^= 0x40;
     let recording = Recording::open(bytes).unwrap();
     let mut cache = LexicalCursor::default();
+    if let Some(proof) = LexicalCursor::prepare(&recording, 0) { cache.use_anchors(proof); }
     let _ = compared(&mut cache, &recording, 0, START + BLOCK as i32 - 1);
     let target = START + BLOCK as i32;
     let exact = super::super::frame(&recording, 0, target, &[super::super::Read::all(TABLE)]).unwrap();
     assert!(matches!(exact.tables[TABLE.index()].held(), TableView::Unavailable { .. }));
     assert!(cache.read(&recording, 0, target).is_none());
     assert!(cache.0.held.is_none());
+}
+
+fn constant_recording(literal: &[u8]) -> Recording {
+    let bytes = fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(),
+        b"verified lexical", &[(1, START, 2)], &[TABLE], |synthetic, _, ordinal| {
+            synthetic.table(TABLE, Input::Snapshot {
+                rows: &[LexicalTokenRow { token: 1, literal: literal.to_vec() }],
+                partial: None, read: ordinal % 3 == 0, sample: Sample::FromReadBit,
+            }).unwrap();
+        }).0;
+    Recording::open(bytes).unwrap()
+}
+
+#[test]
+fn a_verified_checkpoint_reuses_a_forward_view_but_a_rewind_restores() {
+    let recording = constant_recording(b"one");
+    let mut cache = LexicalCursor::default();
+    cache.use_anchors(LexicalCursor::prepare(&recording, 0).unwrap());
+    let boundary = START + BLOCK as i32;
+    let (before, decoded) = compared(&mut cache, &recording, 0, boundary - 24);
+    assert_eq!(decoded, 1);
+    let (after, decoded) = compared(&mut cache, &recording, 0, boundary);
+    assert_eq!(decoded, 0);
+    assert!(SharedView::ptr_eq(&before, &after));
+    assert_eq!(cache.0.held.as_ref().unwrap().reader.restores(), 1);
+    let (back, decoded) = compared(&mut cache, &recording, 0, boundary - 1);
+    assert_eq!(decoded, 1);
+    assert!(!SharedView::ptr_eq(&after, &back));
+}
+
+#[test]
+fn a_decodable_checkpoint_with_different_literals_cannot_prove_reuse() {
+    let recording = constant_recording(b"one");
+    let different = constant_recording(b"uno");
+    let mut reader = TableReader::new(&recording, 0, TABLE, None).unwrap();
+    reader.seek(&recording, BLOCK - 1).unwrap();
+    let mut restored = TableReader::new(&different, 0, TABLE, None).unwrap();
+    restored.seek(&different, BLOCK).unwrap();
+    assert_eq!(reader.cells().key(0), restored.cells().key(0));
+    assert_eq!(reader.cells().value(0, 0), restored.cells().value(0, 0));
+    assert!(!reader.verify_restore(&different, 0).unwrap());
 }

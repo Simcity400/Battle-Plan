@@ -448,7 +448,32 @@ impl TableReader {
             + (self.marks.0.capacity() + self.marks.1.capacity()) * size_of::<(u16, u32)>())
     }
 
-    pub fn walk_exact(&mut self, recording: &Recording, to: u32, mut on_change: impl FnMut(&Changes, &TableState)) -> io::Result<Option<bool>> {
+    pub fn verify_restore(&self, recording: &Recording, block: u32) -> io::Result<bool> {
+        if !self.ordinal.is_some_and(|at| at / BLOCK == block && at % BLOCK == BLOCK - 1)
+            || self.status != Status::Complete
+        {
+            return Ok(false);
+        }
+        let entry = recording.table_entry(self.run, block, self.table)?;
+        let Some(restore) = entry.unit.restore.as_ref().filter(|_| !entry.unit.packed) else { return Ok(false) };
+        let (restored, _, tables) = unit::reader::restore_with_string_tables(
+            recording.extents(), restore, &self.kinds[..self.held], &self.columns, self.keyed)?;
+        if self.cells.slots() != restored.slots()
+            || !(0..restored.slots()).all(|slot| {
+                let key = restored.key(slot);
+                self.cells.key(slot) == key && (key.is_none() || self.columns.iter().all(|&column| {
+                    self.cells.value(column, slot) == restored.value(column, slot)
+                }))
+            })
+        {
+            return Ok(false);
+        }
+        let strings = Strings::restored(tables);
+        Ok(self.strings.iter().all(|(id, _)| self.strings.get(id) == strings.get(id))
+            && strings.iter().all(|(id, _)| self.strings.get(id) == strings.get(id)))
+    }
+
+    pub fn walk_exact(&mut self, recording: &Recording, to: u32, verified: impl Fn(u32) -> bool, mut on_change: impl FnMut(&Changes, &TableState)) -> io::Result<Option<bool>> {
         let Some(from) = self.ordinal else { return Ok(None) };
         if self.log.is_some() || self.tracking || self.absent || self.withheld_before.is_some()
             || !(from..self.ordinals).contains(&to) || self.status != Status::Complete
@@ -456,7 +481,7 @@ impl TableReader {
             return Ok(None);
         }
         for block in self.block..to / BLOCK {
-            if recording.table_entry(self.run, block, self.table)?.unit.restore.is_some() {
+            if recording.table_entry(self.run, block, self.table)?.unit.restore.is_some() && !verified(block) {
                 return Ok(None);
             }
         }

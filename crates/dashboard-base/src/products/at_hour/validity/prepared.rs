@@ -15,7 +15,8 @@ const RUN_BYTES: usize = 1024;
 pub struct DateSelection { pub table: TableId, pub fields: u64, pub shift: Option<u8> }
 
 type PreparedKey = (u32, &'static [DateSelection]);
-type PreparedEntry = (Arc<Preparation>, Option<Arc<RunDates>>);
+type PrepareRun = Box<dyn FnOnce(&Replay, u32) + Send>;
+type PreparedEntry = (Arc<Preparation>, Option<Arc<RunDates>>, Option<PrepareRun>);
 
 #[derive(Default)]
 pub(super) struct PreparedDates {
@@ -38,14 +39,16 @@ struct TableDates {
 }
 
 impl PreparedDates {
-    pub(super) fn prepare(source: &Source, run: u32, specs: &'static [DateSelection]) -> io::Result<Option<Arc<Preparation>>> {
+    pub(super) fn prepare(source: &Source, run: u32, specs: &'static [DateSelection],
+        extra: impl FnOnce(&Replay, u32) + Send + 'static,
+    ) -> io::Result<Option<Arc<Preparation>>> {
         let replay = source.replay();
         let variables = source.state::<VariableDates>();
         let variable_build = VariableDates::prepare(&variables, Arc::clone(&replay), run)?;
         let state = source.state::<Self>();
         let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
         let key = (run, specs);
-        if let Some((ready, _)) = held.runs.get(&key) { return ready.pending(); }
+        if let Some((ready, ..)) = held.runs.get(&key) { return ready.pending(); }
         let reserved = RUN_BYTES.saturating_add(specs.len().saturating_mul(size_of::<TableDates>()));
         if reserved > RETAINED_BYTES - held.bytes { return Ok(variable_build); }
         let ready = Arc::<Preparation>::default();
@@ -57,22 +60,24 @@ impl PreparedDates {
             held.building = true;
         }
         held.bytes += reserved;
-        held.runs.insert(key, (Arc::clone(&ready), None));
+        held.runs.insert(key, (Arc::clone(&ready), None, Some(Box::new(extra))));
         ready.pending()
     }
 
     fn build(state: &Mutex<Self>, replay: &Arc<Replay>, variables: &Arc<Mutex<VariableDates>>) {
         job_priority::background_thread();
         loop {
-            let ((run, specs), ready, budget) = {
+            let ((run, specs), ready, budget, extra) = {
                 let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
-                let Some((&key, (ready, _))) = held.runs.iter().find(|(_, (ready, _))| ready.result().is_none()) else {
+                let budget = RETAINED_BYTES - held.bytes;
+                let Some((&key, (ready, _, extra))) = held.runs.iter_mut().find(|(_, (ready, ..))| ready.result().is_none()) else {
                     held.building = false;
                     return;
                 };
-                (key, Arc::clone(ready), RETAINED_BYTES - held.bytes)
+                (key, Arc::clone(ready), budget, extra.take())
             };
             ready.run(|| {
+                if let Some(extra) = extra { extra(replay, run); }
                 let run_info = replay.recording().run(run)?;
                 let span = (run_info.first_hour, run_info.last_hour());
                 let mut dates = RunDates { span, tables: Vec::with_capacity(specs.len()) };

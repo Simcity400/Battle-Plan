@@ -226,11 +226,14 @@ impl ReadDates {
         VariableDates::prepare(&source.state::<VariableDates>(), source.replay(), run)
     }
 
-    pub fn prepare_selected(source: &Source, run: u32, span: (i32, i32), specs: &'static [DateSelection]) -> io::Result<Option<Arc<crate::products::read_ahead::Preparation>>> {
+    pub fn prepare_selected(
+        source: &Source, run: u32, span: (i32, i32), specs: &'static [DateSelection],
+        extra: impl FnOnce(&Replay, u32) + Send + 'static,
+    ) -> io::Result<Option<Arc<crate::products::read_ahead::Preparation>>> {
         let replay = source.replay();
         let recorded = replay.recording().run(run)?;
         if span == (recorded.first_hour, recorded.last_hour()) {
-            PreparedDates::prepare(source, run, specs)
+            PreparedDates::prepare(source, run, specs, extra)
         } else {
             Self::prepare_scripted(source, run)
         }

@@ -421,7 +421,7 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
     let legacy = super::history(&legacy, 1, &"AAA".into()).unwrap();
     let read = super::history(&source, 1, &"AAA".into()).unwrap();
     let stretch = query.timeline.at(100).unwrap();
-    if let Some(ready) = super::ReadDates::prepare_selected(&source, stretch.run, (stretch.first, stretch.last), super::DATE_SELECTIONS).unwrap() {
+    if let Some(ready) = super::ReadDates::prepare_selected(&source, stretch.run, (stretch.first, stretch.last), super::DATE_SELECTIONS, |_, _| {}).unwrap() {
         ready.wait().unwrap();
     }
     let reply_for = |read: &super::Read, hour: i32| {

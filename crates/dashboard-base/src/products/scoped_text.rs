@@ -48,7 +48,13 @@ pub struct Lexical(Arc<Mutex<LexicalCursor>>);
 impl Lexical {
     pub fn for_source(source: &Source) -> Self { Self(source.state::<LexicalCursor>()) }
 
-    pub fn release(&self) { *self.0.lock().unwrap_or_else(|e| e.into_inner()) = LexicalCursor::default(); }
+    pub fn release(&self) { self.0.lock().unwrap_or_else(|e| e.into_inner()).release_view(); }
+
+    pub fn prepare_checkpoints(&self, replay: &Replay, run: u32) {
+        if let Some(anchors) = LexicalCursor::prepare(replay.recording(), run) {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).use_anchors(anchors);
+        }
+    }
 }
 
 pub struct CompanionTables(Arc<Mutex<CompanionReaders>>);
