@@ -1,4 +1,5 @@
 import type { DrawSample, PictureSample } from '../draw/notifications';
+import type { MotionDiagnostics } from '../families/motion.ts';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { attributeCommits, takeCommits } from './commitCount.ts';
@@ -525,6 +526,10 @@ export class PerfRecorder {
   get hour(): number | null { return this.position === null ? null : Math.floor(this.position); }
   get laneCount(): number | null { return this.laneCountValue; }
   lanes(count: number): void { this.laneCountValue = count; }
+
+  barPlayback(lane: number, hour: number, repainted: number, ms: number, diagnostics: MotionDiagnostics): void {
+    this.push({ t: 'barPlayback', at: epoch(performance.now()), lane, hour, repainted, ms: round(ms), ...diagnostics });
+  }
 
   pictures(installed: number, expired: readonly string[]): void {
     this.framePictures += installed;

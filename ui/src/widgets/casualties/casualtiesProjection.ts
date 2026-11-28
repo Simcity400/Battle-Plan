@@ -95,6 +95,7 @@ export const casualtiesButterflyProjection: BarsProjection<CasualtiesOptions> = 
 
 export const casualtiesRaceProjection: BarsProjection<CasualtiesOptions> = registerFamilyProjection({
   kind: 'casualties', family: 'bars', nextChange: () => Infinity, project,
+  singleValueBars: options => options.view === 'race',
 }, 'race');
 
 export const casualtiesButterflyDeclaration: BarsWidgetDeclaration<CasualtiesOptions> = {

@@ -1,3 +1,4 @@
+import type { MotionClock } from '../../families/motion.ts';
 import { flushSync } from 'react-dom';
 import { engine } from '../../engine/frame.ts';
 import type { DashboardClient, DashboardSource, FollowOpen } from '../client';
@@ -70,7 +71,8 @@ interface RouteAnchor {
 interface WidgetState {
   id: number; lane: number; kind?: string; cost: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
   stripReset?: () => void;
-  installListeners: Set<() => void>; dateListeners: Set<() => void>; binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
+  installListeners: Set<() => void>; dateListeners: Set<() => void>; playbackHoverListeners?: Set<() => void>;
+  binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
   held: Map<string, unknown>; error?: Failure; wire?: unknown; stamp: number | undefined; payloads: { own: ReadonlySet<number>; statics: ReadonlySet<number>; identity: ReadonlySet<number> };
 }
 
@@ -186,6 +188,7 @@ export class Pipeline {
   private prepareAsk = 0;
   private preparedAt: number[];
   private readonly laneErrors: (Failure | undefined)[];
+  private motionClock: MotionClock | null = null;
   private readonly preparedWaiters = new Set<() => void>();
 
   constructor(clock: PlaybackController, client: DashboardClient, host: PipelineHost, generation = 0) {
@@ -236,6 +239,7 @@ export class Pipeline {
     if (this.lastPrepare) {
       lane.postMessage({ type: 'prepare', ask: this.lastPrepare.ask, families: this.lastPrepare.families, projections: this.lastPrepare.projections });
     }
+    if (this.motionClock) lane.postMessage({ type: 'clock', clock: this.motionClock });
   }
 
   private ensureLane(lane: number): LaneWorker | null {
@@ -253,6 +257,22 @@ export class Pipeline {
   get laneCount() { return this.workers.length; }
 
   get createdLanes() { return this.activeLaneCount; }
+
+  private sendMotionClock(next: PlaybackSnapshot) {
+    const speed = next.playing ? next.hoursPerSecond : 0;
+    const previous = this.motionClock;
+    if (previous && speed === previous.speed && next.seekSequence === previous.seek
+      && next.bounds?.lastHour === previous.lastHour && (next.playing || next.hour === previous.exactHour)) return;
+    const clock: MotionClock = {
+      playing: next.playing, speed, seek: next.seekSequence, exactHour: next.hour,
+      anchorPosition: next.position,
+      anchorTimeMs: performance.timeOrigin + (next.composedAt ?? performance.now()),
+      ...(next.bounds ? { lastHour: next.bounds.lastHour } : {}),
+      ...(perfLog ? { diagnostics: true } : {}),
+    };
+    this.motionClock = clock;
+    for (let lane = 0; lane < this.workers.length; lane++) this.postLane(lane, { type: 'clock', clock });
+  }
 
   transferCanvas(id: number, canvas: OffscreenCanvas, opaque: boolean) {
     if (this.closed) return;
@@ -398,6 +418,7 @@ export class Pipeline {
       this.rate = rate;
       for (let lane = 0; lane < this.workers.length; lane++) this.postLane(lane, { type: 'options', rate });
     }
+    this.sendMotionClock(next);
     const fps = Math.max(1, this.host.frameRate());
     const nominal = Math.max(1, Math.ceil(next.hoursPerSecond / fps * 1.5));
     const rawStep = next.playing && previous.playing && next.seekSequence === previous.seekSequence ? Math.max(0, next.hour - previous.hour) : this.page.step;
@@ -633,6 +654,10 @@ export class Pipeline {
       });
       return;
     }
+    if (message.type === 'playback-hover') {
+      this.widgets.get(message.widget)?.playbackHoverListeners?.forEach(listener => listener());
+      return;
+    }
     if (message.type === 'scrubbed') {
       perfLog?.strip({ status: 'scrub frame', generation: this.generation, lane, ...message.frame, widgets: message.samples });
       return;
@@ -650,6 +675,10 @@ export class Pipeline {
             this.kindCost.set(widget.kind, prev === undefined ? clamped : prev * 0.7 + clamped * 0.3);
           }
         }
+      }
+      if (message.motionDiagnostics) {
+        perfLog?.barPlayback(lane, message.target, message.changed, message.ms, message.motionDiagnostics);
+        return;
       }
       if (auditing()) recordPicture({ t: 'workerFrame', at: performance.timeOrigin + performance.now(), lane, lanes: this.lanes, seek: message.seek, head: message.target,
         playing: !message.exact && this.page.playing, changed: message.changed, workMs: message.ms, ...message.cancelled ? { cancelled: true } : {} });
@@ -1060,7 +1089,7 @@ export class Pipeline {
 
   private readonly hits = new Map<number, { readonly hit?: (key: string | null, meta?: PointerHitMeta) => void; readonly installed?: number }[]>();
 
-  pointer(id: number, surface: number, point: [number, number] | null, hit?: (key: string | null, meta?: PointerHitMeta) => void) {
+  pointer(id: number, surface: number, point: [number, number] | null, hit?: (key: string | null, meta?: PointerHitMeta) => void, trackHover = false) {
     if (this.closed) return;
     const widget = this.widgets.get(id);
     if (!widget) return;
@@ -1069,7 +1098,15 @@ export class Pipeline {
     if (!waiting) this.hits.set(id, waiting = []);
     const installed = this.page.widgets.get(id)?.installed?.id;
     waiting.push({ ...(hit ? { hit } : {}), ...(installed !== undefined ? { installed } : {}) });
-    this.postLane(widget.lane, { type: 'pointer', widget: id, surface, point, ...(installed !== undefined ? { installed } : {}) });
+    this.postLane(widget.lane, { type: 'pointer', widget: id, surface, point, ...(installed !== undefined ? { installed } : {}), ...(trackHover ? { trackHover: true } : {}) });
+  }
+
+  onPlaybackHover(id: number, listener: () => void) {
+    const widget = this.widgets.get(id);
+    if (!widget) return () => {};
+    const listeners = widget.playbackHoverListeners ??= new Set();
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
   }
 
   exact(sub: number, hour: number, data: unknown, refused: string | null) {

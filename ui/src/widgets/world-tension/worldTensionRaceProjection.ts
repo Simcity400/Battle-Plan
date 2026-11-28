@@ -18,6 +18,7 @@ export type WorldTensionRaceOptions = SeriesRaceBaseOptions;
 export const worldTensionRaceProjection: BarsProjection<WorldTensionRaceOptions> = registerFamilyProjection({
   kind: 'world-tension',
   family: 'bars',
+  singleValueBars: () => true,
   nextChange: () => Infinity,
   project(readView: BoundedReadView, options: WorldTensionRaceOptions): BarsModel {
     return projectSeriesRace(readView, options, {

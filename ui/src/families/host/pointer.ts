@@ -61,6 +61,7 @@ export interface FamilyPointerBindingOptions {
   readonly focusAnchorRef: { readonly current: { x: number; y: number } };
   readonly accessibleRef: { readonly current: HTMLElement | null };
   readonly pointerMode?: FamilyPointerMode;
+  readonly playbackHover?: boolean;
   readonly isBlocked: () => boolean;
   readonly getViewportHeight: () => number;
   readonly getInstalled?: () => InstalledPicture | null;
@@ -116,6 +117,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     focusAnchorRef,
     accessibleRef,
     pointerMode = 'discrete',
+    playbackHover = false,
     isBlocked,
     getViewportHeight,
     getInstalled,
@@ -208,8 +210,22 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
           };
         });
       }
-    });
+    }, playbackHover);
   };
+
+  const stopPlaybackHover = playbackHover ? pipeline.onPlaybackHover(pipe, () => {
+    const last = lastPointerRef.current;
+    if (!last) return;
+    hoverVisit++;
+    tooltips.cancelHoverOpen();
+    if (inspectedKeyRef.current !== null) {
+      inspectedKeyRef.current = null;
+      notifyHover(null);
+      pipeline.inspect(pipe, null);
+      tooltips.hideIfUnpinned();
+    }
+    if (!pointerDown?.dragging && !pointerDown?.rowDrag && !isBlocked()) hover(last.x, last.y);
+  }) : undefined;
 
   const onPointerMove = (event: PointerEvent) => {
     if (!event.isTrusted) return;
@@ -410,6 +426,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
 
   const clearHover = () => {
     tooltips.cancelHoverOpen();
+    if (playbackHover && lastPointerRef.current) pipeline.pointer(pipe, 0, null);
     lastPointerRef.current = null;
     hoverVisit++;
     if (inspectedKeyRef.current === null && lastHoverKey === null && lastHoverHour === undefined) return;
@@ -420,9 +437,11 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
   };
 
   return Object.assign(() => {
+    stopPlaybackHover?.();
     if (pointerDown) endDrag(pointerDown);
     pointerDown = null;
     tooltips.cancelTimers();
+    const hadPointer = lastPointerRef.current !== null;
     lastPointerRef.current = null;
     hoverVisit++;
     if (inspectedKeyRef.current !== null || lastHoverKey !== null || lastHoverHour !== undefined) {
@@ -430,7 +449,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
       notifyHover(null);
       pipeline.pointer(pipe, 0, null);
       pipeline.inspect(pipe, null);
-    }
+    } else if (playbackHover && hadPointer) pipeline.pointer(pipe, 0, null);
     tooltips.hideIfUnpinned();
     bodyNode.removeEventListener('pointermove', onPointerMove);
     bodyNode.removeEventListener('pointerleave', onPointerLeave);

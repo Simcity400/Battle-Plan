@@ -131,6 +131,28 @@ function positiveScale(provided: number | null | undefined, fallback: number): n
   return fallback > 0 ? fallback : 1;
 }
 
+export function barsScales(model: BarsModel, wantAxis: boolean): { readonly scaleMax: number; readonly scaleLeftMax: number; readonly scaleRightMax: number } {
+  let dataMax = 0;
+  let dataLeftMax = 0;
+  let dataRightMax = 0;
+  for (let i = 0; i < model.rows.length; i++) {
+    const row = model.rows[i]!;
+    if (row.kind !== 'data') continue;
+    const d = row as BarsDataRow;
+    if (d.numeric !== undefined && d.numeric !== null) dataMax = Math.max(dataMax, Math.abs(d.numeric));
+    if (d.target) dataMax = Math.max(dataMax, Math.abs(d.target.numeric));
+    if (d.left?.numeric !== undefined && d.left.numeric !== null) dataLeftMax = Math.max(dataLeftMax, Math.abs(d.left.numeric));
+    if (d.right?.numeric !== undefined && d.right.numeric !== null) dataRightMax = Math.max(dataRightMax, Math.abs(d.right.numeric));
+    if (d.rightSide?.numeric !== undefined && d.rightSide.numeric !== null) dataRightMax = Math.max(dataRightMax, Math.abs(d.rightSide.numeric));
+  }
+  const sharedTwoSidedMax = Math.max(dataMax, dataLeftMax, dataRightMax);
+  const wholeScale = isWholeScaleFormat(model.scaleFormat);
+  const scaleMax = positiveScale(model.scaleMax, model.form === 'two-sided' ? sharedTwoSidedMax : wantAxis ? axisCeiling(dataMax, wholeScale) : dataMax);
+  const scaleLeftMax = positiveScale(model.scaleLeftMax ?? model.scaleMax, sharedTwoSidedMax);
+  const scaleRightMax = positiveScale(model.scaleRightMax ?? model.scaleMax, sharedTwoSidedMax);
+  return { scaleMax, scaleLeftMax, scaleRightMax };
+}
+
 export function layoutFamilyBars(
   model: BarsModel,
   width: number,
@@ -349,24 +371,7 @@ function layoutBarsBody(
     centerX = Math.round((plotLeft + plotRight) / 2);
   }
 
-  let dataMax = 0;
-  let dataLeftMax = 0;
-  let dataRightMax = 0;
-  for (let i = 0; i < model.rows.length; i++) {
-    const row = model.rows[i]!;
-    if (row.kind !== 'data') continue;
-    const d = row as BarsDataRow;
-    if (d.numeric !== undefined && d.numeric !== null) dataMax = Math.max(dataMax, Math.abs(d.numeric));
-    if (d.target) dataMax = Math.max(dataMax, Math.abs(d.target.numeric));
-    if (d.left?.numeric !== undefined && d.left.numeric !== null) dataLeftMax = Math.max(dataLeftMax, Math.abs(d.left.numeric));
-    if (d.right?.numeric !== undefined && d.right.numeric !== null) dataRightMax = Math.max(dataRightMax, Math.abs(d.right.numeric));
-    if (d.rightSide?.numeric !== undefined && d.rightSide.numeric !== null) dataRightMax = Math.max(dataRightMax, Math.abs(d.rightSide.numeric));
-  }
-  const sharedTwoSidedMax = Math.max(dataMax, dataLeftMax, dataRightMax);
-  const wholeScale = isWholeScaleFormat(model.scaleFormat);
-  const scaleMax = positiveScale(model.scaleMax, form === 'two-sided' ? sharedTwoSidedMax : wantAxis ? axisCeiling(dataMax, wholeScale) : dataMax);
-  const scaleLeftMax = positiveScale(model.scaleLeftMax ?? model.scaleMax, sharedTwoSidedMax);
-  const scaleRightMax = positiveScale(model.scaleRightMax ?? model.scaleMax, sharedTwoSidedMax);
+  const { scaleMax, scaleLeftMax, scaleRightMax } = barsScales(model, wantAxis);
 
   return {
     form,

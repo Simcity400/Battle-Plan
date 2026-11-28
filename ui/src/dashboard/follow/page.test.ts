@@ -26,6 +26,26 @@ function page({ surfaces = 2, offset = 0, pin = null as number | null, bounds = 
   return { p, posted, shown, offer, frames, view: () => p.view(1) };
 }
 
+test('installing a change to recorded direct bars counts once without a page pixel write', () => {
+  const { p, offer } = page({ surfaces: 0 });
+  const seed = entry({ n: 0, id: 1, c: 10, repainted: false });
+  const changed = { ...seed, recordedPicture: true as const, content: { ...seed.content, 0: 'first' } };
+  offer(changed);
+  assert.equal(p.takePictures(), 0);
+  p.publish(0, { playing: true });
+  assert.equal(p.takePictures(), 1);
+  offer({ ...changed, id: 2, c: 20, fields: { legend: SAME, a11y: SAME } });
+  p.publish(1);
+  assert.equal(p.takePictures(), 0);
+  const next = { ...changed, id: 3, h: 2, lo: 2, c: 25, content: { ...changed.content, 0: 'second' } };
+  offer({ ...next, binding: 99 });
+  p.publish(2);
+  assert.equal(p.takePictures(), 0);
+  offer({ ...next, id: 4 });
+  p.publish(2);
+  assert.equal(p.takePictures(), 1);
+});
+
 test('whole widget: a presentation missing one crop installs nothing, and the complete picture stays', () => {
   const { p, shown, offer, view } = page();
   offer(entry({ id: 1, content: 'red' })); p.publish(0);
@@ -104,6 +124,17 @@ test('while playing, an entry whose window ended before the actual target still 
   assert.deepEqual([view().id, frames().at(-1)!.refused.map(r => [r.id, r.reason])], [2, [[3, 'superseded']]]);
   offer(entry({ id: 4, h: 130, c: 143, lo: 130, hi: 143 })); p.publish(152);
   assert.deepEqual([view().id, view().h], [4, 130], 'the same window end with a later start is the newer picture');
+});
+
+test('a delayed playback refusal cannot cover a held reading after the refusal expires', () => {
+  const { p, offer, view, frames } = page({ surfaces: 0 });
+  offer(entry({ n: 0, id: 1, h: 100, c: 100, lo: 100, hi: 100 }));
+  p.publish(100, { playing: true });
+  const delayed = { ...entry({ n: 0, id: 2, h: 101, c: 101, lo: 101, hi: 101 }), playbackUnavailable: true as const };
+  offer(delayed);
+  p.publish(102);
+  assert.equal(view().id, 1);
+  assert.deepEqual(frames().at(-1)!.refused.map(r => [r.id, r.reason]), [[2, 'uncovered']]);
 });
 
 test('review 3: a paused step to 20 never installs a delayed entry whose window ended at 14; the visible picture stays, dimmed', () => {

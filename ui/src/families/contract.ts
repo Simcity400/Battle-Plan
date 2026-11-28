@@ -80,6 +80,7 @@ export interface FamilyTheme {
 export interface FamilyProjection<TModel, TOptions> {
   readonly kind: string;
   readonly family: FamilyId;
+  singleValueBars?(options: TOptions): boolean;
   project(readView: BoundedReadView, options: TOptions): TModel;
   nextChange?(readView: BoundedReadView, options: TOptions): number;
   readonly validateTail?: TailValidator;

@@ -2,12 +2,13 @@ import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import { textWidth } from '../../charts/textWidth.ts';
 import type { LaneBinding, LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
-import { barsAuditWindow, barsRangeForBand, barsScrollHeight, layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
-import { assertBarsModelValid, barsLabelText, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, formatBarsValueField, type BarsDataRow, type BarsModel, type BarsValueField } from './model.ts';
+import { barsAuditWindow, barsRangeForBand, barsScrollHeight, layoutFamilyBars, visibleBarsRange, barsScales, type BarsLayout } from './layout.ts';
+import { assertBarsModelValid, barsLabelText, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, formatBarsValueField, isSingleValueOrdered, type BarsDataRow, type BarsModel, type BarsValueField } from './model.ts';
 import { collectVisibleBarsIcons, drawFamilyBars, easeBarFraction, hitFamilyBars, type BarsEasedRow, type BarsGlideOffset } from './painter.ts';
 import { hitPickList, pickAudit, pickedKey, pickNav, pickTooltip } from './pickList.ts';
 import { barsRegionRows } from './shareRows.ts';
 import { regionHitKey } from '../regions/regionRows.ts';
+import type { ValueFormat } from '../valueFormat.ts';
 
 export interface FamilyBarsBinding<TOptions = unknown> extends LaneBinding<TOptions> {
   readonly family: 'bars';
@@ -29,6 +30,7 @@ const STILL: Glide = { duration: 0, offsets: new Map(), moving: false };
 const glides = new WeakMap<BarsLayout, { readonly continuity: number; readonly scrollTop: number; readonly offsets: ReadonlyMap<string, BarsGlideOffset> }>();
 
 function glideOf(frame: BarsFrame): Glide {
+  if (frame.exactPlayback) return STILL;
   const { model, layout, before, binding } = frame;
   const duration = model.animateOrder ? glideDurationForSpeed(frame.speed, binding.reducedMotion, binding.motion?.glideDurationMs) : 0;
   if (duration === 0 || !before || before.hour === frame.hour || frame.now - frame.changedAt >= duration) return { ...STILL, duration };
@@ -182,6 +184,55 @@ function inspected(inspect: string | null): { readonly key: string; readonly sid
   return null;
 }
 
+function sameFormat(first: ValueFormat | undefined, second: ValueFormat | undefined): boolean {
+  return first === second || (typeof first === 'object' && typeof second === 'object'
+    && first.decimals === second.decimals && first.maxDecimals === second.maxDecimals
+    && first.fixedDecimals === second.fixedDecimals && first.signed === second.signed
+    && first.percent === second.percent && first.unit === second.unit);
+}
+
+function sameRows(first: BarsModel, second: BarsModel): boolean {
+  if (first === second) return true;
+  if (first.showAxis !== second.showAxis || first.rowHeight !== second.rowHeight || first.barHeight !== second.barHeight
+    || first.caption !== second.caption || first.scaleUnit !== second.scaleUnit || !sameFormat(first.scaleFormat, second.scaleFormat)
+    || first.leftHeader !== second.leftHeader || first.rightHeader !== second.rightHeader || first.rows.length !== second.rows.length) return false;
+  return first.rows.every((row, i) => {
+    const next = second.rows[i]!;
+    if (row.key !== next.key || row.kind !== next.kind) return false;
+    if (row.kind !== 'data') return next.kind !== 'data' && row.label === next.label;
+    return next.kind === 'data' && row.subject === next.subject && row.group === next.group && row.region === next.region
+      && row.label?.kind === next.label?.kind && barsLabelText(row.label) === barsLabelText(next.label)
+      && row.media?.kind === next.media?.kind && sameFormat(row.value?.format, next.value?.format);
+  });
+}
+
+function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number): BarsFrame | false | null {
+  const current = frame.model;
+  if (!isSingleValueOrdered(next) || !sameRows(current, next)) return null;
+  const rows: BarsModel['rows'][number][] = [];
+  let changed = false;
+  for (let i = 0; i < current.rows.length; i++) {
+    const row = current.rows[i]!;
+    const end = next.rows[i]!;
+    if (row.kind === 'section') { rows.push(row); continue; }
+    if (row.kind !== 'data' || end.kind !== 'data' || row.numeric == null || end.numeric == null
+      || !row.value || !end.value
+      || (row.value.value.kind !== 'zero' && row.value.value.kind !== 'known')
+      || (end.value.value.kind !== 'zero' && end.value.value.kind !== 'known')) return null;
+    if (row.numeric === end.numeric) { rows.push(row); continue; }
+    changed = true;
+    rows.push({ ...row, numeric: row.numeric + (end.numeric - row.numeric) * fraction });
+  }
+  if (!changed) return false;
+  const currentScale = frame.layout.scaleMax;
+  const endScale = barsScales(next, frame.layout.showAxis).scaleMax;
+  return {
+    ...frame,
+    model: { ...current, rows },
+    layout: { ...frame.layout, scaleMax: currentScale + (endScale - currentScale) * fraction },
+  };
+}
+
 export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
   family: 'bars',
   boundary(model, hour) {
@@ -189,6 +240,12 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     return model.nextChangeAt ?? Infinity;
   },
   redraw: () => Infinity,
+  playback: {
+    enabled: binding => !binding.reducedMotion && !binding.motion,
+    supports: isSingleValueOrdered,
+    unavailable: model => model.emptyKind === 'unavailable',
+    frame: orderedMotion,
+  },
   status: model => (model.rows.length > 0 || model.empty !== undefined ? 'picture' : 'scene'),
   view: [],
   layout(model, _binding, surface, theme, measure) {
@@ -253,7 +310,7 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     const fixedHour = dataHour ?? (payload.hour !== undefined && payload.hour !== frame.model.hour ? payload.hour : undefined);
     return { rowKey: target.key, payload, ...(fixedHour !== undefined ? { hour: fixedHour } : {}) };
   },
-  structure({ model, layout }) {
+  structure({ model, layout, exactPlayback }) {
     const regions = barsRegionRows(model, layout);
     return {
       ...(regions ? { regions } : {}),
@@ -270,6 +327,7 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
         empty: model.empty ?? null,
         emptyDetail: model.emptyDetail ?? null,
         emptyKind: model.emptyKind ?? 'empty',
+        ...(exactPlayback && model.emptyKind === 'unavailable' ? { playbackUnavailable: true } : {}),
         notes: model.notes ?? [],
         warnings: model.warnings ?? [],
       },

@@ -110,6 +110,7 @@ function projectTerritoryCountries(readView: BoundedReadView, options: Territory
 export const territoryRaceProjection: BarsProjection<TerritoryRaceOptions> = registerFamilyProjection({
   kind: 'territory',
   family: 'bars',
+  singleValueBars: () => true,
   project(readView: BoundedReadView, options: TerritoryRaceOptions): BarsModel {
     if (options.mode === 'factions') {
       return projectFactionTotalsRace(readView, options.factions);

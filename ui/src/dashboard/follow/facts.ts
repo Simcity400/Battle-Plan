@@ -124,6 +124,14 @@ export class Facts<V> {
     return best;
   }
 
+  canHoldCarried(id: number, hour: number): boolean {
+    const sub = this.subs.get(id);
+    const carried = sub?.carried;
+    if (!carried) return false;
+    const replacement = sub.facts.find(fact => fact.c >= carried.h);
+    return !replacement || (hour < replacement.h && hour <= carried.c);
+  }
+
   prunable(id: number): boolean {
     const sub = this.subs.get(id);
     if (!sub) return false;
@@ -479,7 +487,7 @@ export class Facts<V> {
     return null;
   }
 
-  select(id: number, target: number): Picture<V> | null {
+  select(id: number, target: number, accept?: (picture: Picture<V>) => boolean): Picture<V> | null {
     const sub = this.subs.get(id);
     if (!sub) return null;
     this.materializePanel(sub);
@@ -490,12 +498,12 @@ export class Facts<V> {
       if (first) {
         first = false;
         const covering = this.join(fact, target, true);
-        if (covering) return covering;
+        if (covering && (!accept || accept(covering))) return covering;
       }
       const latest = this.join(fact, target, false);
-      if (latest) return latest;
+      if (latest && (!accept || accept(latest))) return latest;
     }
-    return sub.carried && sub.carried.h <= target ? sub.carried : null;
+    return sub.carried && sub.carried.h <= target && (!accept || accept(sub.carried)) ? sub.carried : null;
   }
 
   window(id: number, target: number, picture: Picture<V> | null = this.select(id, target)): Window | null {

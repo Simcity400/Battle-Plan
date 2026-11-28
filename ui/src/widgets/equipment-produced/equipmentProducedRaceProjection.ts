@@ -186,6 +186,7 @@ export function buildExactParams(base: Readonly<Record<string, unknown>>, hour: 
 export const equipmentProducedRaceProjection: BarsProjection<EquipmentProducedRaceOptions> = registerFamilyProjection({
   kind: 'equipment-produced',
   family: 'bars',
+  singleValueBars: () => true,
   project(readView: BoundedReadView, options: EquipmentProducedRaceOptions): BarsModel {
     const hour = readView.hour;
     const valueFormat: ValueFormat = options.count === 'ic' ? { decimals: 0, maxDecimals: 2 } : { decimals: 0 };

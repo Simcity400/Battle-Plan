@@ -181,6 +181,7 @@ export interface FamilyMetaState {
   readonly empty: string | null;
   readonly emptyDetail: string | null;
   readonly emptyKind: 'empty' | 'unavailable';
+  readonly playbackUnavailable?: true;
   readonly summaryText: string | null;
   readonly summaryPartial: string | null;
   readonly notes: readonly string[];
