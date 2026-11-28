@@ -590,7 +590,7 @@ test('inactive lane in pinwheel layout does not emit an unclipped viewport canva
   assert.equal(geom.clipPathFallback, false);
 });
 
-test('round-2 regressions: direct uncovered hold, direct lastNow window tracking, clearCanvas bitmap fallback, scroll blit preservation, and repainted telemetry', async () => {
+test('round-2 regressions: shared look-ahead, uncovered pause, bitmap fallback, scroll blit, and repainted telemetry', async () => {
   const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
   Object.defineProperty(globalThis, 'OffscreenCanvas', {
     value: class {
@@ -603,6 +603,7 @@ test('round-2 regressions: direct uncovered hold, direct lastNow window tracking
         this.ctx = fakeContext2D().ctx;
       }
       getContext() { return this.ctx; }
+      transferToImageBitmap() { return { width: this.width, height: this.height, close() {} }; }
     },
     configurable: true,
   });
@@ -616,6 +617,9 @@ test('round-2 regressions: direct uncovered hold, direct lastNow window tracking
     }, 'main');
 
     const paintedHours: number[] = [];
+    const directPaintedHours: number[] = [];
+    const sharedCanvas = fakeOffscreenCanvas(800, 600);
+    const glassCanvas = fakeOffscreenCanvas(380, 240);
     const family: LaneFamily<LaneBinding, { readonly hour: number }, { readonly hour: number }> = {
       family: 'bars',
       boundary: (_model, hour) => hour + 1,
@@ -623,8 +627,9 @@ test('round-2 regressions: direct uncovered hold, direct lastNow window tracking
       status: () => 'picture',
       view: [],
       layout: (model) => ({ hour: model.hour }),
-      paint(_ctx, frame) {
+      paint(ctx, frame) {
         paintedHours.push(frame.hour);
+        if (ctx === sharedCanvas.ctx || ctx === glassCanvas.ctx) directPaintedHours.push(frame.hour);
         return false;
       },
       hit: () => null,
@@ -659,8 +664,6 @@ test('round-2 regressions: direct uncovered hold, direct lastNow window tracking
     lane.setLaneSurface({ width: 1, height: 1, getContext: () => null } as unknown as OffscreenCanvas, true);
     assert.equal(surfaceFailed, 1);
 
-    const sharedCanvas = fakeOffscreenCanvas(800, 600);
-    const glassCanvas = fakeOffscreenCanvas(380, 240);
     lane.setLaneSurface(sharedCanvas.canvas, true);
     lane.setCanvas(1, glassCanvas.canvas, false);
     lane.mount(1, [], 'bars', {
@@ -686,8 +689,8 @@ test('round-2 regressions: direct uncovered hold, direct lastNow window tracking
       slots: [{ widget: 1, x: 0, y: 20, w: 380, h: 240, visible: true }],
     });
 
-    const tick = async (serial: number, now: number, target: number, exact: boolean) => {
-      const acks = presented.splice(0).map(p => ({ id: p.id, widget: p.widget, binding: p.binding }));
+    const tick = async (serial: number, now: number, target: number, exact: boolean, retireEarly = false) => {
+      const previous = presented.splice(0);
       lane.frame({
         type: 'frame',
         serial,
@@ -697,21 +700,28 @@ test('round-2 regressions: direct uncovered hold, direct lastNow window tracking
         exact,
         speed: exact ? 0 : 24,
         inspect: [],
-        installed: acks,
-        refused: [],
+        installed: retireEarly ? [] : previous.map(({ id, widget, binding }) => ({ id, widget, binding })),
+        refused: retireEarly ? previous.map(({ id, widget }) => ({ id, widget, reason: 'retired' })) : [],
       });
       for (let i = 0; i < 6; i++) await Promise.resolve();
     };
 
-    await tick(1, 10, 14, false);
+    await tick(1, 10, 11, false);
     assert.deepEqual(paintedHours, []);
 
-    await tick(2, 12, 16, false);
-    assert.deepEqual(paintedHours, [12]);
+    await tick(2, 10, 14, false);
+    assert.deepEqual(paintedHours, [14]);
+    assert.deepEqual(directPaintedHours, []);
+    assert.equal(sharedCanvas.ops.includes('drawImage'), false);
     assert.equal(presented.at(-1)?.repainted, true);
 
-    await tick(3, 20, 20, true);
-    assert.deepEqual(paintedHours, [12]);
+    await tick(3, 12, 12, true, true);
+    assert.deepEqual(paintedHours, [14, 12]);
+    assert.deepEqual(directPaintedHours, [12]);
+    assert.equal(presented.at(-1)?.repainted, true);
+
+    await tick(4, 20, 20, true);
+    assert.deepEqual(paintedHours, [14, 12]);
 
     sharedCanvas.ops.length = 0;
     lane.setLaneSlots({
@@ -742,11 +752,11 @@ test('round-2 regressions: direct uncovered hold, direct lastNow window tracking
       slots: [],
     });
     lane.clearCanvas(1);
-    await tick(4, 15, 15, true);
+    await tick(5, 15, 15, true);
     assert.equal(presented.at(-1)?.surfaces, 1);
 
     lane.useCanvas(1);
-    await tick(5, 16, 16, true);
+    await tick(6, 16, 16, true);
     assert.equal(presented.at(-1)?.surfaces, 0);
     assert.equal(paintedHours.at(-1), 16);
   } finally {
