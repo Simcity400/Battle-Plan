@@ -2,8 +2,7 @@ import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, use
 import { panelReply } from '../../dashboard/follow/panel.ts';
 import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import { PreparingPage } from '../../dashboard/preparing.ts';
-import { installedModel, installedPanel, useFollowedSub, useFollowedWidget, useInstalled, usePipeline } from '../../dashboard/follow/useFollowed.ts';
-import { formatDay } from '../../dashboard/calendar.ts';
+import { installedModel, installedPanel, useFollowedSub, useFollowedWidget, usePipeline } from '../../dashboard/follow/useFollowed.ts';
 import { validateProductReply } from '../../dashboard/client.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack, WidgetBase } from '../../dashboard/model';
@@ -27,11 +26,11 @@ import {
   createActivityClockTracker,
   mergeActivityStrip,
   shouldFetchActivityStrip,
-  stripBinCoverage,
   stripBinHours,
   subscribeActivityClock,
   type StripState,
 } from './activityStrip.ts';
+import { createActivityPicture } from './activityPicture.ts';
 import { CATEGORIES } from './definition.ts';
 import './eventFeedActivityStrip.css';
 
@@ -48,12 +47,6 @@ export interface EventFeedActivityStripProps {
   readonly installedHour?: number | null;
   readonly context: FamilyPlanContext | null;
   readonly refusal?: string | null;
-}
-
-function stripDateLabel(hour: number): string {
-  const full = formatDay(hour);
-  const parts = full.split(' ');
-  return parts.length >= 2 ? `${parts[0]} ${parts[1]}` : full;
 }
 
 export default function EventFeedActivityStrip(props: EventFeedActivityStripProps) {
@@ -86,9 +79,6 @@ function FollowedActivityStrip({ widget, track, runtime, active, categories, exc
     { offset: track?.axisOffset ?? 0, bounds, pin: null, widget: widgetKey, kind: 'event-feed:activity' });
   const follow = track ? { source: track.source, branch: track.branch.id, offset: track.axisOffset } : null;
   const sub = useFollowedSub(pipeline, placement, follow, checked?.query ?? null, 'panel', 'event-feed-activity');
-  const view = useInstalled(pipeline, placement);
-  const panel = !view?.dim && view?.mode === 'picture' ? installedPanel(installedModel(view, sub)) : undefined;
-  const { data, error } = panelReply(panel, activityReply);
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || placement === null || sub === undefined || !track || !params) return;
     pipeline.audit(placement, sub, fields => {
@@ -111,27 +101,33 @@ function FollowedActivityStrip({ widget, track, runtime, active, categories, exc
     }, pipeline.generation);
     return () => { stopReader(); pipeline.audit(placement, sub, null); };
   }, [pipeline, placement, sub, track, params, runtime.client, gate.recorded]);
-  const subscribeHour = useCallback((changed: () => void) => {
-    if (!pipeline || placement === null) return () => {};
-    const stopInstall = pipeline.onInstall(placement, changed);
-    const stopDate = pipeline.onDate(placement, changed);
-    return () => { stopInstall(); stopDate(); };
-  }, [pipeline, placement]);
-  const readHour = useCallback(() => {
-    const shown = pipeline && placement !== null ? pipeline.view(placement) : null;
-    return shown?.mode === 'picture' && !shown.dim ? shown.through ?? null : null;
-  }, [pipeline, placement]);
-  const hour = useSyncExternalStore(subscribeHour, readHour, readHour);
+  const host = useRef<HTMLDivElement>(null);
   const first = track?.branch.firstHour;
-  const strip = useMemo(() => {
-    if (!data || hour === null || first === undefined) return null;
-    const from = activityStripStart(first, null, hour);
-    return buildFullActivityStrip(data, activityRequestPlan(null, '', from, hour, data.binHours));
-  }, [data, hour, first]);
-  const unavailable = refusal ?? checked?.refused ?? error?.message
-    ?? (view?.mode === 'refused' || view?.mode === 'failed' ? view.reason : null);
-  if (unavailable) return <div className="efs-strip is-unavailable" role="status" aria-label="Event activity strip">{unavailable}</div>;
-  return strip ? <ActivityPicture strip={strip} groupGaps={context?.countries.unobserved} /> : null;
+  const groupGaps = context?.countries.unobserved;
+  const refused = refusal ?? checked?.refused;
+  useLayoutEffect(() => {
+    const paint = createActivityPicture(host.current!);
+    let previous: { data: EventFeedActivityReply | undefined; hour: number | null; reason: string | null } | undefined;
+    const update = () => {
+      const view = pipeline && placement !== null ? pipeline.view(placement) : null;
+      const picture = view?.mode === 'picture' && !view.dim;
+      const { data, error } = panelReply(picture ? installedPanel(installedModel(view, sub)) : undefined, activityReply);
+      const hour = picture ? view.through ?? null : null;
+      const reason = refused ?? error?.message ?? (view?.mode === 'refused' || view?.mode === 'failed' ? view.reason : null) ?? null;
+      if (previous && previous.data === data && previous.hour === hour && previous.reason === reason) return;
+      previous = { data, hour, reason };
+      const strip = !reason && data && hour !== null && first !== undefined
+        ? buildFullActivityStrip(data, activityRequestPlan(null, '', activityStripStart(first, null, hour), hour, data.binHours))
+        : null;
+      paint(strip, groupGaps, reason);
+    };
+    update();
+    if (!pipeline || placement === null) return;
+    const stopInstall = pipeline.onInstall(placement, update);
+    const stopDate = pipeline.onDate(placement, update);
+    return () => { stopInstall(); stopDate(); };
+  }, [pipeline, placement, sub, first, groupGaps, refused]);
+  return <div ref={host} hidden />;
 }
 
 function AskedActivityStrip({
@@ -303,65 +299,11 @@ const ActivityPicture = memo(function ActivityPicture({ strip, groupGaps }: {
   readonly strip: StripState;
   readonly groupGaps?: FamilyPlanContext['countries']['unobserved'];
 }) {
-  const totals = new Array<number>(strip.binCount).fill(0);
-  for (const s of strip.series) {
-    for (let i = 0; i < strip.binCount; i++) totals[i]! += s.counts[i] ?? 0;
-  }
-  const maxTotal = Math.max(1, ...totals);
-  const { gapBins, partBins } = stripBinCoverage(
-    strip.firstHour,
-    strip.boundFirstHour,
-    strip.lastHour,
-    strip.binHours,
-    strip.binCount,
-    strip.missing,
-    groupGaps,
-  );
-
-  const tickCount = Math.min(5, Math.max(2, Math.floor(strip.binCount / 10) + 1));
-  const ticks: { readonly pct: number; readonly label: string; readonly first: boolean; readonly last: boolean }[] = [];
-  for (let i = 0; i < tickCount; i++) {
-    const frac = tickCount === 1 ? 0 : i / (tickCount - 1);
-    const hour = Math.round(strip.firstHour + frac * Math.max(0, strip.lastHour - strip.firstHour));
-    ticks.push({ pct: frac * 100, label: stripDateLabel(hour), first: i === 0, last: i === tickCount - 1 });
-  }
-
-  const windowPct = Math.max(6, Math.min(18, Math.round((3 / Math.max(1, strip.binCount)) * 100)));
-
-  return (
-    <div className="efs-strip" aria-label="Event activity strip">
-      <div className="efs-bars">
-        {Array.from({ length: strip.binCount }, (_, idx) => {
-          if (gapBins.has(idx) && totals[idx] === 0) {
-            return <span key={idx} className="efs-gap" title="Not recorded" />;
-          }
-          const barTotal = totals[idx]!;
-          const maxPx = 22;
-          const partly = gapBins.has(idx) || partBins.has(idx);
-          return (
-            <span key={idx} className={partly ? 'efs-bar is-partial' : 'efs-bar'} {...(partly ? { title: 'Partly not recorded' } : {})}>
-              {barTotal > 0 ? strip.series.map(s => {
-                const count = s.counts[idx] ?? 0;
-                if (count <= 0) return null;
-                const px = Math.round(Math.max(1, (count / maxTotal) * maxPx) * 10) / 10;
-                return <i key={s.category} className={`efs-seg is-${s.category}`} style={{ height: `${px}px` }} />;
-              }) : null}
-            </span>
-          );
-        })}
-      </div>
-      <div className="efs-win" style={{ right: 0, width: `${windowPct}%` }} aria-hidden="true" />
-      <div className="efs-axis">
-        {ticks.map((tick, idx) => (
-          <span
-            key={idx}
-            className={`efs-tick${tick.first ? ' is-first' : ''}${tick.last ? ' is-last' : ''}`}
-            style={{ left: `${tick.pct}%` }}
-          >
-            {tick.label}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
+  const host = useRef<HTMLDivElement>(null);
+  const painter = useRef<ReturnType<typeof createActivityPicture> | null>(null);
+  useLayoutEffect(() => {
+    painter.current ??= createActivityPicture(host.current!);
+    painter.current(strip, groupGaps);
+  }, [strip, groupGaps]);
+  return <div ref={host} />;
 });

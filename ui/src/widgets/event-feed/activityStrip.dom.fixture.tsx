@@ -1,3 +1,4 @@
+import { Profiler } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
@@ -116,15 +117,19 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
   const root = createRoot(container);
   const perf = audited ? new PerfRecorder() : null;
   if (perf) measureWith(perf);
+  let commits = 0;
   root.render(integrated
     ? <EventFeed.render {...{ widget, runtime, active: true, options: { politics: true, warsPeace: false, diplomacy: false, milestones: false }, manifestDeclaration: eventFeedDeclaration } as unknown as FamilyViewProps} />
-    : <EventFeedActivityStrip {...{ widget, track, runtime, active: true, categories: ['politics'], from: 100, pinnedHour: hours ? null : 191, context }} />);
+    : <Profiler id="activity strip" onRender={() => { commits++; }}>
+        <EventFeedActivityStrip {...{ widget, track, runtime, active: true, categories: ['politics'], from: 100, pinnedHour: hours ? null : 191, context }} />
+      </Profiler>);
   const pipeline = pipelineOf(clock, client);
   try {
     await whenShown(container, () => container.querySelector(hours > 0 || !integrated ? '.efs-strip' : '.efs-strip, [data-state="refused"]'));
     await perf?.beginAudit();
     const before = asked.filter(request => request.product === 'event-feed-activity').length;
     const beforeBins = container.querySelectorAll('.efs-bars > span').length;
+    const beforeCommits = commits;
     if (hours > 0) {
       const placement = [...pipeline.page.widgets.keys()].find(id => installedModel(pipeline.view(id), follow?.id));
       if (placement === undefined) throw new Error('The followed activity strip has no installed panel');
@@ -162,6 +167,7 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
     const audits = await perf?.auditPictures();
     return {
       hour: clock.getSnapshot().hour, beforeBins, lastConfirmation,
+      playingCommits: commits - beforeCommits,
       before, count: duringPlayback, audits,
       activities: asked.filter(request => request.product === 'event-feed-activity').map(request => request.params),
       followed: asked.flatMap(request => {
@@ -169,6 +175,7 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
         return request.product === 'follow' && query?.panel === 'event-feed-activity' ? [query] : [];
       }),
       bins: container.querySelectorAll('.efs-bars > span').length,
+      segments: container.querySelectorAll('.efs-seg.is-politics').length,
       tails: asked.filter(request => request.product === 'event-feed-tail').map(request => request.params),
       groups: asked.filter(request => request.product === 'country-groups').length,
       strip: container.querySelector('.efs-strip')?.textContent,

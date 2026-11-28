@@ -6,8 +6,9 @@ interface Result {
   hour: number;
   before: number; count: number; activities: Record<string, unknown>[]; tails: Record<string, unknown>[]; groups: number;
   strip: string; statuses: string[]; partial: number; missing: number;
-  followed: Record<string, unknown>[]; bins: number;
+  followed: Record<string, unknown>[]; bins: number; segments: number;
   beforeBins: number; lastConfirmation: number | null;
+  playingCommits: number;
   audits?: { hour: number; error: string | null }[];
 }
 
@@ -53,6 +54,11 @@ test('one followed log widget receives activity over 1000 played hours without e
     assert.equal(result.count, 0);
     assert.equal(result.followed.length, 1);
     assert.equal(result.bins, 42);
+    const strip = await page.evaluate<Result>('window.activityStripFixture.run({kind:"all"}, false, 72, false, 24)');
+    assert.equal(strip.hour, 172);
+    assert.equal(strip.bins, 4);
+    assert.equal(strip.segments, 1);
+    assert.equal(strip.playingCommits, 0);
   })));
 
 test('a native confirmation advances activity into a quiet new day', () =>
@@ -64,6 +70,7 @@ test('a native confirmation advances activity into a quiet new day', () =>
     assert.equal(result.count, 0);
     assert.equal(result.followed.length, 1);
     assert.equal(result.bins, 2);
+    assert.equal(result.playingCommits, 0);
     assert.ok(result.audits);
     assert.ok(result.audits.some(sample => sample.hour === 120 && sample.error === null), 'the quiet new day agrees with the exact product');
     const mismatches = result.audits.filter(sample => sample.error !== null);
