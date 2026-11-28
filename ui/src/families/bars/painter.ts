@@ -37,6 +37,7 @@ import type { FamilyTheme } from '../contract.ts';
 import {
   BARS_PAD_X,
   BARS_VALUE_GAP,
+  fitOrderedNameWidth,
   isWholeScaleFormat,
   visibleBarsRange,
   type BarsLayout,
@@ -353,7 +354,9 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   const disambiguatedRightNames = new Map<string, string>();
   const nameFontSize = theme.fontSize.body;
   const nameLineH = labelLineHeight(nameFontSize);
-  if (layout.nameWidth > 0) {
+  const nameWidth = model.form === 'ordered' && layout.showReadout
+    ? fitOrderedNameWidth(layout.nameWidth, layout.nameX, layout.plotLeft) : layout.nameWidth;
+  if (nameWidth > 0) {
     const singleKeys: string[] = [];
     const singleLabels: string[] = [];
     const singleWidths: number[] = [];
@@ -366,7 +369,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       const reserveRemove = item.region !== undefined && (isHovered || isFocused) ? ROW_REMOVE_SIZE + 4 : 0;
       singleKeys.push(item.key);
       singleLabels.push(barsLabelText(item.label));
-      singleWidths.push(Math.max(12, layout.nameWidth - reserveRemove));
+      singleWidths.push(Math.max(12, nameWidth - reserveRemove));
     }
     if (singleLabels.length > 1) {
       ctx.save();
@@ -447,7 +450,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
 
     drawMediaSlot(ctx, layout.bodyLeft + BARS_PAD_X, middleY, layout.mediaWidth, layout.mediaHeight, row.media, theme, { artCache, radius: 2 });
 
-    if (layout.nameWidth > 0 && row.label !== undefined) {
+    if (nameWidth > 0 && row.label !== undefined) {
       const regionTools = row.region !== undefined && (isHovered || isFocused);
       const reserveRemove = regionTools ? ROW_REMOVE_SIZE + 4 : 0;
       const labelMuted = barsLabelMuted(row.label);
@@ -459,7 +462,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         shownLabel,
         layout.nameX,
         y,
-        Math.max(12, layout.nameWidth - reserveRemove),
+        Math.max(12, nameWidth - reserveRemove),
         rowH,
         theme,
         { color: nameColor, weight: model.form === 'net' ? 500 : 400 },
@@ -791,36 +794,39 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
 
     if (layout.showReadout && row.readout) {
       const rightEdge = layout.readoutX + layout.readoutWidth;
+      const primaryFont = `500 ${theme.fontSize.body}px ${theme.font}`;
+      const iconReserve = row.readout.icon ? 21 : 0;
       ctx.save();
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'right';
+      ctx.font = primaryFont;
+      const primText = ellipsise(row.readout.primary, layout.readoutWidth - iconReserve, s => textWidth(ctx, s));
+      const primWidth = textWidth(ctx, primText);
+      const extraStart = layout.readoutX + iconReserve + primWidth;
       let cursorRight = rightEdge;
       if (row.readout.shortfall) {
         ctx.font = `600 ${theme.fontSize.body}px ${theme.font}`;
         ctx.fillStyle = tokens.shortage;
-        ctx.fillText(row.readout.shortfall, cursorRight, middleY);
-        cursorRight -= textWidth(ctx, row.readout.shortfall) + 8;
+        const shortfall = ellipsise(row.readout.shortfall, cursorRight - extraStart - 8, s => textWidth(ctx, s));
+        ctx.fillText(shortfall, cursorRight, middleY);
+        cursorRight -= shortfall ? textWidth(ctx, shortfall) + 8 : 0;
       }
       if (row.readout.secondary) {
         ctx.font = `400 ${theme.fontSize.body}px ${theme.font}`;
         ctx.fillStyle = theme.muted;
-        const secRoom = Math.max(12, cursorRight - layout.readoutX);
-        const secText = ellipsise(row.readout.secondary, secRoom, s => textWidth(ctx, s));
+        const secText = ellipsise(row.readout.secondary, cursorRight - extraStart - 4, s => textWidth(ctx, s));
         ctx.fillText(secText, cursorRight, middleY);
-        cursorRight -= textWidth(ctx, secText) + 4;
+        cursorRight -= secText ? textWidth(ctx, secText) + 4 : 0;
       }
-      ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+      ctx.font = primaryFont;
       ctx.fillStyle = row.readout.tone === 'shortage' ? tokens.shortage : row.readout.tone === 'muted' ? theme.muted : theme.text;
-      const iconReserve = row.readout.icon ? 21 : 0;
-      const primRoom = Math.max(12, cursorRight - layout.readoutX - iconReserve);
-      const primText = ellipsise(row.readout.primary, primRoom, s => textWidth(ctx, s));
       ctx.fillText(primText, cursorRight, middleY);
-      cursorRight -= textWidth(ctx, primText);
+      cursorRight -= primWidth;
       ctx.restore();
-      if (row.readout.icon && cursorRight - 21 >= layout.readoutX - 2) {
+      if (row.readout.icon) {
         drawMediaSlot(
           ctx,
-          Math.round(cursorRight - 21),
+          Math.round(cursorRight - iconReserve),
           middleY,
           16,
           16,
