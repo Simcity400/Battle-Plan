@@ -931,6 +931,11 @@ fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
     let harness = fallback.harness(width, height);
     let field = FieldDefines::TEST;
     let (base, ids, strategic) = grid_fixture(&harness, width, height, &field);
+    assert_eq!(
+        base.strategic.scratch.output.size(),
+        u64::from((width / 2).div_ceil(4)) * u64::from(height / 2) * 4,
+        "the warmed gradient keeps only its varying alpha",
+    );
     let columns = width / GRID_CELL;
     let map = ProvinceMap {
         width,

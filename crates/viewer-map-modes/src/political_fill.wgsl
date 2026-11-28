@@ -225,3 +225,34 @@ fn field_bottom(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocati
 fn field_both(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
     store_field(group, local, true, true);
 }
+
+fn seed_stride() -> u32 {
+    return (p.width / 2u + 3u) / 4u;
+}
+
+var<workgroup> seed_alpha: array<u32, 64>;
+
+@compute @workgroup_size(8, 8)
+fn field_seed(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
+    let xy = field_position(group, local);
+    let inside = xy.x < p.width / 2u && xy.y < p.height / 2u;
+    let lane = local.y * 8u + local.x;
+    var alpha = 0u;
+    if inside { alpha = field_sample(xy).color.a; }
+    seed_alpha[lane] = alpha;
+    workgroupBarrier();
+    if inside && local.x % 4u == 0u {
+        output[xy.y * seed_stride() + xy.x / 4u] = pack(vec4<u32>(
+            seed_alpha[lane], seed_alpha[lane + 1u], seed_alpha[lane + 2u], seed_alpha[lane + 3u]));
+    }
+}
+
+@compute @workgroup_size(8, 8)
+fn restore_seed(@builtin(global_invocation_id) id: vec3<u32>) {
+    let xy = id.xy;
+    if xy.x >= p.width / 2u || xy.y >= p.height / 2u { return; }
+    let word = output[xy.y * seed_stride() + xy.x / 4u];
+    let alpha = (word >> ((xy.x % 4u) * 8u)) & 255u;
+    textureStore(colors_out, vec2<i32>(xy), unpack4x8unorm(p.no_color | (alpha << 24u)));
+    textureStore(effects_out, vec2<i32>(xy), vec4<f32>(0.0));
+}
