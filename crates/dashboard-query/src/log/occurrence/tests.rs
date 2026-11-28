@@ -470,3 +470,40 @@ fn dated_cursor_matches_rebuilt_order_counts_gaps_and_proof_with_bounded_visits(
         }).unwrap();
     }
 }
+
+#[test]
+fn dated_windows_read_only_page_states_and_match_the_reference() {
+    let mut entries: Vec<_> = (0..2000).map(|hour| occurrence(hour as u128, hour, hour)).collect();
+    entries[0].states = vec![(0, 2), (2007, 3)].into_boxed_slice();
+    let mut late = occurrence(2100, 1950, 2002);
+    late.states = vec![(2002, RUNNING), (2004, DONE)].into_boxed_slice();
+    entries.push(late);
+    entries.push(occurrence(2101, 2003, 2003));
+    let gaps = vec![
+        MissingSpan { first_hour: 5, last_hour: 9, reason: "old gap".into() },
+        MissingSpan { first_hour: 6, last_hour: 9, reason: "overlapping gap".into() },
+        MissingSpan { first_hour: 2001, last_hour: 2002, reason: "new gap".into() },
+    ];
+    let index = Arc::new(Index::new(entries, gaps, &[RUNNING]).unwrap().with_retirements(HashMap::from([(2100, 2005)])));
+    let holders = holders();
+    let chips = [Chip { kinds: None, states: Some(vec![DONE]) }];
+    for direction in [Direction::Descending, Direction::Ascending] {
+        for live_first in [true, false] {
+            let shape = Ask { chips: &chips, live_first, order: Order::Date(direction), ..ask(1999) };
+            let mut page = index.dated_window(&holders, &shape).unwrap();
+            for hour in [1999, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2002, 2006] {
+                for offset in [0, 1, 63, 1970, u64::MAX] {
+                    let asked = Ask { hour, offset, limit: 7, ..shape.clone() };
+                    STATE_READS.set(0);
+                    let exact = index.ask(&holders, &asked).unwrap();
+                    if hour == 2003 && offset == 0 {
+                        assert!(STATE_READS.get() >= 2000);
+                    }
+                    STATE_READS.set(0);
+                    assert_eq!(page.advance(hour, offset, asked.limit).unwrap(), exact, "{direction:?}, live first {live_first}, hour {hour}, offset {offset}");
+                    assert_eq!(STATE_READS.get(), exact.rows.len());
+                }
+            }
+        }
+    }
+}

@@ -20,7 +20,7 @@ use dashboard_follow::panel::Panel;
 use dashboard_query::{
     Query,
     identity::{Country, Holders},
-    log::occurrence::{Answer, Ask, Chip, DatedCursor, Index, Order, PlacedGap, Selection, Shown},
+    log::occurrence::{Answer, Ask, Chip, DatedCursor, DatedWindow, Index, Order, PlacedGap, Selection, Shown},
     series::ranked::GroupSelection,
     timeline::Timeline,
 };
@@ -455,26 +455,6 @@ fn prepare(source: &Source, query: &Query<'_>, branch: u64, context: &LoadContex
     Ok(Prepared { selection, index, feed, scanned, losses, content, kept, places: Mutex::default() })
 }
 
-struct Window<'p> {
-    from: Option<i32>,
-    to: Option<i32>,
-    selection: Option<&'p Selection>,
-    search: Option<&'p str>,
-    sort: Option<&'p OccurrenceSort>,
-    offset: Option<&'p str>,
-    limit: u32,
-    sortable: &'p [&'p str],
-}
-
-fn answer(index: &Index<Item>, query: &Query<'_>, window: &Window<'_>, hour: i32, kinds: Option<&[u16]>, states: Option<&[u8]>, live_first: bool, chips: &[Chip]) -> io::Result<Answer> {
-    let (order, newest) = occurrences::order(window.sort, window.sortable)?;
-    let (offset, limit) = occurrences::window(window.offset, window.limit)?;
-    index.ask(
-        &query.holders,
-        &Ask { hour, from: window.from, to: window.to, gap_end: None, selection: window.selection, subject: None, kinds, states, search: window.search, order, live_first: live_first && newest, offset, limit, chips },
-    )
-}
-
 fn locators(index: &Index<Item>, answer: &Answer, hour: i32) -> Vec<Locator> {
     let mut out = Vec::new();
     for shown in &answer.rows {
@@ -895,7 +875,10 @@ pub(super) fn listed(rows: &mut [Option<EventFeedRow>], description: bool, windo
     }
 }
 
-fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &ScriptTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<ScriptOccurrenceTailReply> {
+fn load_cards_at(
+    list: List, prepared: &Prepared, query: &Query<'_>, params: &ScriptTailParams, hour: i32,
+    followed: Option<&Mutex<Option<DatedWindow<Item>>>>, cancelled: &AtomicBool,
+) -> io::Result<ScriptOccurrenceTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     if list == List::Decisions && params.events.is_some() {
         return Err(invalid("Decisions are not filtered by event kind"));
@@ -907,8 +890,20 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         (None, List::EventChoices) => None,
     };
     let (chips, keys) = chips(list);
-    let window = Window { from: params.from, to: params.to, selection: prepared.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit, sortable: if list == List::Decisions { &["country", "item", "cost", "status"] } else { &["country", "item", "choice"] } };
-    let mut answer = answer(&prepared.index, query, &window, hour, kinds.as_deref(), states.as_deref(), true, &chips)?;
+    let sortable: &[&str] = if list == List::Decisions { &["country", "item", "cost", "status"] } else { &["country", "item", "choice"] };
+    let (order, live_first) = occurrences::order(params.sort.as_ref(), sortable)?;
+    let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
+    let ask = Ask { hour, from: params.from, to: params.to, gap_end: None, selection: prepared.selection.as_ref(), subject: None,
+        kinds: kinds.as_deref(), states: states.as_deref(), search: params.search.as_deref(), order, live_first, offset, limit, chips: &chips };
+    let mut answer = if let Some(followed) = followed.filter(|_| matches!(order, Order::Date(_))) {
+        let mut held = followed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.is_none() {
+            *held = Some(prepared.index.dated_window(&query.holders, &ask)?);
+        }
+        held.as_mut().unwrap().advance(hour, offset, limit)?
+    } else {
+        prepared.index.ask(&query.holders, &ask)?
+    };
     let opened_row = only_row(&prepared.scanned, &prepared.index, params.row.as_deref(), &mut answer, hour);
     let read = index::read_events(query, &locators(&prepared.index, &answer, hour))?;
     let names = Names::new(&query.holders);
@@ -1088,7 +1083,7 @@ fn cards_load(list: List, source: &Source, params: &ScriptTailParams, context: &
     let query = dashboard_base::queries::query(source, branch)?;
     let hour = occurrences::cutoff(&query, params.hour)?;
     let prepared = prepare(source, &query, branch, context, Some(list), asked!(params), cancelled)?;
-    load_cards_at(list, &prepared, &query, params, hour, cancelled)
+    load_cards_at(list, &prepared, &query, params, hour, None, cancelled)
 }
 
 fn cards_dated_panel<P: Product>(list: List, source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
@@ -1099,10 +1094,11 @@ fn cards_dated_panel<P: Product>(list: List, source: &Source, load: &LoadContext
     let (finish, prepared) = dashboard_base::products::Finish::open(source, load, P::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, Some(list), asked!(params), &AtomicBool::new(false)));
     let prepared = prepared.map_err(|error| error.to_string())?;
     let owned = Owned::of(&query, source.replay());
+    let followed = Mutex::new(None);
     Ok(occurrences::occurrence_panel(source.tables(), finish, move |hour, cancelled| {
         let query = owned.query();
         let hour = occurrences::cutoff(&query, Some(hour))?;
-        load_cards_at(list, &prepared, &query, &params, hour, cancelled)
+        load_cards_at(list, &prepared, &query, &params, hour, Some(&followed), cancelled)
     }))
 }
 

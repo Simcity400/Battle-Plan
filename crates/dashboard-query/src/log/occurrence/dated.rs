@@ -1,6 +1,9 @@
 use super::{Ask, Chip, Filtered, Holders, Index, MissingSpan, Order, invalid};
 use std::{collections::{BTreeMap, BTreeSet, HashSet}, io, sync::Arc};
 
+mod window;
+pub use window::DatedWindow;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Place {
     Display,
