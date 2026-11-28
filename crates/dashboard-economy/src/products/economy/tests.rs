@@ -800,6 +800,56 @@ mod market {
     }
 
     #[test]
+    fn changing_inventory_amounts_reuses_names_until_the_design_set_or_its_inputs_change() {
+        use dashboard_base::products::at_hour::At;
+        use replay_data::rows::LexicalTokenRow;
+
+        let source = recording();
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let context = MarketLendLease::context(&source, &load()).unwrap();
+        let params = serde_json::from_value(json!({ "branchId": "1", "countries": ["GER"], "only": "offers" })).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let live = dashboard_follow::live::Cells::default();
+        let read = |frame: &DecodedFrame| {
+            let at = At { owner: None, holders: &query.holders, hour: frame.hour, context: &context, cancelled: &cancelled, live: &live };
+            let played = MarketLendLease::playback_reply(frame, &params, &at).unwrap();
+            assert_eq!(played, MarketLendLease::reply(frame, &params, &at).unwrap(), "hour {}", frame.hour);
+            played
+        };
+        let mut held = frame(PARTLY - 1);
+        set::<tables::LexicalTokens>(&mut held, vec![
+            LexicalTokenRow { token: 1, literal: b"first_type".to_vec() },
+            LexicalTokenRow { token: 2, literal: b"second_type".to_vec() },
+        ]);
+        let first = read(&held);
+        assert_eq!(first.variants[0].token, "first_type");
+        let offer = |variant, amount| CountryMarketRow { country: GER, inventory: equipment(variant, amount), ..Default::default() };
+
+        held.hour += 1;
+        set::<tables::CountryMarket>(&mut held, vec![offer(6, 2)]);
+        let amount = read(&held);
+        assert_ne!(first.offers, amount.offers);
+        assert!(std::ptr::eq(first.variants.as_ptr(), amount.variants.as_ptr()), "one naming result for the two amounts");
+
+        held.hour += 1;
+        set::<tables::VariantDefinitions>(&mut held, vec![VariantDefinitionRow { id: 6, equipment_token: 2, ..Default::default() }]);
+        let design = read(&held);
+        assert_eq!(design.variants[0].token, "second_type");
+
+        held.hour += 1;
+        set::<tables::CountryMarket>(&mut held, vec![offer(9, 2)]);
+        let roster = read(&held);
+        assert_eq!(roster.variants[0].id, "9");
+
+        *held.tables[TableId::LexicalTokens.index()] = TableView::Unavailable { reason: "fixture spellings unreadable".into() };
+        for hour in [124, 125, 121] {
+            held.hour = hour;
+            let refused = read(&held);
+            assert!(refused.variants[0].name_unknown.as_ref().is_some_and(|why| why.contains(&format!("hour {hour}"))));
+        }
+    }
+
+    #[test]
     fn the_market_at_an_hour_is_the_rows_a_chosen_country_takes_part_in_on_both_paths() {
         let source = recording();
         let params = json!({ "branchId": "1", "countries": ["GER"] });
