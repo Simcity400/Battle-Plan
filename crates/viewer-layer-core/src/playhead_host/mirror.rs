@@ -51,7 +51,7 @@ impl<T> Cell<T> {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Bits(Vec<u64>);
 
 impl Bits {
@@ -113,7 +113,7 @@ impl Bits {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Cells {
     W1(Vec<u8>),
     W2(Vec<u16>),
@@ -816,6 +816,31 @@ impl Mirror {
 
     pub fn width(&self) -> usize {
         self.position.len()
+    }
+
+    pub(super) fn same_rows(&self, other: &Self, keyed: bool) -> bool {
+        self.standing() == other.standing()
+            && self.head == other.head
+            && self.format == other.format
+            && self.capture == other.capture
+            && self.listed == other.listed
+            && (self.live == other.live || self.live.ones().eq(other.live.ones()))
+            && (!keyed || self.keys == other.keys || self.live.ones().all(|row| self.key(row) == other.key(row)))
+    }
+
+    pub(super) fn same_column(&self, other: &Self, column: usize, kind: Kind) -> bool {
+        let (ours, theirs) = (self.resolve(column), other.resolve(column));
+        let (Some(a), Some(b)) = (ours.0, theirs.0) else { return false };
+        if kind == Kind::Bytes && self.texts != other.texts {
+            return false;
+        }
+        if a.cells == b.cells && a.missing == b.missing && a.unrecorded == b.unrecorded {
+            return true;
+        }
+        match kind {
+            Kind::U32List | Kind::U64List | Kind::Opaque => self.live.ones().all(|row| ours.list(row) == theirs.list(row)),
+            _ => self.live.ones().all(|row| ours.bits(row) == theirs.bits(row)),
+        }
     }
 
     pub fn differs(&self, other: &Self, kinds: &[Kind]) -> Option<String> {

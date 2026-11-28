@@ -1550,13 +1550,14 @@ fn held_the_map_is_drawn_at_the_head_only_once_its_worker_layer_shows_it() {
 struct Meeting {
     name: &'static str,
     after: Option<&'static str>,
+    column: Option<usize>,
     meet: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
     composed: Arc<Mutex<Vec<&'static str>>>,
 }
 
 impl Meeting {
     fn boxed(name: &'static str, after: Option<&'static str>, meet: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>, composed: &Arc<Mutex<Vec<&'static str>>>) -> Box<dyn Layer> {
-        Box::new(Self { name, after, meet, composed: Arc::clone(composed) })
+        Box::new(Self { name, after, column: None, meet, composed: Arc::clone(composed) })
     }
 }
 
@@ -1565,6 +1566,10 @@ impl Layer for Meeting {
         self.name
     }
     fn inputs(&mut self, _view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
+        if let Some(column) = self.column {
+            inputs.table(table(0), true)?;
+            inputs.index(table(0), column)?;
+        }
         if let Some(upstream) = self.after {
             inputs.after(upstream);
         }
@@ -1620,6 +1625,56 @@ fn layers_that_read_nothing_of_one_another_compose_at_once_and_a_dependent_after
     let composed = composed.lock().unwrap();
     let at = |name: &str| composed.iter().position(|held| *held == name);
     assert!(at("u") < at("d"), "the dependent composed after its upstream: {composed:?}");
+}
+
+#[test]
+fn a_same_hour_restore_recomposes_only_changed_inputs_and_their_dependents() {
+    use super::views::Need;
+    for changed in [false, true] {
+        let (recording, _) = record(1, 8, eventful);
+        let entry = open(units(recording, "same-hour projection restore"), quick()).unwrap();
+        let composed = Arc::new(Mutex::new(Vec::new()));
+        let reads = |name, column| -> Box<dyn Layer> {
+            Box::new(Meeting { name, after: None, column: Some(column), meet: None, composed: Arc::clone(&composed) })
+        };
+        let layers = vec![reads("source", 0), Meeting::boxed("downstream", Some("source"), None, &composed), reads("independent", 2)];
+        let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
+        entry.playhead().seek(0);
+        side.catch_up(0).unwrap();
+        let calls = || composed.lock().unwrap().clone();
+        let opened = calls().len();
+        assert_eq!(opened, 3);
+
+        if changed {
+            let (different, _) = record(1, 8, |hour, table, store| {
+                eventful(hour, table, store);
+                if hour == 0 {
+                    store.table(table).unwrap().write(0, 0, Cell::I32(-1)).unwrap();
+                }
+            });
+            let mut lane = Lane::new(different, 0, 0, &[0, 2], true).unwrap();
+            lane.seek(0).unwrap();
+            let mut held = Mirrors::default();
+            held.insert(Box::new(Mirror::rebuild(&lane, &[0, 2])));
+            side.mirrors = Some(Arc::new(held));
+        }
+
+        let added = side.views().reader("extra projection", &[Need::columns(table(0), 1 << 1)]);
+        added.ready();
+        side.catch_up(0).unwrap();
+        assert!(side.parts().unwrap().0.get(table(0)).unwrap().holds(1));
+        let expected: &[&str] = if changed { &["source", "downstream"] } else { &[] };
+        assert_eq!(&calls()[opened..], expected);
+
+        let epoch = side.epoch;
+        let before_seek = calls().len();
+        entry.playhead().seek(2);
+        side.catch_up(2).unwrap();
+        assert_ne!(side.epoch, epoch);
+        let mut sought = calls()[before_seek..].to_vec();
+        sought.sort_unstable();
+        assert_eq!(sought, ["downstream", "independent", "source"]);
+    }
 }
 
 #[test]

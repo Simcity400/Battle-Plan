@@ -1333,6 +1333,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         let apply_lap = replay_frame::cpu::scope("side.apply", Some("other"));
         let mut compose = vec![false; self.layers.len()];
         let mut applied = Vec::with_capacity(steps.len());
+        let mut restored_restep = 0;
         let (resets_before, applied_before) = (self.resets_taken, self.applied);
         let (mut waiting, mut after_reset, mut crossing) = (self.composing, false, false);
         let mut moved = viewer_unit_reads::counter_move::MovedHours::default();
@@ -1346,8 +1347,15 @@ impl<P: PlaybackProducts> MapSide<P> {
             if self.overlay.is_some() {
                 self.moved_before(&step, &mut moved);
             }
-            crossing |= self.take_step(&step, &mut frame, &mut compose);
-            applied.push(step);
+            let restored = !reset && !step.gap() && self.applied == Some(step.last()) && self.epoch == step.epoch()
+                && step.first() > step.last() && !step.tables().is_empty()
+                && step.tables().iter().all(|change| change.reset() && change.renumber().is_none());
+            crossing |= self.take_step(&step, &mut frame, &mut compose, restored);
+            if restored {
+                restored_restep = restored_restep.max(step.restep());
+            } else {
+                applied.push(step);
+            }
             (waiting, after_reset) = (waiting || reset, after_reset || reset);
         }
         if self.superseded && self.resets_taken == resets_before {
@@ -1464,7 +1472,7 @@ impl<P: PlaybackProducts> MapSide<P> {
                         self.consumer.ahead(&mut steps);
                         steps
                     });
-                    let restep = applied.iter().chain(lent.iter()).map(|step| step.restep()).max().unwrap_or(0);
+                    let restep = applied.iter().chain(lent.iter()).map(|step| step.restep()).max().unwrap_or(0).max(restored_restep);
                     if restep > self.resteps[at] {
                         if self.offered[at].is_some_and(|offered| self.applied.is_none_or(|applied| offered > applied)) {
                             layer.void_ahead(mirrors, applied_before);
@@ -2065,8 +2073,9 @@ impl<P: PlaybackProducts> MapSide<P> {
         }
     }
 
-    fn take_step(&mut self, step: &Arc<Step>, frame: &mut Frame, compose: &mut [bool]) -> bool {
+    fn take_step(&mut self, step: &Arc<Step>, frame: &mut Frame, compose: &mut [bool], restored: bool) -> bool {
         let mut reset_tables = BTreeSet::new();
+        let mut compare = Vec::new();
         let mut judged: Vec<(usize, Box<Mirror>)> = Vec::new();
         if piece::on() && !step.reset() {
             for changes in step.tables().iter().filter(|changes| !changes.reset()) {
@@ -2087,8 +2096,12 @@ impl<P: PlaybackProducts> MapSide<P> {
             {
                 rebuilt.set_capture(self.entry.capture.get().copied());
                 if let Some(old) = mirrors.insert(rebuilt) {
-                    self.worker.drop_later(old);
                     replaced = true;
+                    if restored && self.declared_layers.contains_key(&changes.table()) {
+                        compare.push((changes.table(), old));
+                    } else {
+                        self.worker.drop_later(old);
+                    }
                 }
                 reset_tables.insert(changes.table());
             }
@@ -2104,6 +2117,21 @@ impl<P: PlaybackProducts> MapSide<P> {
         frame.reset_step |= step.reset();
         let (started, cycles) = (Instant::now(), replay_frame::cpu::thread_cycles());
         mirrors.apply_timed(step, &mut frame.mirror_tables, &mut frame.mirror_split, &mut self.views.noting(&self.layers_awake));
+        for (table, old) in compare {
+            let restored = mirrors.get(TableId::ALL[table]).expect("the restored mirror");
+            let read = &self.declared_layers[&table];
+            if old.same_rows(restored, read.keyed) {
+                reset_tables.remove(&table);
+                let kinds = &self.entry.kinds()[table];
+                let changed: Vec<_> = read.columns.iter().copied()
+                    .filter(|&column| !old.same_column(restored, column, kinds[column])).collect();
+                for (wanted, declared) in compose.iter_mut().zip(&self.declared_each) {
+                    *wanted |= declared.as_ref().and_then(|(reads, _)| reads.get(&table))
+                        .is_some_and(|read| read.columns.iter().any(|column| changed.contains(column)));
+                }
+            }
+            self.worker.drop_later(old);
+        }
         frame.mirror_ns += started.elapsed().as_nanos() as u64;
         for (table, mut rebuilt) in judged {
             piece::judged();
