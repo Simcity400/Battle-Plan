@@ -103,7 +103,6 @@ pub struct RecordedScopes<'a> {
     overlords: OnceLock<crate::triggers::refusal::Resolved<CountryValues>>,
     faction_members_complete: bool,
     characters: OnceLock<crate::triggers::refusal::Resolved<CharactersByToken>>,
-    characters_complete: bool,
     owned: OnceLock<crate::triggers::refusal::Resolved<CountryValues>>,
     original_tags: OriginalTagLists<'a>,
     aliases: Arc<TagAliases>,
@@ -393,14 +392,6 @@ impl<'a> RecordedScopes<'a> {
         gaps.insert("FactionMembers", gap(tables::FactionMembers::ID));
         gaps.insert("CountryCounterInputs", gap(tables::CountryCounterInputs::ID));
         gaps.insert(
-            "Characters",
-            format!(
-                "{} (lexical tokens: {})",
-                gap(tables::Characters::ID),
-                gap(tables::LexicalTokens::ID)
-            ),
-        );
-        gaps.insert(
             "GlobalSavedEventTargets",
             gap(tables::GlobalSavedEventTargets::ID),
         );
@@ -408,8 +399,6 @@ impl<'a> RecordedScopes<'a> {
             frame: Some(frame),
             countries_complete: complete(tables::Countries::ID),
             faction_members_complete: complete(tables::FactionMembers::ID),
-            characters_complete: complete(tables::Characters::ID)
-                && complete(tables::LexicalTokens::ID),
             saved_targets_complete: complete(tables::GlobalSavedEventTargets::ID),
             original_tags,
             aliases,
@@ -1116,9 +1105,8 @@ impl<'a> RecordedScopes<'a> {
                         "character {token}: the scope has no country, which the game requires"
                     )));
                 };
-                if self.frame.is_some()
-                    && !self.complete(tables::LexicalTokens::ID)
-                {
+                let lexical = self.frame.map(|frame| frame.status(tables::LexicalTokens::ID));
+                if lexical.is_some_and(|status| !whole(status)) {
                     return Err(Missing(self.input::<tables::LexicalTokens>(
                         "",
                         None,
@@ -1139,13 +1127,17 @@ impl<'a> RecordedScopes<'a> {
                         "character {token} is not a character of {}",
                         self.describe(Target::Country(country))
                     );
-                    if self.characters_complete {
+                    let characters = self.frame.map(|frame| frame.status(tables::Characters::ID));
+                    if characters.is_some_and(whole) {
                         Nothing(why)
                     } else {
+                        let gap = characters.zip(lexical).map(|(characters, lexical)| format!(
+                            "{} (lexical tokens: {})", status_gap(characters), status_gap(lexical),
+                        )).unwrap_or_default();
                         Missing(self.input::<tables::Characters>(
                             "",
                             Some(crate::triggers::Store::Country(country)),
-                            format!("{why} in the recording: {}", gap("Characters")),
+                            format!("{why} in the recording: {gap}"),
                         ))
                     }
                 })
@@ -1729,6 +1721,38 @@ pub mod tests {
             RecordedScopes::read(&frame, Arc::default()).resolve_tag("GER"),
             Ok(1)
         );
+    }
+
+    #[test]
+    fn country_scope_setup_only_reads_lexical_status_when_a_character_is_requested() {
+        use crate::triggers::inputs::capture;
+
+        let frame = positive_frame();
+        let (scopes, setup) = capture(&frame, || RecordedScopes::read(&frame, Arc::default()));
+        assert!(!setup.footprint().unwrap().iter().any(|read| read.table == TableId::LexicalTokens));
+        let (found, lookup) = capture(&frame, || scopes.is_character("GER_erwin_rommel"));
+        assert!(found);
+        assert!(lookup.footprint().unwrap().iter().any(|read| read.table == TableId::LexicalTokens));
+
+        let character = Scope::Character("GER_erwin_rommel".into());
+        let context = Context::country(1);
+        let mut no_words = frame.clone();
+        *no_words.tables[TableId::LexicalTokens.index()] = TableView::Unavailable { reason: "token table missing".into() };
+        let (missing, lookup) = capture(&no_words, || {
+            RecordedScopes::read(&no_words, Arc::default()).resolve(&character, &context)
+        });
+        assert_eq!(missing, Err(Unresolved::Missing(Failure::input(
+            TableId::LexicalTokens, "", None, "character lookup lacks its lexical tokens input",
+        ))));
+        assert!(lookup.footprint().is_none());
+
+        let mut no_roster = frame.clone();
+        *no_roster.tables[TableId::Characters.index()] = TableView::Unavailable { reason: "roster missing".into() };
+        let missing = RecordedScopes::read(&no_roster, Arc::default()).resolve(&character, &context);
+        assert_eq!(missing, Err(Unresolved::Missing(Failure::input(
+            TableId::Characters, "", None,
+            "character GER_erwin_rommel is not a character of country GER in the recording: the table is unavailable: roster missing (lexical tokens: the complete table has no row for it)",
+        ))));
     }
 
     #[test]
