@@ -297,6 +297,7 @@ struct StepProduct {
     pending_seed: Option<(u64, u32, Hour)>,
     started_on: Option<(u64, u32)>,
     read: panel::ProductReader,
+    pending_preparation: Option<panel::PendingPreparation>,
     wire: panel::product::Delivery,
     last: Option<(u64, u32, Hour)>,
     joined: bool,
@@ -311,7 +312,25 @@ struct StepProduct {
 
 enum PanelResume {
     Read(Hour),
+    Pending(Hour, Option<Arc<AtomicBool>>),
     Ready(Hour, u8, Vec<u8>),
+}
+
+impl PanelResume {
+    fn hour(&self) -> Hour {
+        match self {
+            Self::Read(hour) | Self::Pending(hour, _) | Self::Ready(hour, ..) => *hour,
+        }
+    }
+
+    fn due_read(&self, through: Hour) -> Option<Hour> {
+        if self.hour() > through { return None; }
+        match self {
+            Self::Read(_) => Some(through),
+            Self::Pending(hour, ready) if ready.as_ref().is_none_or(|ready| ready.load(Ordering::Acquire)) => Some(*hour),
+            _ => None,
+        }
+    }
 }
 
 enum PanelRead {
@@ -353,16 +372,17 @@ impl PanelJob {
 
     fn run(self, read: PanelRead, mut product: StepProduct, work: Arc<Work<StepProduct>>, clock: impl Fn() -> Option<(u64, Hour, bool)> + Send + 'static) {
         let head = || clock().map(|(epoch, hour, _)| (epoch, hour));
+        let mut preparation = None;
         match read {
             PanelRead::Seed(hour) => self.seed(&mut product, hour, head),
-            PanelRead::Resume(hour) => self.prepare_resume(&mut product, hour, &clock),
+            PanelRead::Resume(hour) => preparation = self.prepare_resume(&mut product, hour, &clock),
             PanelRead::CatchUp { through, quantum, parked } => {
                 if let Some((_, _, mut hour)) = product.last {
                     while hour < through {
                         hour = hour.saturating_add(quantum).min(through);
                         if let Some((epoch, current, playing)) = clock() && epoch == self.epoch && !self.token.load(Ordering::Acquire) {
                             if playing && parked {
-                                self.prepare_resume(&mut product, through, &clock);
+                                preparation = self.prepare_resume(&mut product, through, &clock);
                                 break;
                             }
                             if !playing && hour > current {
@@ -390,8 +410,19 @@ impl PanelJob {
             }
         }
         let id = product.id;
+        let pending = matches!(product.resume, Some(PanelResume::Pending(..)));
         work.put(product);
-        if !self.token.load(Ordering::Acquire) || self.reads.lock().unwrap_or_else(PoisonError::into_inner).tokens.contains_key(&id) {
+        let live = !self.token.load(Ordering::Acquire);
+        if live && let Some((subscribe, ready)) = preparation {
+            let wake = self.wake;
+            subscribe(Arc::new(move || {
+                ready.store(true, Ordering::Release);
+                wake();
+            }));
+            return;
+        }
+        let replaced = !live && self.reads.lock().unwrap_or_else(PoisonError::into_inner).tokens.contains_key(&id);
+        if (live && !pending) || replaced {
             (self.wake)();
         }
     }
@@ -406,14 +437,22 @@ impl PanelJob {
         }
     }
 
-    fn prepare_resume(&self, product: &mut StepProduct, hour: Hour, clock: &impl Fn() -> Option<(u64, Hour, bool)>) {
-        product.resume = Some(PanelResume::Read(hour.saturating_add(1)));
-        if self.token.load(Ordering::Acquire) || !clock().is_some_and(|(epoch, _, playing)| playing && epoch == self.epoch) { return; }
+    fn prepare_resume(&self, product: &mut StepProduct, hour: Hour, clock: &impl Fn() -> Option<(u64, Hour, bool)>) -> Option<(panel::OnPrepared, Arc<AtomicBool>)> {
+        product.resume = None;
+        if self.token.load(Ordering::Acquire) || !clock().is_some_and(|(epoch, head, playing)| epoch == self.epoch && (playing || head == hour)) { return None; }
         let next = product.last.map_or(hour, |(_, _, last)| last.saturating_add(1));
-        let Some((change, from, fresh)) = product.read_at(self.stamp.2, self.epoch, hour, false, false, true, &self.token, None, &self.reads) else { return };
+        let resend = product.resend;
+        let Some((change, from, fresh)) = product.read_at(self.stamp.2, self.epoch, hour, false, false, true, &self.token, None, &self.reads) else {
+            product.resend = resend;
+            let subscribe = product.pending_preparation.as_ref().and_then(|pending| pending(hour));
+            let ready = subscribe.as_ref().map(|_| Arc::new(AtomicBool::new(false)));
+            product.resume = Some(PanelResume::Pending(hour, ready.clone()));
+            return subscribe.zip(ready);
+        };
         let unproven = from > next || (hour > next && fresh);
         let (kind, body) = change.unwrap_or((if unproven { panel::dated::AGAIN } else { panel::dated::STANDS }, &[]));
         product.resume = Some(PanelResume::Ready(hour, kind, body.to_vec()));
+        None
     }
 
     fn read_one(&self, product: &mut StepProduct, hour: Hour, reset: bool, seed_paused: bool, catch_up: bool, current_head: &impl Fn() -> Option<(u64, Hour)>) -> bool {
@@ -446,8 +485,9 @@ impl PanelJob {
 impl StepProduct {
     fn resumed_step(&mut self, through: Hour) -> (Hour, Option<(Hour, u8, Vec<u8>)>, Option<Hour>) {
         let (hour, kind, body) = match self.resume.take().expect("a resuming product") {
-            PanelResume::Read(next) => {
-                self.resume = Some(PanelResume::Read(next));
+            pending @ (PanelResume::Read(_) | PanelResume::Pending(..)) => {
+                let next = pending.hour();
+                self.resume = Some(pending);
                 return (next, None, None);
             }
             PanelResume::Ready(hour, kind, body) => (hour, kind, body),
@@ -782,6 +822,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 ((clock, route, active.seek), panels.session, push, due, resend)
             };
             let mut replies = Vec::with_capacity(due.len());
+            let task = |token| PanelJob { stamp, session, epoch, token, reads: active.clone(), push: push.clone(), wake: wake.clone(), parking: park.clone() };
             for (id, work, token) in due {
                 if token.load(Ordering::Acquire) || get(&owner).epoch() != epoch { continue; }
                 let Some(mut product) = work.take() else {
@@ -797,22 +838,24 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                     product.joined = false;
                     product.resume = None;
                 }
-                if product.resume.is_some() && (step.reset() || !playhead.playing()) {
+                if product.resume.as_ref().is_some_and(|resume| step.reset() || {
+                    let (_, head, playing) = playhead.clock_state_at(Instant::now());
+                    !playing && resume.hour() != head
+                }) {
                     product.resume = None;
                     product.resend = true;
                 }
                 let job = if product.started_on != Some((epoch, stamp.2)) {
                     Some(PanelRead::Seed(seed_hour))
-                } else if matches!(product.resume, Some(PanelResume::Read(next)) if next <= step.last()) {
-                    Some(PanelRead::Resume(step.last()))
+                } else if let Some(hour) = product.resume.as_ref().and_then(|resume| resume.due_read(step.last())) {
+                    Some(PanelRead::Resume(hour))
                 } else if !product.joined && product.resume.is_none() && !step.reset() && product.last.is_some_and(|(e, g, h)| (e, g) == (epoch, stamp.2) && h.saturating_add(quantum) < step.first()) {
                     Some(PanelRead::CatchUp { through: step.last(), quantum, parked: false })
                 } else {
                     None
                 };
                 if let Some(job) = job {
-                    let task = PanelJob { stamp, session, epoch, token: token.clone(), reads: active.clone(), push: push.clone(), wake: wake.clone(), parking: park.clone() };
-                    task.start(job, product, work, &owner, get);
+                    task(token.clone()).start(job, product, work, &owner, get);
                     replies.push((id, None, token, step.last(), None, None));
                     continue;
                 }
@@ -842,7 +885,9 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                                 product.joined = product.resume.is_none();
                                 active.proven.insert(id, (stamp.2, hour));
                             }
-                            held_products.push((work, product));
+                            let owed = (live && stepped.is_some() && matches!(product.resume, Some(PanelResume::Read(hour)) if hour == step.last()) && get(&owner).playing())
+                                .then(|| task(token.clone()));
+                            held_products.push((work, product, owed));
                         }
                         if !live { continue; }
                         panels.due.insert((next, id));
@@ -856,13 +901,17 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                     for (_, held, ..) in replies {
                         if let Some((work, mut product)) = held {
                             product.resend = true;
-                            held_products.push((work, product));
+                            held_products.push((work, product, None));
                         }
                     }
                 }
             }
-            for (work, product) in held_products {
-                work.put(product);
+            for (work, product, owed) in held_products {
+                if let Some(task) = owed {
+                    task.start(PanelRead::Resume(step.last()), product, work, &owner, get);
+                } else {
+                    work.put(product);
+                }
             }
         }));
         playhead.share_budget(budget)?;
@@ -939,7 +988,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             let epoch = self.playhead().epoch();
             let hour = self.playhead().head(Instant::now());
             let host = panels.cells.clone();
-            let product = StepProduct { id, pending_seed: None, started_on: None, read: exact.advance.clone(), wire: Default::default(), last: None, joined: false, resume: None, cells: Vec::new(), class, host, followed: None, input: None, resend: false };
+            let product = StepProduct { id, pending_seed: None, started_on: None, read: exact.advance.clone(), pending_preparation: panel.pending_preparation().cloned(), wire: Default::default(), last: None, joined: false, resume: None, cells: Vec::new(), class, host, followed: None, input: None, resend: false };
             let task = PanelJob { stamp: (panels.stamp.0, panels.stamp.1, reads.seek), session: panels.session, epoch, token: reads.tokens[&id].clone(), reads: self.reads.clone(), push, wake: self.follow.rehooker(), parking: Weak::new() };
             let work = Arc::new(Work::new(None));
             panels.due.insert((Hour::MIN, id));
@@ -1172,7 +1221,7 @@ fn a_retired_product_read_cannot_publish_its_seed() {
     let (release, wait_release) = std::sync::mpsc::channel();
     let wait_release = Mutex::new(wait_release);
     let mut product = StepProduct {
-        id: 4, pending_seed: None, started_on: None, last: None, joined: false, resume: None, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
+        id: 4, pending_seed: None, started_on: None, last: None, joined: false, resume: None, pending_preparation: None, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
         read: Arc::new(move |_, _, _, _| {
             started.send(()).unwrap();
             wait_release.lock().unwrap().recv().unwrap();
@@ -1224,22 +1273,34 @@ fn check_parked_panel(release: &str) {
     let sampled = Arc::new(Mutex::new(Vec::new()));
     let recorded = sampled.clone();
     let pending_at = (release == "preparation").then_some(head + 1);
+    let prepared = Arc::new(AtomicBool::new(false));
+    let ready = prepared.clone();
+    let (subscribe, subscriber) = mpsc::channel();
+    let pending_preparation = pending_at.map(|hour| Arc::new(move |asked| {
+        assert_eq!(asked, hour);
+        let subscribe = subscribe.clone();
+        Some(Box::new(move |wake| subscribe.send(wake).unwrap()) as panel::OnPrepared)
+    }) as panel::PendingPreparation);
     let product = StepProduct {
-        id: 4, pending_seed: None, started_on: Some((epoch, seek)), last: Some((epoch, seek, head - 1)), joined: false, resume: None, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
+        id: 4, pending_seed: None, started_on: Some((epoch, seek)), last: Some((epoch, seek, head - 1)), joined: false, resume: None, pending_preparation, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
         read: Arc::new(move |hour, _, _, _| {
             recorded.lock().unwrap().push(hour);
-            let pending = pending_at == Some(hour);
+            let pending = pending_at == Some(hour) && !ready.load(Ordering::Acquire);
             panel::ProductRead { value: Arc::new(Ok(serde_json::json!(hour))), rows: 1, fresh: !pending, pending, live: None, lanes: Vec::new(), from: hour }
         }),
     };
-    let job = PanelJob { stamp: (0, route, seek), session: push.session(), epoch, token, reads: reads.clone(), push: push.clone(), wake: Arc::new(|| {}), parking: Arc::downgrade(&parking) };
+    let wake_gate = Arc::new(WaitGate::new());
+    let job = || PanelJob { stamp: (0, route, seek), session: push.session(), epoch, token: token.clone(), reads: reads.clone(), push: push.clone(), wake: {
+        let wake_gate = wake_gate.clone();
+        Arc::new(move || wake_gate.wake())
+    }, parking: Arc::downgrade(&parking) };
     let work = Arc::new(Work::new(None));
     let now = Arc::new(AtomicU64::new(epoch));
     let playing = Arc::new(AtomicBool::new(false));
     let clock = now.clone();
     let live = playing.clone();
     let through = if release == "play" { head + 4 } else { head + 1 };
-    job.run(PanelRead::CatchUp { through, quantum: 1, parked: false }, product, work.clone(), move || Some((clock.load(Ordering::Acquire), head, live.load(Ordering::Acquire))));
+    job().run(PanelRead::CatchUp { through, quantum: 1, parked: false }, product, work.clone(), move || Some((clock.load(Ordering::Acquire), head, live.load(Ordering::Acquire))));
     assert_eq!(*sampled.lock().unwrap(), [head]);
     let (_, bytes, ..) = push.try_take().expect("the head answer fits while future replies hold credit");
     assert_eq!(panel::dated::records(&bytes).unwrap()[0].hour, head);
@@ -1287,6 +1348,21 @@ fn check_parked_panel(release: &str) {
     } else if release == "preparation" {
         let (next, _, proof) = product.resumed_step(through);
         assert_eq!((next, proof), (through, None), "a pending read must leave its own hour eligible");
+        let resume = |product: &StepProduct| product.resume.as_ref().and_then(|resume| resume.due_read(through));
+        assert_eq!(resume(&product), None, "the worker cannot retry while preparation is pending");
+        let wake = subscriber.try_recv().expect("the parked read subscribed to preparation");
+        let waiting = wake_gate.stamp();
+        playing.store(false, Ordering::Release);
+        prepared.store(true, Ordering::Release);
+        wake();
+        assert_ne!(wake_gate.stamp(), waiting, "preparation wakes the paused host");
+        let due = resume(&product).expect("the paused hour is ready to retry");
+        job().run(PanelRead::Resume(due), product, work.clone(), move || Some((epoch, through, false)));
+        let (next, change, proof) = work.take().unwrap().resumed_step(through);
+        let (hour, kind, body) = change.expect("ready preparation supplies the paused picture");
+        assert_eq!((next, proof, hour, kind), (through + 1, Some(through), through, panel::dated::DATA));
+        assert_eq!(rmp_serde::from_slice::<Hour>(&body).unwrap(), through);
+        assert_eq!(*sampled.lock().unwrap(), [head, through, through]);
     } else if release == "seek" {
         assert_eq!(*sampled.lock().unwrap(), [head], "the seek wakes the job so it can retire without computing");
         assert!(push.try_take().is_none());
@@ -1316,7 +1392,9 @@ fn an_older_handoff_dispatches_the_final_hour_without_another_native_step() {
         value: Arc::new(Ok(serde_json::json!(hour))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new(), from: hour,
     });
     let (host, push, ..) = playing_panel_with_hook(advance, move |step, after| {
-        if step.first() > step.last() && observe.load(Ordering::Acquire) {
+        if step.first() <= step.last() { return; }
+        let selected = if after { observe.swap(false, Ordering::AcqRel) } else { observe.load(Ordering::Acquire) };
+        if selected {
             let (permit, wait) = mpsc::channel();
             gates.send((after, permit)).unwrap();
             let _ = wait.recv();
@@ -1333,7 +1411,9 @@ fn an_older_handoff_dispatches_the_final_hour_without_another_native_step() {
     host.follow.rehooker()();
     let (after, permit) = hook.recv().unwrap();
     assert!(!after);
-    product.resume = Some(PanelResume::Ready(last - 1, dated::DATA, rmp_serde::to_vec(&(last - 1)).unwrap()));
+    let old = Arc::new(Ok(serde_json::json!(last - 1)));
+    let (kind, body) = product.wire.update(true, &old).unwrap();
+    product.resume = Some(PanelResume::Ready(last - 1, kind, body.to_vec()));
     work.put(product);
     permit.send(()).unwrap();
     let (after, permit) = hook.recv().unwrap();
@@ -1343,7 +1423,6 @@ fn an_older_handoff_dispatches_the_final_hour_without_another_native_step() {
         assert!(!state.0.as_ref().is_some_and(|product| matches!(product.resume, Some(PanelResume::Read(hour)) if hour == last)),
             "the final hour's read must already be dispatched");
     }
-    armed.store(false, Ordering::Release);
     permit.send(()).unwrap();
     loop {
         let (kind, bytes, session) = push.take_sent().unwrap();
