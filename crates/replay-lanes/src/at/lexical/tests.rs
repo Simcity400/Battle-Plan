@@ -127,9 +127,9 @@ fn a_damaged_checkpoint_cannot_be_bypassed_by_a_lexical_reader() {
     assert!(cache.0.held.is_none());
 }
 
-fn constant_recording(literal: &[u8]) -> Recording {
+fn constant_recording(literal: &[u8], runs: &[(u64, i32, u32)]) -> Recording {
     let bytes = fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(),
-        b"verified lexical", &[(1, START, 2)], &[TABLE], |synthetic, _, ordinal| {
+        b"verified lexical", runs, &[TABLE], |synthetic, _, ordinal| {
             synthetic.table(TABLE, Input::Snapshot {
                 rows: &[LexicalTokenRow { token: 1, literal: literal.to_vec() }],
                 partial: None, read: ordinal % 3 == 0, sample: Sample::FromReadBit,
@@ -140,7 +140,7 @@ fn constant_recording(literal: &[u8]) -> Recording {
 
 #[test]
 fn a_verified_checkpoint_reuses_a_forward_view_but_a_rewind_restores() {
-    let recording = constant_recording(b"one");
+    let recording = constant_recording(b"one", &[(1, START, 2)]);
     let mut cache = LexicalCursor::default();
     cache.use_anchors(LexicalCursor::prepare(&recording, 0).unwrap());
     let boundary = START + BLOCK as i32;
@@ -157,8 +157,8 @@ fn a_verified_checkpoint_reuses_a_forward_view_but_a_rewind_restores() {
 
 #[test]
 fn a_decodable_checkpoint_with_different_literals_cannot_prove_reuse() {
-    let recording = constant_recording(b"one");
-    let different = constant_recording(b"uno");
+    let recording = constant_recording(b"one", &[(1, START, 2)]);
+    let different = constant_recording(b"uno", &[(1, START, 2)]);
     let mut reader = TableReader::new(&recording, 0, TABLE, None).unwrap();
     reader.seek(&recording, BLOCK - 1).unwrap();
     let mut restored = TableReader::new(&different, 0, TABLE, None).unwrap();
@@ -166,4 +166,21 @@ fn a_decodable_checkpoint_with_different_literals_cannot_prove_reuse() {
     assert_eq!(reader.cells().key(0), restored.cells().key(0));
     assert_eq!(reader.cells().value(0, 0), restored.cells().value(0, 0));
     assert!(!reader.verify_restore(&different, 0).unwrap());
+}
+
+
+#[test]
+fn preparing_another_run_keeps_the_verified_checkpoint_on_revisit() {
+    let other_start = START + 10_000;
+    let recording = constant_recording(b"one", &[(1, START, 2), (2, other_start, 2)]);
+    let mut cache = LexicalCursor::default();
+    cache.use_anchors(LexicalCursor::prepare(&recording, 0).unwrap());
+    cache.use_anchors(LexicalCursor::prepare(&recording, 1).unwrap());
+    for (run, start) in [(1, other_start), (0, START)] {
+        let boundary = start + BLOCK as i32;
+        let _ = compared(&mut cache, &recording, run, boundary - 24);
+        let (_, decoded) = compared(&mut cache, &recording, run, boundary);
+        assert_eq!(decoded, 0);
+        assert_eq!(cache.0.held.as_ref().unwrap().reader.restores(), 1);
+    }
 }

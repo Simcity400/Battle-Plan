@@ -15,13 +15,13 @@ const RETAINED_BYTES: usize = 16 * 1024 * 1024;
 const ANCHOR_BYTES: usize = 16 * 1024;
 
 #[derive(Default)]
-pub struct LexicalCursor(CompleteCursor, Option<VerifiedAnchors>);
+pub struct LexicalCursor(CompleteCursor, Box<[VerifiedAnchors]>);
 
 impl LexicalCursor {
     pub fn read(&mut self, recording: &Recording, run: u32, hour: i32) -> Option<(SharedView, bool, u64)> {
-        let source = recording.source();
-        let known = self.1.as_ref().filter(|held| held.run == run && held.revision == recording.revision()
-            && held.source.ptr_eq(&Arc::downgrade(&source)));
+        let source = Arc::downgrade(&recording.source());
+        let known = self.1.iter().find(|held| held.run == run && held.revision == recording.revision()
+            && held.source.ptr_eq(&source));
         self.0.read_with(recording, run, hour, TABLE, RETAINED_BYTES, |block| {
             known.is_some_and(|held| held.blocks.binary_search(&block).is_ok())
         })
@@ -50,7 +50,19 @@ impl LexicalCursor {
         Some(VerifiedAnchors { run, source: Arc::downgrade(&recording.source()), revision: recording.revision(), blocks: blocks.into_boxed_slice() })
     }
 
-    pub fn use_anchors(&mut self, anchors: VerifiedAnchors) { self.1 = Some(anchors); }
+    pub fn use_anchors(&mut self, anchors: VerifiedAnchors) {
+        if anchors.blocks.is_empty() { return; }
+        if self.1.first().is_some_and(|held| held.revision != anchors.revision || !held.source.ptr_eq(&anchors.source)) {
+            self.1 = Box::default();
+        }
+        if self.1.iter().any(|held| held.run == anchors.run) { return; }
+        let bytes = size_of_val(&*self.1) + size_of::<VerifiedAnchors>() + size_of_val(&*anchors.blocks)
+            + self.1.iter().map(|held| size_of_val(&*held.blocks)).sum::<usize>();
+        if bytes > ANCHOR_BYTES { return; }
+        let mut kept = std::mem::take(&mut self.1).into_vec();
+        kept.push(anchors);
+        self.1 = kept.into_boxed_slice();
+    }
 
     pub fn release_view(&mut self) { self.0.held = None; }
 }
