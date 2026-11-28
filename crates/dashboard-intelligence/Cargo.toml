@@ -58,6 +58,7 @@ dashboard-text = { workspace = true, features = ["test-support"] }
 engine-heap = { workspace = true }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
+replay-recording = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true
