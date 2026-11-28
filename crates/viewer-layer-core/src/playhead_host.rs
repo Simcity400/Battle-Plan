@@ -4,6 +4,7 @@ pub mod details;
 pub mod mirror;
 pub mod piece;
 pub mod standing;
+mod script_values;
 pub mod timeline;
 pub mod views;
 #[cfg(any(test, feature = "test-support"))]
@@ -2372,7 +2373,7 @@ fn for_the_makers(entry: &Entry) -> BTreeMap<usize, Read> {
     let kinds = entry.kinds();
     let written = entry.pages.written_tables(&timeline_runs(entry), kinds.len());
     (0..kinds.len())
-        .filter(|&table| matches!(written[table], playhead::pages::TableWritten::Written))
+        .filter(|&table| table != script_values::TABLE.index() && matches!(written[table], playhead::pages::TableWritten::Written))
         .map(|table| (table, Read { columns: (0..kinds[table].len()).collect(), keyed: true, hourly: false }))
         .collect()
 }

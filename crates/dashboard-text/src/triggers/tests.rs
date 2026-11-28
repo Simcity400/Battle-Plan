@@ -1892,6 +1892,44 @@ fn variables_read_the_recorded_stores_as_the_game_reads_them() {
 }
 
 #[test]
+fn normalized_variable_checks_use_the_playback_hour_and_keep_the_truncated_refusal() {
+    use replay_data::rows::{ScriptVariableNameRow, ScriptVariableValueRow};
+    use replay_frame::frame::{KeyedNumber, KeyedNumbers, SharedView};
+
+    struct Values;
+    impl KeyedNumbers for Values {
+        fn read(&self, hour: i32, key: Option<u128>) -> KeyedNumber {
+            if hour == 3 {
+                return KeyedNumber::Unavailable("hour 3 ScriptVariableValues is truncated (1 missing rows)".into());
+            }
+            KeyedNumber::Value(key.filter(|&key| key == (1u128 << 64) | (100u128 << 32) | 9).map(|_| i64::from(hour) * ONE))
+        }
+    }
+
+    script_game::enter();
+    let mut frame = with_variables(frame(&countries(), &[]), &[(1, 100, &[])]);
+    let table = TableId::ScriptVariableValues.index();
+    frame.tables[TableId::ScriptVariableNames.index()] = TableView::Complete(TableRows::ScriptVariableNames(vec![
+        ScriptVariableNameRow { id: 9, name: b"x".to_vec() },
+    ])).into();
+    let source: Arc<dyn KeyedNumbers> = Arc::new(Values);
+    frame.tables[table] = SharedView::from(TableView::Unavailable { reason: "keyed values".into() }).with_keyed_numbers(source.clone());
+    let decide = |frame: &DecodedFrame| check(frame, "", 0, "check_variable = { x = 1 }").decided();
+    frame.hour = 1;
+    assert_eq!(decide(&frame), Ok(true));
+    frame.hour = 2;
+    assert_eq!(decide(&frame), Ok(false));
+    frame.hour = 3;
+    let refused = decide(&frame);
+    frame.tables[table] = TableView::Truncated {
+        rows: TableRows::ScriptVariableValues(vec![ScriptVariableValueRow { scope_kind: 1, scope_id: 100, var_id: 9, value_raw: 3 * ONE }]),
+        missing: 1,
+    }.into();
+    assert!(refused.as_ref().is_err_and(|why| why.contains("ScriptVariableValues is truncated")));
+    assert_eq!(refused, decide(&frame));
+}
+
+#[test]
 fn stored_scopes_decode_where_a_scope_is_read() {
     script_game::enter();
     let frame = positive_variables_frame();

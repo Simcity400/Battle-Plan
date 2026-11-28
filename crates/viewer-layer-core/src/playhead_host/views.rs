@@ -8,6 +8,7 @@ pub mod view;
 use super::{
     Entry, lock,
     mirror::{Mirror, Mirrors},
+    script_values::{ScriptValues, TABLE as SCRIPT_VALUES},
 };
 use crate::rebuilt::panicked;
 use playhead::changes::{Changes, Lives};
@@ -16,7 +17,7 @@ use replay_data::{
     BranchId, Hour,
     rows::{TABLE_COUNT, TableId},
 };
-use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TableView, not_declared};
+use replay_frame::frame::{DecodedFrame, Metrics, SharedView, Stamp, TableView, not_declared};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     io,
@@ -753,6 +754,8 @@ struct Shared {
     written: Vec<playhead::pages::TableWritten>,
     unwritten: Vec<std::sync::OnceLock<SharedView>>,
     entry: Arc<Entry>,
+    script_values: Arc<ScriptValues>,
+    script_values_view: Mutex<Option<((Hour, BranchId, u64), SharedView)>>,
     learned: Mutex<BTreeMap<(&'static str, usize), (Option<Hour>, u64)>>,
     asked: Mutex<Vec<Asked>>,
     demand: AtomicU64,
@@ -765,6 +768,43 @@ struct Shared {
 }
 
 impl Shared {
+    fn values_at(&self, at: (Hour, BranchId, u64)) -> SharedView {
+        let mut view = lock(&self.script_values_view);
+        if let Some((_, view)) = view.as_ref().filter(|(held, _)| *held == at) {
+            return view.clone();
+        }
+        let next = view.as_ref().map_or_else(
+            || SharedView::from(TableView::Unavailable { reason: format!("{SCRIPT_VALUES:?} is read by key") }).with_keyed_numbers(self.script_values.clone()),
+            |(_, previous)| previous.clone(),
+        ).with_stamp(Stamp::new(at.0));
+        *view = Some((at, next.clone()));
+        next
+    }
+
+    fn held(&self) -> Vec<(TableId, usize)> {
+        let script = SCRIPT_VALUES.index();
+        let mut held: Vec<_> = reading(self).iter().enumerate().filter(|(table, _)| *table != script).filter_map(|(table, held)| held.as_ref().map(|held| (TableId::ALL[table], held.bytes()))).collect();
+        let mut bytes = self.script_values.bytes();
+        let mut seen = BTreeSet::new();
+        let mut count = |view: &SharedView| {
+            if seen.insert(view.as_ptr()) {
+                bytes += view_bytes(view);
+            }
+        };
+        for reader in lock(&self.readers).iter() {
+            for frame in reader.frame().into_iter().chain(reader.older.iter().flatten().map(|(frame, _)| frame)) {
+                count(&frame.tables[script]);
+            }
+            for (_, _, _, _, view, _) in reader.keyed_views.iter().filter(|(table, ..)| *table == script) {
+                count(view);
+            }
+        }
+        if bytes > 0 {
+            held.push((SCRIPT_VALUES, bytes));
+        }
+        held
+    }
+
     fn note_demand(&self) {
         self.demand.fetch_add(1, Ordering::Release);
         let wake = lock(&self.wake).clone();
@@ -808,6 +848,8 @@ pub struct Store {
 
 impl Store {
     pub fn new(entry: &Arc<Entry>) -> Self {
+        let written = entry.pages.written_tables(&crate::playhead_host::timeline_runs(entry), TABLE_COUNT);
+        let script_values = Arc::new(ScriptValues::new(entry, written[SCRIPT_VALUES.index()].clone()));
         let shared = Shared {
             kept: RwLock::new((0..TABLE_COUNT).map(|_| None).collect()),
             jobs: Mutex::default(),
@@ -819,9 +861,11 @@ impl Store {
             display: std::sync::atomic::AtomicI64::new(NOT_SHOWN),
             next: AtomicU64::new(0),
             kinds: entry.kinds().to_vec(),
-            written: entry.pages.written_tables(&crate::playhead_host::timeline_runs(entry), TABLE_COUNT),
+            written,
             unwritten: (0..TABLE_COUNT).map(|_| std::sync::OnceLock::new()).collect(),
             entry: Arc::clone(entry),
+            script_values,
+            script_values_view: Mutex::default(),
             learned: Mutex::default(),
             asked: Mutex::default(),
             demand: AtomicU64::new(0),
@@ -862,7 +906,7 @@ impl Store {
         }
         wanted
             .into_iter()
-            .filter(|&(table, _)| matches!(self.shared.written.get(table), Some(playhead::pages::TableWritten::Written)))
+            .filter(|&(table, _)| table != SCRIPT_VALUES.index() && matches!(self.shared.written.get(table), Some(playhead::pages::TableWritten::Written)))
             .filter_map(|(table, mask)| {
                 let width = self.shared.kinds.get(table)?.len();
                 let columns = (0..width).filter(|&column| column >= 64 || mask & (1 << column) != 0).collect();
@@ -918,7 +962,7 @@ impl Store {
         let mut wanted: Vec<(usize, usize, u64, u64)> = Vec::new();
         for (order, &place) in places.iter().enumerate() {
             for &(table, columns) in &readers[place].tables {
-                if matches!(self.shared.written[table], playhead::pages::TableWritten::Written)
+                if table != SCRIPT_VALUES.index() && matches!(self.shared.written[table], playhead::pages::TableWritten::Written)
                     && kept[table].as_ref().is_none_or(|held| held.stale(columns))
                     && !wanted.iter().any(|&(_, held, set, _)| (held, set) == (table, columns))
                 {
@@ -1048,7 +1092,7 @@ impl Store {
     }
 
     pub fn held(&self) -> Vec<(TableId, usize)> {
-        reading(&self.shared).iter().enumerate().filter_map(|(table, held)| held.as_ref().map(|held| (TableId::ALL[table], held.bytes()))).collect()
+        self.shared.held()
     }
 
     pub fn record(&self, distribution: fn(Vec<f64>) -> serde_json::Value) -> serde_json::Value {
@@ -1148,7 +1192,7 @@ impl Views {
     }
 
     pub fn held(&self) -> Vec<(TableId, usize)> {
-        reading(&self.shared).iter().enumerate().filter_map(|(table, held)| held.as_ref().map(|held| (TableId::ALL[table], held.bytes()))).collect()
+        self.shared.held()
     }
 }
 
@@ -1201,6 +1245,7 @@ impl Drop for Store {
         }
         writing(&self.shared).iter_mut().for_each(|kept| *kept = None);
         lock(&self.shared.readers).clear();
+        self.shared.script_values.release();
     }
 }
 
@@ -1456,20 +1501,53 @@ fn make_views(shared: &Shared) {
 #[derive(PartialEq, Eq)]
 enum Version {
     Mirror(u64),
+    Exact(Hour, u64),
     Unwritten,
+}
+
+#[derive(Clone, Copy)]
+enum RowsAt<'a> {
+    Mirror(Option<&'a Mirror>),
+    Exact(&'a ScriptValues, Hour, u64),
+}
+
+impl RowsAt<'_> {
+    fn ready(self, kept: &Kept, columns: u64, hour: Hour) -> bool {
+        match self {
+            Self::Mirror(mirror) => kept.answers(columns, mirror, hour),
+            Self::Exact(..) => true,
+        }
+    }
+
+    fn version(self, kept: &Kept) -> Version {
+        match self {
+            Self::Mirror(_) => Version::Mirror(kept.stamp(u64::MAX)),
+            Self::Exact(_, hour, epoch) => Version::Exact(hour, epoch),
+        }
+    }
+
+    fn view(self, kept: &Kept, (table, columns): (usize, u64), keys: Option<&BTreeSet<u64>>, order: &mut Vec<(u128, u32)>, made: &mut Made) -> (SharedView, Option<view::HeadFailure>) {
+        match (self, keys) {
+            (Self::Mirror(mirror), Some(keys)) => kept.keyed(table, mirror, keys, order, made),
+            (Self::Mirror(mirror), None) => kept.view_with_failure(table, columns, mirror, order, made),
+            (Self::Exact(source, hour, _), keys) => source.snapshot(hour, columns, keys, order),
+        }
+    }
 }
 
 fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[usize], (hour, branch, epoch): (Hour, BranchId, u64), republishing: bool) {
     let (mut order, mut made) = (Vec::new(), Made::default());
     let mut readers = lock(&shared.readers);
     let mut published = false;
+    let rows_at = |table| if table == SCRIPT_VALUES.index() { RowsAt::Exact(&shared.script_values, hour, epoch) } else { RowsAt::Mirror(mirrors.get(TableId::ALL[table])) };
     for &place in places {
         let Some(reading) = readers.get(place).filter(|reading| reading.open) else { continue };
-        if republishing && reading.stands() == Some((hour, epoch)) && reading.frame().is_some_and(|frame| frame.branch == branch) && !reading.keys_moved() {
+        let same_head = reading.stands() == Some((hour, epoch)) && reading.frame().is_some_and(|frame| frame.branch == branch);
+        if republishing && same_head && !reading.keys_moved() {
             continue;
         }
         let is_written = |table: usize| matches!(shared.written[table], playhead::pages::TableWritten::Written);
-        let home = |&(table, columns): &(usize, u64)| !is_written(table) || kept[table].as_ref().is_some_and(|kept| kept.answers(columns, mirrors.get(TableId::ALL[table]), hour));
+        let home = |&(table, columns): &(usize, u64)| !is_written(table) || kept[table].as_ref().is_some_and(|kept| rows_at(table).ready(kept, columns, hour));
         let waiting: Vec<TableId> = reading
             .tables
             .iter()
@@ -1520,7 +1598,7 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
             if !is_written(table) {
                 held[table] = Some(not_written(table));
             } else if let Some(kept) = kept[table].as_ref() {
-                held[table] = Some(kept.view_with_failure(table, columns, mirrors.get(TableId::ALL[table]), &mut order, &mut made));
+                held[table] = Some(rows_at(table).view(kept, (table, columns), None, &mut order, &mut made));
             }
         }
         let (id, keyed) = (reading.id, reading.keyed.clone());
@@ -1531,13 +1609,14 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
             if is_written(keyed.table) && kept.is_none() {
                 continue;
             }
-            let stamp = kept.map_or(Version::Unwritten, |kept| Version::Mirror(kept.stamp(u64::MAX)));
+            let rows = rows_at(keyed.table);
+            let stamp = kept.map_or(Version::Unwritten, |kept| rows.version(kept));
             let was = before.iter().find(|(table, ..)| *table == keyed.table);
             let (view, failure) = match (was, kept) {
                 (Some((_, shown, version, _, view, failure)), _) if *shown == stamp && *version == keyed.version => (view.clone(), failure.clone()),
                 (_, Some(kept)) => {
                     let tells = kept.tells(u64::MAX);
-                    let (view, failure) = kept.keyed(keyed.table, mirrors.get(TableId::ALL[keyed.table]), &keyed.keys, &mut order, &mut made);
+                    let (view, failure) = rows.view(kept, (keyed.table, u64::MAX), Some(&keyed.keys), &mut order, &mut made);
                     let asked: Vec<(u128, u64)> = order.iter().map(|&(key, _)| key).filter(|&key| was.is_none_or(|(_, _, _, keys, ..)| !keys.contains(&prefix(key)))).map(|key| (key, view::EVERY)).collect();
                     if tells && !asked.is_empty() {
                         made.told_reader.push((id, keyed.table, asked));
@@ -1550,6 +1629,7 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
             keys.push((keyed.table, Arc::clone(&keyed.keys)));
             views.push((keyed.table, stamp, keyed.version, Arc::clone(&keyed.keys), view, failure));
         }
+        let script_changed = !same_head && held[SCRIPT_VALUES.index()].is_some() && is_written(SCRIPT_VALUES.index());
         let mut failures: Vec<view::HeadFailure> = Vec::new();
         let tables = std::array::from_fn(|table| match held[table].take() {
             Some((view, failure)) => {
@@ -1558,6 +1638,7 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
                 }
                 view
             }
+            None if table == SCRIPT_VALUES.index() => shared.values_at((hour, branch, epoch)),
             None => not_declared(TableId::ALL[table]),
         });
         let frame = DecodedFrame { branch, hour, tables, metrics: Metrics::default() };
@@ -1583,6 +1664,9 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
         (reading.frame_keys, reading.keyed_views) = (keys, views);
         reading.arriving.clear();
         if let Some(telling) = &mut reading.told {
+            if script_changed {
+                telling.pending.insert(SCRIPT_VALUES, None);
+            }
             for (table, rows) in std::mem::take(&mut telling.pending) {
                 tell(&mut telling.unread, table, rows.as_ref());
             }

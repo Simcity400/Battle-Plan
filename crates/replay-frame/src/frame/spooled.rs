@@ -64,7 +64,10 @@ impl Spooled for SharedView {
         self.2.spool(out)?;
         self.3.spool(out)?;
         self.4.spool(out)?;
-        self.5.spool(out)
+        match self.5.as_deref() {
+            Some(super::Access::Keys(keys)) => Some(Arc::clone(keys)).spool(out),
+            _ => Option::<Arc<super::Keys>>::None.spool(out),
+        }
     }
 
     fn unspool(input: &mut Reader<'_>) -> io::Result<Self> {
@@ -74,7 +77,7 @@ impl Spooled for SharedView {
             Spooled::unspool(input)?,
             Spooled::unspool(input)?,
             Spooled::unspool(input)?,
-            Spooled::unspool(input)?,
+            Option::<Arc<super::Keys>>::unspool(input)?.map(|keys| Arc::new(super::Access::Keys(keys))),
         ))
     }
 }

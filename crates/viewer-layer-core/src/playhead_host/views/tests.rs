@@ -206,10 +206,14 @@ pub fn record(name: &str, hours: u32) -> Units {
     })
 }
 
-pub fn record_with(name: &str, hours: u32, mut hour: impl FnMut(&mut ColumnarStore, u32)) -> Units {
+pub fn record_with(name: &str, hours: u32, hour: impl FnMut(&mut ColumnarStore, u32)) -> Units {
+    record_with_settings(name, hours, Writing::at(3), hour)
+}
+
+pub fn record_with_settings(name: &str, hours: u32, settings: Writing, mut hour: impl FnMut(&mut ColumnarStore, u32)) -> Units {
     let kinds = replay_recording::schema::schema().unwrap();
     let mut store = ColumnarStore::new(kinds.clone(), vec![false; kinds.len()]);
-    store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
+    store.attach(Encoder::new(&kinds, settings).unwrap());
     let mut memory = Memory::default();
     store.begin_run(0);
     for at in 0..hours {
@@ -917,4 +921,67 @@ fn an_unrecorded_selection_is_answered_once() {
     let published = reader.published();
     store.post(&mirrors, 0, RECORDING.branch, 0, false);
     assert_eq!(reader.published(), published);
+}
+
+#[test]
+fn an_exact_column_uses_the_same_failure_and_key_publication_as_a_mirror() {
+    use super::{SCRIPT_VALUES as table, view::HeadFailureKind};
+    let good = 1u128 << 32;
+    let units = record_with("exact column publication", 1, |store, _| {
+        store.status(table.index(), Status::Complete, true, Some(0), true).unwrap();
+        write_rows(store, table, &[(good, vec![Put::Cell(Cell::I64(7))]), (2u128 << 32, vec![Put::Unrecorded])]);
+    });
+    let entry = open(units, hourly_steps()).unwrap();
+    entry.set_capture(CaptureMode::Full);
+    let mut store = Store::new(&entry);
+    let whole = store.reader("explicit whole", &[Need::every(table)]);
+    let selected = store.reader("explicit selection", &[Need::every(table)]);
+    let mirrors = Arc::new(Mirrors::default());
+    store.post(&mirrors, 0, RECORDING.branch, 0, false);
+    let published = selected.published();
+    selected.declare_keyed(table, Arc::new(BTreeSet::from([super::prefix(good)])));
+    assert_eq!(selected.published(), published + 1);
+    let (frame, failures) = whole.frame_with_failures().unwrap();
+    assert!(matches!(&*frame.tables[table.index()], TableView::Unavailable { .. }));
+    assert!(matches!(&failures[..], [failure] if failure.table == table && matches!(failure.kind, HeadFailureKind::BuildError(_))));
+    let refused_bytes = super::view_bytes(&frame.tables[table.index()]);
+    let (frame, failures) = selected.frame_with_failures().unwrap();
+    assert!(failures.is_empty());
+    assert_eq!(frame.complete::<tables::ScriptVariableValues>().unwrap()[0].value_raw, 7);
+    let held = store.held();
+    assert_eq!(held.iter().find(|&&(id, _)| id == table).unwrap().1, refused_bytes + super::view_bytes(&frame.tables[table.index()]));
+    let (_, published) = selected.newest().unwrap();
+    store.post(&mirrors, 0, RECORDING.branch, 0, false);
+    assert_eq!(selected.newest().unwrap().1, published);
+}
+
+#[test]
+fn an_exact_selection_carries_changed_values_even_when_the_selected_keys_expand() {
+    use super::SCRIPT_VALUES as table;
+
+    let units = record_with("exact column changes", 2, |store, at| {
+        store.status(table.index(), Status::Complete, true, Some(at as Hour), true).unwrap();
+        write_rows(store, table, &[(1u128 << 32, vec![Put::Cell(Cell::I64(-20 + i64::from(at)))]), (2u128 << 32, vec![Put::Cell(Cell::I64(4))])]);
+    });
+    let entry = open(units, hourly_steps()).unwrap();
+    let mut store = Store::new(&entry);
+    let reader = Arc::new(store.handle().telling("explicit selection with changes", &[Need::every(table)]));
+    reader.declare_keyed(table, Arc::new(BTreeSet::from([1])));
+    let mirrors = Arc::new(Mirrors::default());
+    store.post(&mirrors, 0, RECORDING.branch, 0, false);
+    let (frame, _, _) = reader.take_keyed().unwrap();
+    assert_eq!(frame.complete::<tables::ScriptVariableValues>().unwrap()[0].value_raw, -20);
+
+    let expanded = Arc::new(BTreeSet::from([1, 2]));
+    *store.shared.chosen.lock().unwrap() = Some(Box::new({
+        let (reader, keys) = (Arc::clone(&reader), Arc::clone(&expanded));
+        move || reader.declare_keyed(table, keys)
+    }));
+    store.post(&mirrors, 1, RECORDING.branch, 0, false);
+    let (frame, told, keys) = reader.take_keyed().unwrap();
+    assert_eq!(frame.hour, 1);
+    assert_eq!(keys.of(table), Some(&expanded));
+    let rows = frame.complete::<tables::ScriptVariableValues>().unwrap();
+    assert_eq!(rows.iter().map(|row| row.value_raw).collect::<Vec<_>>(), vec![-19, 4]);
+    assert_eq!(told.get(&table), Some(&None));
 }

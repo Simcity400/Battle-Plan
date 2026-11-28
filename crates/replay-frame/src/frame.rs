@@ -157,8 +157,25 @@ pub struct SharedView(
     Option<Arc<ChangeFacts>>,
     Option<Arc<FieldStamp>>,
     Option<Projection>,
-    Option<Arc<Keys>>,
+    Option<Arc<Access>>,
 );
+
+#[derive(Debug)]
+enum Access {
+    Keys(Arc<Keys>),
+    Numbers(std::sync::Weak<dyn KeyedNumbers>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeyedNumber {
+    Value(Option<i64>),
+    NotRecorded,
+    Unavailable(String),
+}
+
+pub trait KeyedNumbers: Send + Sync {
+    fn read(&self, hour: Hour, key: Option<u128>) -> KeyedNumber;
+}
 
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -203,12 +220,21 @@ impl SharedView {
         })
     }
 
-    pub fn with_keys(self, keys: Option<Arc<Keys>>) -> Self {
-        Self(self.0, self.1, self.2, self.3, self.4, keys)
+    pub fn with_keys(mut self, keys: Option<Arc<Keys>>) -> Self {
+        self.5 = keys.map(|keys| Arc::new(Access::Keys(keys)));
+        self
+    }
+
+    pub fn with_keyed_numbers(mut self, source: Arc<dyn KeyedNumbers>) -> Self {
+        self.5 = Some(Arc::new(Access::Numbers(Arc::downgrade(&source))));
+        self
     }
 
     pub fn keys(&self) -> &Keys {
-        self.5.as_deref().unwrap_or(&Keys::All)
+        match self.5.as_deref() {
+            Some(Access::Keys(keys)) => keys,
+            _ => &Keys::All,
+        }
     }
 
     pub fn held(&self) -> &TableView {
@@ -681,6 +707,9 @@ impl std::ops::DerefMut for SharedView {
         self.1 = None;
         self.2 = None;
         self.3 = None;
+        if matches!(self.5.as_deref(), Some(Access::Numbers(_))) {
+            self.5 = None;
+        }
         Arc::make_mut(&mut self.0)
     }
 }
@@ -919,6 +948,18 @@ fn put_count(out: &mut Vec<u8>, n: usize) -> io::Result<()> {
 }
 
 impl DecodedFrame {
+    pub fn keyed_i64(&self, table: TableId, key: Option<u128>) -> Option<KeyedNumber> {
+        let view = &self.tables[table.index()];
+        let Access::Numbers(source) = view.5.as_deref()? else { return None };
+        if view_reads::recording() {
+            view_reads::note(view);
+        }
+        Some(source.upgrade().map_or_else(
+            || KeyedNumber::Unavailable(format!("hour {} {table:?}: the playback column was released", self.hour)),
+            |source| source.read(self.hour, key),
+        ))
+    }
+
     pub fn complete_fields<T: TableSchema>(&self, fields: u64) -> io::Result<&[T::Row]> {
         let rows = undeclared::reading(fields, || self.complete::<T>())?;
         if let Some(held) = self.tables[T::ID.index()].fields() {
