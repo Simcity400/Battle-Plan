@@ -47,7 +47,7 @@ fn unread_country_names_leave_the_queue_standing_with_the_unnamed_contributor_mi
     use dashboard_follow::live::Cells;
     use dashboard_base::products::Country;
     use dashboard_query::identity::Holders;
-    use replay_data::rows::{CountryLinkRow, DeploymentConveyorRow, DeploymentLineRow, DeploymentManpowerRow, TableId, TableRows};
+    use replay_data::rows::{CountryLinkRow, DeploymentConveyorRow, DeploymentEquipmentRow, DeploymentLineRow, DeploymentManpowerRow, TableId, TableRows};
     use replay_frame::frame::{SharedView, TableView};
     let mut frame = source(1, 10, Some(1));
     let sampled = |view: TableView| SharedView::from(view).with_sampled_at(Some(10));
@@ -56,7 +56,13 @@ fn unread_country_names_leave_the_queue_standing_with_the_unnamed_contributor_mi
     let TableView::Complete(rows) = &*countries else { unreachable!() };
     frame.tables[TableId::Countries.index()] = sampled(TableView::Truncated { rows: rows.clone(), missing: 1 });
     frame.tables[TableId::DeploymentConveyors.index()] = sampled(TableView::Complete(TableRows::DeploymentConveyors(vec![DeploymentConveyorRow { handle: 1, country: 9001, template: 5, ..Default::default() }])));
-    frame.tables[TableId::DeploymentLines.index()] = sampled(TableView::Complete(TableRows::DeploymentLines(vec![DeploymentLineRow { handle: 10, conveyor: 1, country: 9001, ..Default::default() }])));
+    frame.tables[TableId::DeploymentLines.index()] = sampled(TableView::Complete(TableRows::DeploymentLines(
+        [10, 11].map(|handle| DeploymentLineRow { handle, conveyor: 1, country: 9001, ..Default::default() }).into(),
+    )));
+    frame.tables[TableId::DeploymentEquipment.index()] = sampled(TableView::Complete(TableRows::DeploymentEquipment(
+        [10, 11].map(|line| DeploymentEquipmentRow { line, variant_handle: 7, amount_raw: line as i64 * 100, ..Default::default() }).into(),
+    )));
+    frame.tables[TableId::VariantDefinitions.index()] = sampled(TableView::Complete(TableRows::VariantDefinitions(Vec::new())));
     frame.tables[TableId::DeploymentManpower.index()] = sampled(TableView::Complete(TableRows::DeploymentManpower(vec![
         DeploymentManpowerRow { line: 10, side: 0, ordinal: 0, source_country: 9001, amount: 400 },
         DeploymentManpowerRow { line: 10, side: 0, ordinal: 1, source_country: 9002, amount: 100 },
@@ -66,8 +72,13 @@ fn unread_country_names_leave_the_queue_standing_with_the_unnamed_contributor_mi
     let content = TrainingQueue::context(&held, &LoadContext { content: None }).unwrap();
     let (holders, live, cancelled) = (Holders::default(), Cells::default(), std::sync::atomic::AtomicBool::new(false));
     let at = At { owner: Some(Owner { slot: 7, id: 9001 }), holders: &holders, hour: 10, context: &content, cancelled: &cancelled, live: &live };
+    super::DESIGNS_RESOLVED.set(0);
     let reply = TrainingQueue::reply(&frame, &TrainingQueueParams { branch_id: "1".into(), country: Country::from("GER") }, &at).expect("the queue stands without every country's name");
-    assert_eq!((reply.missing, reply.in_training), (None, Some(1)));
+    assert_eq!((reply.missing, reply.in_training), (None, Some(2)));
+    assert_eq!(super::DESIGNS_RESOLVED.get(), 1, "the same design is resolved once for the whole reply");
+    assert!(reply.warnings.iter().any(|line| line == "Design 7 has no definition at this hour (2)"), "{:?}", reply.warnings);
+    assert_eq!(reply.orders[0].divisions[0].equipment[0].amount_raw, "1000");
+    assert_eq!(reply.orders[0].divisions[1].equipment[0].amount_raw, "1100");
     let division = &reply.orders[0].divisions[0];
     assert_eq!(division.manpower, Some(500));
     assert_eq!(division.contributors.iter().map(|row| (row.tag.as_deref(), row.amount)).collect::<Vec<_>>(), [(Some("GER"), 400), (None, 100)], "the witnessed country is named; the unread one is the missing part");
