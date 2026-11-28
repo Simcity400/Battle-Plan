@@ -38,6 +38,14 @@ pub(crate) fn decided(event: &FeedEvent, kind: EventFeedKind) -> Option<EventFee
     })
 }
 
+pub(super) fn token(event: &FeedEvent, presentation: &EventPresentation) -> Option<String> {
+    match &presentation.token {
+        Recorded::Value(bytes) if !bytes.is_empty() => std::str::from_utf8(bytes).ok().map(str::to_owned),
+        _ => None,
+    }
+    .or_else(|| event.native_event.map(|(_, id)| id.to_string()))
+}
+
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -175,11 +183,7 @@ pub(crate) fn presented(
         });
         return Ok(Some(row));
     };
-    let token = match &presentation.token {
-        Recorded::Value(bytes) if !bytes.is_empty() => std::str::from_utf8(bytes).ok().map(str::to_owned),
-        _ => None,
-    }
-    .or_else(|| event.native_event.map(|(_, id)| id.to_string()));
+    let token = token(event, presentation);
     let mut authored_notices = Notices::default();
     let authored = presenter.item(event, EventFeedKind::ScriptEventFired, token.clone(), &mut authored_notices)?;
     let mut not_recorded = Vec::new();

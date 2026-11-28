@@ -1764,8 +1764,8 @@ fn a_listed_row_leaves_unexpanded_text_reasons_and_unshown_states_to_the_opened_
 fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and_decisions() {
     use super::{EventFeedCategory, EventFeedGapField, EventFeedTail, EventFeedTailParams};
     use dashboard_base::{
-        products::{LoadContext, Product},
-        test_fixtures::{source, visual_mods::Machine},
+        products::{Finish, LoadContext, Product},
+        test_fixtures::{source, visual_mods::{Machine, RED, png}},
     };
     use dashboard_text::scripted_text::SCRIPTED_GAP;
     use replay_data::{
@@ -1784,12 +1784,15 @@ fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and
     );
     machine.write(
         "events/synth_events.txt",
-        b"add_namespace = synth\ncountry_event = {\n  id = synth.1\n  title = synth.1.t\n  desc = synth.1.d\n  option = { name = synth.1.a }\n  option = { name = synth.1.b }\n}\n",
+        b"add_namespace = synth\ncountry_event = {\n  id = synth.1\n  title = synth.1.t\n  desc = synth.1.d\n  picture = GFX_synth\n  option = { name = synth.1.a }\n  option = { name = synth.1.b }\n}\n",
     );
     machine.write(
         "localisation/english/synth_l_english.yml",
         "\u{feff}l_english:\n GER:0 \"Synthland\"\n GER_DEF:0 \"the Synthland\"\n GER_ADJ:0 \"Synth\"\n SOV:0 \"Neighboria\"\n SOV_DEF:0 \"the Neighboria\"\n SOV_ADJ:0 \"Neighborian\"\n synth.1.t:0 \"[ROOT.GetName] summit of [GetYear]: [ROOT.GetLeader] and [FROM.GetName]\"\n synth.1.d:0 \"In [GetYear], [ROOT.GetLeader] met [FROM.GetRulingParty].\"\n synth.1.a:0 \"Back [ROOT.GetLeader] in [GetYear]\"\n synth.1.b:0 \"Ask [FROM.GetName]\"\n synth_build:0 \"Build in [FROM.GetName] ([FROM.ROOT.GetName]) for [ROOT.GetName] ([GetYear])\"\n synth_trade:0 \"Trade with [FROM.GetName] ([FROM.ROOT.GetName]) from [ROOT.GetName] ([GetYear])\"\n synth_orders:0 \"Orders for [ROOT.GetName] in [GetYear] ([FROM.GetName])\"\n".as_bytes(),
     );
+
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_synth textureFile=gfx/synth.png}}");
+    machine.write("gfx/synth.png", &png(RED));
 
     let hour = game_model::calendar::HOUR_EPOCH + 1939 * 8760;
     let actor = EventFeedCountry { reference: 9001, id: 9001, instance: 1 };
@@ -1955,7 +1958,10 @@ fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and
         script_scopes: scopes,
         windows: Default::default(),
     }]));
-    let (replay_source, options) = machine.open_frames(vec![frame]);
+    let (replay_source, options) = machine.open_frames(vec![frame.clone()]);
+    let (prepared_source, prepared_options) = machine.open_frames(vec![frame]);
+    let prepared_source = std::sync::Arc::new(prepared_source);
+    let prepared_load = LoadContext { content: Some(prepared_options) };
     let context = LoadContext { content: Some(options) };
     let kinds = super::EventFeedKinds::load(&replay_source, &dashboard_base::products::BranchParams { branch_id: "1".into() }, &context, &AtomicBool::new(false)).unwrap();
     let project = kinds.kinds.iter().find(|item| item.kind == EventFeedKind::ProjectFinished).unwrap();
@@ -1994,7 +2000,25 @@ fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and
             .as_ref()
             .unwrap()
     }
-    let listed = EventFeedTail::load(&replay_source, &ask(None), &context, &AtomicBool::new(false)).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let (finish, ()) = Finish::open(&replay_source, &context, true, || ());
+    let counts = || (
+        content_reader_events::events::EVENT_FILE_READS.with(|reads| reads.replace(0)),
+        super::text::ART_RESOLUTIONS.with(|draws| draws.replace(0)),
+    );
+    counts();
+    let listed = finish.reply(|| EventFeedTail::load(&replay_source, &ask(None), &context, &cancelled)).unwrap();
+    let (files, drawings) = counts();
+    assert!(files > 0 && drawings > 0, "cold: {files} files, {drawings} drawings");
+
+    let panel = super::event_feed_dated_panel(&prepared_source, &prepared_load, &serde_json::json!({
+        "panel": "event-feed-tail", "branchId": "1", "limit": 64, "categories": ["politics"],
+    })).unwrap();
+    super::assets::held(&prepared_source, 1, &prepared_load).unwrap().wait().unwrap();
+    let followed = (panel.exact().unwrap().advance)(hour, true, &cancelled, None);
+    let followed = followed.value.as_ref().as_ref().unwrap();
+    assert_eq!(counts(), (0, 0), "prepared step");
+    assert_eq!(*followed, serde_json::to_value(&listed).unwrap());
     let ev_listed = event_item(&listed, "native:1:1");
     assert_eq!(ev_listed.name.as_deref(), Some(format!("Synthland summit of 1939: {SCRIPTED_GAP} and {SCRIPTED_GAP}").as_str()));
     assert_eq!(ev_listed.gaps.len(), 2, "listed row keeps both title gaps");

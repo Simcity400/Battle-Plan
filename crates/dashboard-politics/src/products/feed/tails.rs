@@ -413,6 +413,7 @@ struct Prepared {
     content: Arc<Result<Arc<Catalogue>, String>>,
     kept: Arc<Mutex<KeptNaming>>,
     places: Mutex<RowNames>,
+    assets: Option<Arc<super::assets::Warming>>,
 }
 
 fn branch_id(text: &str) -> io::Result<u64> {
@@ -438,6 +439,9 @@ fn prepare(source: &Source, query: &Query<'_>, branch: u64, context: &LoadContex
     let selection = dashboard_world::products::group_members::dated(source, query, context, asked.0, asked.1, cancelled)?;
     let content = Arc::new(super::resolve_content(source, context));
     let scanned = index::scanned_for(source, query, branch, content.as_ref().as_ref().ok(), cancelled)?;
+    let assets = if list.is_none() && let Ok(catalogue) = content.as_ref() {
+        super::assets::launch(source, branch, context, catalogue, &scanned)
+    } else { None };
     let (index, feed) = match list {
         Some(List::Decisions) => (index::decisions_for(source, query, branch, content.as_ref().as_ref().ok(), cancelled)?, None),
         Some(List::EventChoices) => (index::choices_for(source, query, branch, content.as_ref().as_ref().ok(), cancelled)?, None),
@@ -455,7 +459,7 @@ fn prepare(source: &Source, query: &Query<'_>, branch: u64, context: &LoadContex
         None => index,
     };
     let losses = source.replay_ref().event_losses(branch).collect();
-    Ok(Prepared { selection, index, feed, scanned, losses, content, kept, places: Mutex::default() })
+    Ok(Prepared { selection, index, feed, scanned, losses, content, kept, places: Mutex::default(), assets })
 }
 
 struct Window<'p> {
@@ -669,6 +673,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, (source, load): (&Source
         }
         (folded.total, folded.offset, live, unattributed, folded.gaps, next, folded.lines)
     };
+    let assets = followed.is_some().then_some(prepared.assets.as_deref()).flatten();
     let (cache, records) = followed.map_or((None, None), |held| {
         ((!opened && indexed_records).then_some(&mut held.page), indexed_records.then_some(&held.records))
     });
@@ -685,7 +690,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, (source, load): (&Source
     let names = Names::new(&query.holders);
     let mut notices = Notices::default();
     let presenter = Presenter::new(query, content_from(&prepared.content, &mut notices), Arc::clone(&prepared.kept));
-    let presenter = if opened { presenter } else { presenter.without_effects() };
+    let presenter = if opened { presenter } else { presenter.without_effects().with_assets(assets) };
     let mut events: Vec<&FeedEvent> = Vec::new();
     let mut seen: std::collections::HashMap<u128, usize> = std::collections::HashMap::new();
     let mut shapes: Vec<Option<(usize, Option<usize>)>> = Vec::with_capacity(planned.len());
@@ -1054,7 +1059,11 @@ impl Product for EventFeedTail {
     const CONTENT_DEPENDENT: bool = true;
     const REPLAYS: bool = true;
     const PREPARE: Option<dashboard_base::products::read_ahead::Prepare<Self::Params>> = Some(|source, params, load| {
-        if params.place_names == Some(true) { place_name_runs::prepare(source, load) } else { Ok(None) }
+        let places = if params.place_names == Some(true) { place_name_runs::prepare(source, load)? } else { None };
+        if params.row.is_none() {
+            super::assets::reserve(source, branch_id(&params.branch_id)?, params.hour, load);
+        }
+        Ok(places)
     });
     type Params = EventFeedTailParams;
     const FIELDS: dashboard_base::products::Fields = FEED_FIELDS;
