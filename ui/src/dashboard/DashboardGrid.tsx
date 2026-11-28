@@ -191,20 +191,27 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     const target = element.current;
     if (!target) return;
     if (exportSurface.active) {
+      target.removeAttribute('data-offscreen');
       slots.show();
       setActive(true);
       return;
     }
-    if (prepared) return mountInTurn(() => { slots.show(); setActive(true); }, { isIntersecting: false, boundingClientRect: target.getBoundingClientRect() });
+    if (prepared) {
+      target.setAttribute('data-offscreen', '');
+      return mountInTurn(() => { slots.show(); setActive(true); }, { isIntersecting: false, boundingClientRect: target.getBoundingClientRect() });
+    }
     const root = target.closest(DASHBOARD_SCROLL);
     let mounted = false, visible = false, cancel = () => {};
     const mount = () => { mounted = true; slots.show(); setActive(visible); };
-    if (root && onScreen(target.getBoundingClientRect(), root.getBoundingClientRect())) { visible = true; mount(); }
+    const inside = root && onScreen(target.getBoundingClientRect(), root.getBoundingClientRect());
+    target.toggleAttribute('data-offscreen', root !== null && !inside);
+    if (inside) { visible = true; mount(); }
     const near = new IntersectionObserver(([entry]) => {
       visible = entry.isIntersecting;
       if (mounted) setActive(visible); else cancel = mountInTurn(mount, entry);
     }, { root, rootMargin: NEAR_SCREEN });
     const seen = new IntersectionObserver(([entry]) => {
+      target.toggleAttribute('data-offscreen', !entry.isIntersecting);
       if (mounted || !entry.isIntersecting) return;
       cancel();
       visible = true;

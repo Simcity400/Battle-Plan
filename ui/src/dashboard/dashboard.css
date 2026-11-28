@@ -293,6 +293,7 @@ button.dash-time-chip:hover, button.dash-time-chip[aria-expanded='true'] { backg
   animation: live-pulse 1.8s var(--ease) infinite;
 }
 [data-motion='reduced'] .dash-time-dot.is-playing::after { content: none; }
+:is(.dash-widget, .dash-widget-prepared)[data-offscreen] :is(.dash-time-dot.is-playing, .skeleton)::after { animation: none; }
 .dash-time-dot.is-pinned { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted); }
 .dash-time-icon { width: 12px; height: 12px; flex: none; color: var(--muted); }
 .dash-time-chevron { width: 12px; height: 12px; flex: none; color: var(--muted); }
