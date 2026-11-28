@@ -204,7 +204,7 @@ function makeRecordingCanvas(width = 960, height = 300) {
 
 const KIND = 'worker-motion-test';
 const BLUE = '#4f86f7';
-type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; segments?: boolean; scale?: number; whole?: boolean; art?: boolean; renames?: readonly number[]; france?: number; sectionAt?: number };
+type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; segments?: boolean; scale?: number; whole?: boolean; art?: boolean; renames?: readonly number[]; france?: number; sectionAt?: number; showSectionCount?: boolean };
 
 const testProjection = registerFamilyProjection({
   family: 'bars',
@@ -237,7 +237,9 @@ const testProjection = registerFamilyProjection({
       if (numeric !== null && france > numeric) rows.reverse();
     }
     if (sample?.sectionAt !== undefined) {
-      rows.splice(sample.sectionAt, 0, { kind: 'section', key: 'section', label: 'Countries', count: rows.length - sample.sectionAt });
+      rows.splice(sample.sectionAt, 0, { kind: 'section', key: 'section', label: 'Countries',
+        ...(sample.showSectionCount === false ? {} : { count: rows.length - sample.sectionAt }),
+      });
     }
     return {
       form: sample?.form ?? 'ordered',
@@ -874,6 +876,7 @@ describe('Ordered bar playback', () => {
       [{ value: 100, france: 50, sectionAt: 1 }, { value: 80, france: 120, sectionAt: 1 }, undefined],
       [{ value: 100, france: 50, sectionAt: 0 }, { value: 80, france: 120, sectionAt: 1 }, undefined],
       [{ value: 100, france: 50 }, { value: 80, france: 120, key: 'FRA' }, { membership: 1 }],
+      [{ value: 50, france: 100, sectionAt: 1 }, { value: 80, france: 120, sectionAt: 1, key: 'FRA' }, { membership: 1 }],
     ] as const) await withLane(async f => {
       f.record(100, first);
       f.record(101, second);
@@ -882,6 +885,19 @@ describe('Ordered bar playback', () => {
       f.tick(0);
       assert.equal(f.served.at(-1)?.changed, 0);
       assert.deepEqual(f.served.at(-1)?.motionDiagnostics?.rowChanges, rowChanges);
+    });
+  });
+
+  it('allows a section to gain a count during same-order motion', async () => {
+    for (const [france, painted] of [[60, 55], [120, 50]] as const) await withLane(async f => {
+      f.record(100, { value: 100, france: 50, sectionAt: 0, showSectionCount: false });
+      f.record(101, { value: 80, france, sectionAt: 0 });
+      f.clock(100, 1);
+      await f.request(100, 1);
+      const unit = f.barWidth() / 50;
+      f.clock(100.5, 1);
+      f.tick(0);
+      assert.ok(Math.abs(f.barWidth() / unit - painted) < .01);
     });
   });
 

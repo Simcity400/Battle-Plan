@@ -211,6 +211,7 @@ function matchingRows(first: BarsModel, second: BarsModel, diagnostic?: MotionSa
       byKey.set(row.key, { row, section });
     }
     const matched: BarsRow[] = [];
+    let sectionMismatch = false;
     section = -1;
     for (const [i, row] of first.rows.entries()) {
       if (row.kind === 'section') section = i;
@@ -219,10 +220,11 @@ function matchingRows(first: BarsModel, second: BarsModel, diagnostic?: MotionSa
         if (diagnostic) diagnostic.rowChange = 'membership';
         return null;
       }
-      if (section !== endpoint.section) return null;
+      sectionMismatch ||= section !== endpoint.section;
       matched.push(endpoint.row);
       byKey.delete(row.key);
     }
+    if (sectionMismatch) return null;
     endpoints = matched;
   }
   for (const [i, row] of first.rows.entries()) {
@@ -233,7 +235,7 @@ function matchingRows(first: BarsModel, second: BarsModel, diagnostic?: MotionSa
         if (diagnostic) diagnostic.rowChange = 'label';
         return null;
       }
-      if (row.kind === 'section' && endpoint.kind === 'section' && row.count !== endpoint.count) return null;
+      if (reordered && row.kind === 'section' && endpoint.kind === 'section' && row.count !== endpoint.count) return null;
       continue;
     }
     if (row.label?.kind !== endpoint.label?.kind || barsLabelText(row.label) !== barsLabelText(endpoint.label)) {
