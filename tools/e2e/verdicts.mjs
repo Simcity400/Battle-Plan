@@ -47,8 +47,9 @@ export function classifyWidgetSnapshot({
   unavailableText = null, errorDetail = null,
   outsideText = null, notRecordedText = null, emptyText = null,
   probeState = null, probeDrawing = false,
-} = {}) {
+} = {}, tracking = false) {
   const clean = value => (typeof value === 'string' && value.trim() ? value.trim() : null);
+  const loading = detail => ({ outcome: tracking ? 'loading' : 'error', detail });
   const state = clean(domState);
   const detail = clean(domDetail);
   if (state === 'unavailable') return { outcome: 'refusal', detail: clean(unavailableText) ?? detail ?? 'unavailable' };
@@ -56,18 +57,20 @@ export function classifyWidgetSnapshot({
   if (state === 'outside') return { outcome: 'outside', detail: clean(outsideText) ?? detail ?? 'outside' };
   if (state === 'not-recorded') return { outcome: 'not-recorded', detail: clean(notRecordedText) ?? detail ?? 'not-recorded' };
   if (state === 'empty') return { outcome: 'content', detail: clean(emptyText) ?? detail };
-  if (state === 'loading') return probeDrawing ? { outcome: 'content', detail: null } : { outcome: 'error', detail: detail ?? 'still loading' };
   const unavail = clean(unavailableText);
-  if (unavail) return { outcome: 'refusal', detail: unavail };
   const err = clean(errorDetail);
+  if (state === 'loading') {
+    if (tracking && err) return { outcome: 'error', detail: err };
+    if (tracking && unavail) return { outcome: 'refusal', detail: unavail };
+    return probeDrawing ? { outcome: 'content', detail: null } : loading(detail ?? 'still loading');
+  }
+  if (unavail) return { outcome: 'refusal', detail: unavail };
   if (err) return { outcome: 'error', detail: err };
   const out = clean(outsideText);
   if (out) return { outcome: 'outside', detail: out };
   const unrec = clean(notRecordedText);
   if (unrec) return { outcome: 'not-recorded', detail: unrec };
-  if (probeState === 'loading' && !probeDrawing) {
-    return { outcome: 'error', detail: 'still loading' };
-  }
+  if (probeState === 'loading' && !probeDrawing) return loading('still loading');
   if (probeState === 'blank') {
     return { outcome: 'error', detail: 'blank widget body' };
   }

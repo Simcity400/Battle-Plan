@@ -9,6 +9,7 @@ import {
   describeUncleanCataloguePage,
   finishCatalogueCard,
   measureIdleCost,
+  mergeWidgetOutcomes,
   runThrottled,
   restoreCountHour,
   selectQuickCatalogueCards,
@@ -157,6 +158,64 @@ test('createOutcomeWatcher scans once on playing transition, stops polling, and 
   assert.equal(result.b.outcome, 'content');
 });
 
+test('playback outcome watcher distinguishes recovered loading, persistent loading and failure', () => {
+  assert.deepEqual(classifyWidgetSnapshot({ probeState: 'loading' }, true), { outcome: 'loading', detail: 'still loading' });
+  assert.deepEqual(classifyWidgetSnapshot({ domState: 'loading', errorDetail: 'section failed' }, true), { outcome: 'error', detail: 'section failed' });
+  assert.deepEqual(classifyWidgetSnapshot({ domState: 'loading', unavailableText: 'refused' }, true), { outcome: 'refusal', detail: 'refused' });
+  const widget = { dataset: { widget: 'spending' } };
+  const grid = { querySelectorAll: () => [widget] };
+  const observation = { selector: '.fh-overlay div.widget-state', text: 'Loading spending…', bodyStatus: 'loading', metaMode: 'picture', installedBinding: 12 };
+  const loading = { frames: 2, firstHour: 100, lastHour: 148, observation };
+  for (const final of ['content', 'loading', 'error', 'later-loading']) {
+    let state = 'loading';
+    let hour = 100;
+    let raf, changed;
+    const watcher = createOutcomeWatcher({
+      grid,
+      isPlaying: () => true,
+      readHour: () => hour,
+      classify: (_widget, tracking) => {
+        assert.equal(tracking, true);
+        return { outcome: state, detail: state === 'error' ? 'actual failure' : null,
+          ...(state === 'loading' ? { observation: { ...observation, installedBinding: hour === 100 ? 12 : 13 } } : {}) };
+      },
+      observe: (_node, _options, fn) => { changed = fn; return () => {}; },
+      requestFrame: fn => { raf = fn; return 1; },
+      cancelFrame: () => { raf = undefined; },
+    });
+    raf();
+    raf();
+    hour = 148;
+    state = final === 'later-loading' ? 'content' : final;
+    const mutation = [{ target: { nodeType: 1, closest: () => widget } }];
+    changed(mutation);
+    if (final === 'error') {
+      state = 'content';
+      changed(mutation);
+    }
+    if (final === 'later-loading') {
+      hour = 170;
+      state = 'loading';
+      changed(mutation);
+    }
+    const outcome = watcher.end().spending;
+    if (final === 'content') {
+      assert.equal(outcome.outcome, 'loading-recovered');
+      assert.deepEqual(outcome.loading, loading);
+      assert.match(outcome.detail, /2 frames.*48 game hours/);
+      assert.deepEqual(mergeWidgetOutcomes([{ id: 'spending', outcome: 'content' }], { spending: outcome })[0].loading, outcome.loading);
+    } else if (final === 'loading' || final === 'later-loading') {
+      assert.deepEqual(outcome, { outcome: 'error', detail: 'still loading', loading });
+      assert.deepEqual(mergeWidgetOutcomes([{ id: 'spending', outcome: 'error' }], { spending: outcome })[0].loading, loading);
+    } else {
+      assert.deepEqual(outcome, { outcome: 'error', detail: 'actual failure', loading });
+      const snapshot = { id: 'spending', outcome: 'loading', detail: 'loading at the end' };
+      assert.deepEqual(mergeWidgetOutcomes([snapshot], { spending: outcome })[0], { id: 'spending', ...outcome });
+    }
+    assert.equal(raf, undefined, 'the watcher cancels its animation frame');
+  }
+});
+
 test('measureIdleCost returns bounds on success and records a failure without throwing when pause or speed fails', async () => {
   const events = [];
   let clock = 1000;
@@ -199,7 +258,7 @@ test('browser widget classifier expression delegates directly to classifyWidgetS
     querySelector: sel => map[sel] ?? null,
     __probe: probeState,
   });
-  const win = { __e2e: { stateOf: a => a.__probe } };
+  const win = { __e2e: { stateOf: a => a.__probe }, CSS: { escape: name => name } };
   const classify = runInPage(win);
   const errNode = nodeWith('error', 'Couldn’t load.', 'No table 44 in the schema');
   assert.deepEqual(
@@ -229,6 +288,14 @@ test('browser widget classifier expression delegates directly to classifyWidgetS
     classify(makeNode({}, { state: 'loading', drawing: false })),
     { outcome: 'error', detail: 'still loading' },
   );
+  const frame = { playbackDiagnostics: { bodyStatus: 'loading', metaMode: 'picture', installedBinding: 12 } };
+  const element = { ...nodeWith('loading', 'Loading spending…'), localName: 'div', classList: ['widget-state'],
+    closest: selector => selector === '.fh-frame' ? frame : {} };
+  const observed = classify(makeNode({}, { state: 'loading', element }), true);
+  assert.deepEqual(observed.observation, {
+    source: 'probe', selector: '.fh-overlay div.widget-state', text: 'Loading spending…', domState: null,
+    bodyStatus: 'loading', metaMode: 'picture', installedBinding: 12,
+  });
 });
 
 test('playback unsettled probe ignores hidden screen-reader aria-busy mirrors while flagging visible loading widgets', () => {
