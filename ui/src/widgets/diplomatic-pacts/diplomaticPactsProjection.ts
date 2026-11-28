@@ -7,7 +7,7 @@ import { countryLook, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, type TimelineProjection } from '../../families/timeline/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { DiplomacyPactsReply } from '../../generated/dashboard';
-import { aboutElsewhere, agreementKinds, agreementLanes, agreementsOf, pactsProof, validatePacts, type AgreementLaneMeta } from './pactsData.ts';
+import { aboutElsewhere, agreementKinds, agreementLanes, agreementsOf, validatePacts, type AgreementLaneMeta } from './pactsData.ts';
 
 export interface DiplomaticPactsOptions {
   readonly countryTag: string | null;
@@ -81,28 +81,27 @@ export const diplomaticPactsDeclaration: TimelineWidgetDeclaration<DiplomaticPac
   countries: { mode: 'single', choose: 'Choose a country to see its diplomatic agreements.' },
   jumpToDate: true,
   keyByBranch: true,
-  sources: ctx => ({
-    owner: `diplomatic-pacts:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${ctx.countryTag ?? ''}`,
-    entries: ctx.countryTag
-      ? [{
-          name: 'main',
-          source: ctx.track.source,
-          branch: ctx.branch.id,
-          offset: ctx.track.axisOffset,
-          read: {
-            shape: 'branch-to-hour',
-            coverage: { mode: 'keyed', keys: [ctx.countryTag] },
-            product: 'diplomatic-pacts',
-            followQuery: null,
-            params: { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) },
-            buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
-            provenInterval: pactsProof,
-            dynamicKeys: ['hour'],
-            validate: validatePacts,
-          },
-        }]
-      : [],
-  }),
+  sources: (ctx, view) => {
+    const owner = `diplomatic-pacts:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${ctx.countryTag ?? ''}`;
+    if (!ctx.countryTag) return { owner, entries: [] };
+    const product = 'diplomatic-pacts';
+    const params = { branchId: ctx.branch.id, country: countryFromKey(ctx.countryTag) };
+    const coverage = { mode: 'keyed', keys: [ctx.countryTag] } as const;
+    return { owner, entries: [{
+      name: 'main',
+      source: ctx.track.source,
+      branch: ctx.branch.id,
+      offset: ctx.track.axisOffset,
+      read: view.following ? {
+        shape: 'point', channel: 'panel', coverage, product, params,
+        followQuery: { panel: product, ...params }, validate: validatePacts,
+      } : {
+        shape: 'branch-to-hour', coverage, product, params, followQuery: null,
+        buildSpanParams: (base, span) => ({ ...base, hour: span.lastHour }),
+        dynamicKeys: ['hour'], validate: validatePacts,
+      },
+    }] };
+  },
   projection: diplomaticPactsProjection,
   projectionOptions: (ctx, extra) => {
     const chosen = contentSet(ctx.options.kinds).map(contentKey);

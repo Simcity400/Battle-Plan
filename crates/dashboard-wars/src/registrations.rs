@@ -1,11 +1,11 @@
 use dashboard_base::products::at_hour::at_hour;
 
 dashboard_base::register_products! {
-    DIPLOMACY_DIPLOMATICPACTS => crate::products::diplomacy::DiplomaticPacts,
+    DIPLOMACY_DIPLOMATICPACTS => crate::products::diplomacy::DiplomaticPacts; panel(crate::products::diplomacy::dated_pacts),
     CASUALTIES_CASUALTYBREAKDOWN => crate::products::casualties::CasualtyBreakdown; interval(at_hour, |r| r.through),
     PEACE_DEALS_TAIL => crate::products::peace::tail::PeaceDealsTail; panel(crate::products::peace::tail::dated_panel),
-    TERRITORY_TRANSFERS_TERRITORYTRANSFERS => crate::products::territory_transfers::TerritoryTransfers,
-    OCCUPATION_RESERVE_RESERVEHISTORY => crate::products::occupation_reserve::ReserveHistory,
+    TERRITORY_TRANSFERS_TERRITORYTRANSFERS => crate::products::territory_transfers::TerritoryTransfers; panel(crate::products::territory_transfers::dated_transfers),
+    OCCUPATION_RESERVE_RESERVEHISTORY => crate::products::occupation_reserve::ReserveHistory; panel(crate::products::occupation_reserve::dated_reserve_history),
     FACTION_STATE_HISTORY_FACTIONSTATE => crate::products::faction_state::history::FactionState,
     WARS_WARS => crate::products::wars::Wars,
     WARS_WARTIMELINEAT => crate::products::wars::WarTimelineAt,
