@@ -115,7 +115,7 @@ impl Shared {
         self.held.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn wait(&self, until: Instant, published: u64, reader: &views::Reader) -> io::Result<()> {
+    fn wait(&self, until: Instant, published: u64, reader: &views::Reader, hour: Hour, strict: bool) -> io::Result<()> {
         let continuing = |held: &Held| {
             if held.stop {
                 Err(io::Error::new(io::ErrorKind::Interrupted, "The map's orders layer is retiring"))
@@ -125,7 +125,7 @@ impl Shared {
         };
         let held = self.lock();
         continuing(&held)?;
-        if held.published != published || held.stopped.as_ref().is_some() || reader.frame().is_none() {
+        if held.published != published || held.stopped.as_ref().is_some() || !rows_cover(reader, hour, strict) {
             return Ok(());
         }
         #[cfg(test)]
@@ -145,6 +145,14 @@ impl Shared {
         self.lock().stop = true;
         self.done.notify_all();
     }
+}
+
+fn rows_cover(reader: &views::Reader, hour: Hour, strict: bool) -> bool {
+    if strict {
+        return reader.has_rows_at(hour);
+    }
+    reader.newest().and_then(|(frame, _)| reader.through_seek(Arc::as_ptr(&frame)))
+        .is_some_and(|(through, seek)| through >= hour && seek == reader.seek())
 }
 
 fn plan_notes(own: Result<usize, String>) -> Vec<String> {
@@ -223,6 +231,7 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
                 held.published = stamp;
                 (made.stands, made.frame, made.stamp) = (stands, Some(Arc::clone(&newest)), stamp);
                 held.made.publish((generation, build_seq, made.stands), made);
+                reader.notify_progress();
             }
             drop(held);
             shared.done.notify_all();
@@ -278,6 +287,7 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
         );
         drop(held);
         shared.done.notify_all();
+        reader.notify_progress();
     }
 }
 
@@ -419,9 +429,7 @@ impl Orders {
                 timeline::mark(self.maker, Mark::Joined);
                 return Ok(());
             }
-            if rows.frame().is_none() || !strict && !rows.newest().and_then(|(frame, _)| rows.through_seek(Arc::as_ptr(&frame)))
-                .is_some_and(|(through, seek)| through >= hour && seek == rows.seek())
-            {
+            if !rows_cover(&rows, hour, strict) {
                 viewer_runtime::view_record::add("arrows", "joins_left_rows_pending", 1);
                 return Ok(());
             }
@@ -430,7 +438,7 @@ impl Orders {
                 viewer_runtime::view_record::add("arrows", if held { "waits_for_the_build" } else { "waits_for_the_rows" }, 1);
             }
             waited = true;
-            self.shared.wait(if strict { until } else { until.min(now + LOOK) }, published, &rows)?;
+            self.shared.wait(if strict { until } else { until.min(now + LOOK) }, published, &rows, hour, strict)?;
         }
     }
 
