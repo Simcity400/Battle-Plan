@@ -6513,6 +6513,7 @@ export const PANEL_KEYS = [
   "military-air-at",
   "minefields",
   "naval-battles-tail",
+  "naval-losses-at",
   "naval-management",
   "naval-refits",
   "naval-repairs",
