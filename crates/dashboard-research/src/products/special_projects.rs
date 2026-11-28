@@ -783,7 +783,7 @@ fn program_cells(cells: &[Cell]) -> Assignment {
     Assignment { owner: value(0).and_then(|owner| u32::try_from(owner).ok()), active: value(1).and_then(|local| u32::try_from(local).ok()), scientist: value(2).map(|scientist| scientist as u64) }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct Piece {
     run: u32,
     first: i32,
