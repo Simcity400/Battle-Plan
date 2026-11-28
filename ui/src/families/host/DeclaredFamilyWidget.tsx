@@ -443,7 +443,8 @@ export default function DeclaredFamilyWidget<
     return hour === null ? children([], { kind: 'unrecorded' })
       : <ProductPicker spec={picker} runtime={runtime} context={displayedCtx} hour={hour} selected={selected}>{children}</ProductPicker>;
   }}>{host}</PickerContext.Provider> : host;
-  const body = <>{beforeBody?.(plan.plan ? plan.displayedCtx : null, plan.bodyStatus)}{widgetHost}</>;
+  const before = beforeBody?.(plan.plan ? plan.displayedCtx : null, plan.bodyStatus);
+  const body = <>{before !== undefined && before !== null && before !== false ? <div className="fh-before-body">{before}</div> : null}{widgetHost}</>;
   if (!declaration.className && !bannerFailure) return regionChooser ? <>{body}{regionChooser}</> : body;
   return (
     <div className={declaration.className} data-detail={plan.nameFailureDetail}>

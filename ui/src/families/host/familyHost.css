@@ -11,8 +11,13 @@
   outline: none;
 }
 
+.fh-before-body {
+  display: flow-root;
+  flex: none;
+}
+
 .fh-frame[data-shared-surface='1'],
-.fh-frame:has(.fh-frame[data-shared-surface='1']) {
+.fh-frame[data-shared-outer='1'] {
   background: transparent;
 }
 

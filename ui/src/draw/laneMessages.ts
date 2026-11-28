@@ -13,6 +13,10 @@ export interface SharedSurfaceSlot {
   readonly y: number;
   readonly w: number;
   readonly h: number;
+  readonly bx?: number;
+  readonly by?: number;
+  readonly bw?: number;
+  readonly bh?: number;
   readonly visible: boolean;
 }
 
@@ -25,6 +29,7 @@ export interface LaneSlotsPayload {
   readonly originX?: number;
   readonly originY?: number;
   readonly surfaceColor: string;
+  readonly cornerRadius?: number;
   readonly clipPathFallback: boolean;
   readonly slots: readonly SharedSurfaceSlot[];
 }

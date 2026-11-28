@@ -863,13 +863,40 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
             sctx.save();
             try {
               sctx.setTransform(sdpr, 0, 0, sdpr, 0, 0);
+              const bx = (slot.bx ?? slot.x) - slot.x;
+              const by = (slot.by ?? slot.y) - slot.y;
+              const bw = slot.bw ?? slot.w;
+              const bh = slot.bh ?? slot.h;
+              const cr = Math.min(sharedLane.cornerRadius ?? 0, bw / 2, bh / 2);
+              if (cr > 0) {
+                sctx.beginPath();
+                sctx.moveTo(bx, by);
+                sctx.lineTo(bx + bw, by);
+                sctx.lineTo(bx + bw, by + bh - cr);
+                sctx.arcTo(bx + bw, by + bh, bx + bw - cr, by + bh, cr);
+                sctx.lineTo(bx + cr, by + bh);
+                sctx.arcTo(bx, by + bh, bx, by + bh - cr, cr);
+                sctx.closePath();
+                sctx.clip();
+              } else {
+                sctx.beginPath();
+                sctx.rect(bx, by, bw, bh);
+                sctx.clip();
+              }
+              if (sharedLane.opaque) {
+                sctx.fillStyle = theme.surface;
+                if (family.family !== 'table') {
+                  sctx.fillRect(bx, by, bw, bh);
+                } else {
+                  if (bx < 0) sctx.fillRect(bx, by, -bx, bh);
+                  if (bx + bw > slot.w) sctx.fillRect(slot.w, by, bx + bw - slot.w, bh);
+                  if (by < 0) sctx.fillRect(bx, by, bw, -by);
+                  if (by + bh > slot.h) sctx.fillRect(bx, slot.h, bw, by + bh - slot.h);
+                }
+              }
               sctx.beginPath();
               sctx.rect(0, 0, Math.min(surface.width, slot.w), Math.min(surface.height, slot.h));
               sctx.clip();
-              if (sharedLane.opaque && family.family !== 'table') {
-                sctx.fillStyle = theme.surface;
-                sctx.fillRect(0, 0, surface.width, surface.height);
-              }
               const result = family.paint(sctx, frame);
               keep.sharedPainted = true;
               return result;

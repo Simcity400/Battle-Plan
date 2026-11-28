@@ -27,6 +27,7 @@ export interface SharedLaneCanvas {
   readonly canvas: OffscreenCanvas;
   readonly ctx: OffscreenCanvasRenderingContext2D;
   readonly rawSetTransform: OffscreenCanvasRenderingContext2D['setTransform'];
+  readonly rawClearRect: OffscreenCanvasRenderingContext2D['clearRect'];
   readonly opaque: boolean;
   width: number;
   height: number;
@@ -36,6 +37,7 @@ export interface SharedLaneCanvas {
   originX: number;
   originY: number;
   surfaceColor: string;
+  cornerRadius: number;
   readonly activeSlot: {
     ox: number;
     oy: number;
@@ -906,8 +908,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       };
     }
     snapCanvasText(ctx);
+    const rawClearRect = ctx.clearRect.bind(ctx);
     if (opaque) {
-      const rawClearRect = ctx.clearRect.bind(ctx);
       ctx.clearRect = (x: number, y: number, w: number, h: number) => {
         if (!activeSlot.surfaceColor) { rawClearRect(x, y, w, h); return; }
         const prev = ctx.fillStyle;
@@ -920,6 +922,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       canvas,
       ctx,
       rawSetTransform,
+      rawClearRect,
       opaque,
       width: 0,
       height: 0,
@@ -929,6 +932,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       originX: 0,
       originY: 0,
       surfaceColor: '',
+      cornerRadius: 0,
       activeSlot,
       slots: new Map(),
       dirtySlots: new Set(),
@@ -962,7 +966,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const bh = Math.max(1, Math.round(payload.height * dpr));
     const ox = payload.originX ?? payload.scrollLeft;
     const oy = payload.originY ?? payload.scrollTop;
-    const resized = shared.canvas.width !== bw || shared.canvas.height !== bh || shared.surfaceColor !== payload.surfaceColor || shared.dpr !== dpr;
+    const nextCornerRadius = payload.cornerRadius ?? 0;
+    const resized = shared.canvas.width !== bw || shared.canvas.height !== bh || shared.surfaceColor !== payload.surfaceColor || shared.cornerRadius !== nextCornerRadius || shared.dpr !== dpr;
     const dx = Math.round((ox - shared.originX) * dpr);
     const dy = Math.round((oy - shared.originY) * dpr);
     const originMoved = !resized && (dx !== 0 || dy !== 0);
@@ -977,41 +982,68 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     shared.originX = ox;
     shared.originY = oy;
     shared.surfaceColor = payload.surfaceColor;
+    shared.cornerRadius = payload.cornerRadius ?? 0;
+
+    const fillSlotBox = (slot: SharedSurfaceSlot, color: string) => {
+      if (!color || !slot.visible) return;
+      const sx = slot.bx ?? slot.x;
+      const sy = slot.by ?? slot.y;
+      const sw = slot.bw ?? slot.w;
+      const sh = slot.bh ?? slot.h;
+      if (sw <= 0 || sh <= 0) return;
+      shared.ctx.save();
+      shared.rawSetTransform(dpr, 0, 0, dpr, 0, 0);
+      shared.ctx.fillStyle = color;
+      const r = Math.min(shared.cornerRadius, sw / 2, sh / 2);
+      if (r > 0 && typeof shared.ctx.arcTo === 'function' && typeof shared.ctx.fill === 'function') {
+        shared.ctx.beginPath();
+        shared.ctx.moveTo(sx, sy);
+        shared.ctx.lineTo(sx + sw, sy);
+        shared.ctx.lineTo(sx + sw, sy + sh - r);
+        shared.ctx.arcTo(sx + sw, sy + sh, sx + sw - r, sy + sh, r);
+        shared.ctx.lineTo(sx + r, sy + sh);
+        shared.ctx.arcTo(sx, sy + sh, sx, sy + sh - r, r);
+        shared.ctx.closePath();
+        shared.ctx.fill();
+      } else {
+        shared.ctx.fillRect(sx, sy, sw, sh);
+      }
+      shared.ctx.restore();
+    };
+
+    const nextSlots = new Map<number, SharedSurfaceSlot>();
+    for (const slot of payload.slots) nextSlots.set(slot.widget, slot);
 
     if (resized) {
       shared.canvas.width = bw;
       shared.canvas.height = bh;
+      shared.ctx.save();
+      shared.rawSetTransform(1, 0, 0, 1, 0, 0);
+      shared.rawClearRect(0, 0, bw, bh);
+      shared.ctx.restore();
       if (payload.surfaceColor) {
-        shared.ctx.save();
-        shared.rawSetTransform(1, 0, 0, 1, 0, 0);
-        shared.ctx.fillStyle = payload.surfaceColor;
-        shared.ctx.fillRect(0, 0, bw, bh);
-        shared.ctx.restore();
+        for (const slot of payload.slots) fillSlotBox(slot, payload.surfaceColor);
       }
     } else if (originMoved && payload.width > 0 && payload.height > 0) {
       if (Math.abs(dx) < bw && Math.abs(dy) < bh) {
         shared.ctx.save();
         shared.rawSetTransform(1, 0, 0, 1, 0, 0);
+        const prevOp = shared.ctx.globalCompositeOperation;
+        shared.ctx.globalCompositeOperation = 'copy';
         shared.ctx.drawImage(shared.canvas, -dx, -dy);
-        if (payload.surfaceColor) {
-          shared.ctx.fillStyle = payload.surfaceColor;
-          if (dy > 0) shared.ctx.fillRect(0, bh - dy, bw, dy);
-          else if (dy < 0) shared.ctx.fillRect(0, 0, bw, -dy);
-          if (dx > 0) shared.ctx.fillRect(bw - dx, 0, dx, bh);
-          else if (dx < 0) shared.ctx.fillRect(0, 0, -dx, bh);
-        }
+        shared.ctx.globalCompositeOperation = prevOp;
+        if (dy > 0) shared.rawClearRect(0, bh - dy, bw, dy);
+        else if (dy < 0) shared.rawClearRect(0, 0, bw, -dy);
+        if (dx > 0) shared.rawClearRect(bw - dx, 0, dx, bh);
+        else if (dx < 0) shared.rawClearRect(0, 0, -dx, bh);
         shared.ctx.restore();
-      } else if (payload.surfaceColor) {
+      } else {
         shared.ctx.save();
         shared.rawSetTransform(1, 0, 0, 1, 0, 0);
-        shared.ctx.fillStyle = payload.surfaceColor;
-        shared.ctx.fillRect(0, 0, bw, bh);
+        shared.rawClearRect(0, 0, bw, bh);
         shared.ctx.restore();
       }
     }
-
-    const nextSlots = new Map<number, SharedSurfaceSlot>();
-    for (const slot of payload.slots) nextSlots.set(slot.widget, slot);
 
     const clearedRects: { x: number; y: number; w: number; h: number }[] = [];
     if (!resized && payload.width > 0 && payload.height > 0) {
@@ -1019,18 +1051,23 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         if (!prev.visible) continue;
         const rx = originMoved ? prev.x - dx / dpr : prev.x;
         const ry = originMoved ? prev.y - dy / dpr : prev.y;
+        const rbx = originMoved ? (prev.bx ?? prev.x) - dx / dpr : (prev.bx ?? prev.x);
+        const rby = originMoved ? (prev.by ?? prev.y) - dy / dpr : (prev.by ?? prev.y);
+        const rbw = prev.bw ?? prev.w;
+        const rbh = prev.bh ?? prev.h;
         const next = nextSlots.get(wid);
         const stillSame = next && next.visible
-          && Math.abs(next.x - rx) < 0.5 && Math.abs(next.y - ry) < 0.5 && next.w === prev.w && next.h === prev.h;
+          && Math.abs(next.x - rx) < 0.5 && Math.abs(next.y - ry) < 0.5 && next.w === prev.w && next.h === prev.h
+          && (next.bx ?? next.x) === (prev.bx ?? prev.x) - (originMoved ? dx / dpr : 0)
+          && (next.bw ?? next.w) === rbw && (next.bh ?? next.h) === rbh;
         if (stillSame) continue;
-        clearedRects.push({ x: rx, y: ry, w: prev.w, h: prev.h });
+        clearedRects.push({ x: rbx, y: rby, w: rbw, h: rbh });
       }
-      if (clearedRects.length && payload.surfaceColor) {
+      if (clearedRects.length) {
         shared.ctx.save();
         shared.rawSetTransform(1, 0, 0, 1, 0, 0);
-        shared.ctx.fillStyle = payload.surfaceColor;
         for (const r of clearedRects) {
-          shared.ctx.fillRect(
+          shared.rawClearRect(
             Math.floor(r.x * dpr),
             Math.floor(r.y * dpr),
             Math.ceil(r.w * dpr),
@@ -1918,7 +1955,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
     const bare: FrameRequest = { ...request, installed: [], refused: [] };
     this.request = bare;
-    this.lastExact = request.exact ? bare : null;
+    this.lastExact = request.exact && request.speed === 0 ? bare : null;
     if (request.exact) this.pendingExact = bare;
     else if (this.pendingExact?.seek === request.seek) {
       this.pendingExact = { ...bare, exact: true, target: request.now };
@@ -2060,14 +2097,31 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private clearDirectSlot(shared: SharedLaneCanvas | null, slot: SharedSurfaceSlot | undefined, wc: WorkerCanvasInfo | undefined) {
     if (shared && slot && slot.visible && shared.width > 0 && shared.height > 0) {
       const dpr = shared.dpr > 0 ? shared.dpr : 1;
+      const sx = slot.bx ?? slot.x;
+      const sy = slot.by ?? slot.y;
+      const sw = slot.bw ?? slot.w;
+      const sh = slot.bh ?? slot.h;
       shared.ctx.save();
-      shared.rawSetTransform(1, 0, 0, 1, 0, 0);
-      const x = Math.floor(slot.x * dpr), y = Math.floor(slot.y * dpr), w = Math.ceil(slot.w * dpr), h = Math.ceil(slot.h * dpr);
       if (shared.surfaceColor) {
+        shared.rawSetTransform(dpr, 0, 0, dpr, 0, 0);
         shared.ctx.fillStyle = shared.surfaceColor;
-        shared.ctx.fillRect(x, y, w, h);
+        const r = Math.min(shared.cornerRadius, sw / 2, sh / 2);
+        if (r > 0 && typeof shared.ctx.arcTo === 'function' && typeof shared.ctx.fill === 'function') {
+          shared.ctx.beginPath();
+          shared.ctx.moveTo(sx, sy);
+          shared.ctx.lineTo(sx + sw, sy);
+          shared.ctx.lineTo(sx + sw, sy + sh - r);
+          shared.ctx.arcTo(sx + sw, sy + sh, sx + sw - r, sy + sh, r);
+          shared.ctx.lineTo(sx + r, sy + sh);
+          shared.ctx.arcTo(sx, sy + sh, sx, sy + sh - r, r);
+          shared.ctx.closePath();
+          shared.ctx.fill();
+        } else {
+          shared.ctx.fillRect(sx, sy, sw, sh);
+        }
       } else {
-        shared.ctx.clearRect(x, y, w, h);
+        shared.rawSetTransform(1, 0, 0, 1, 0, 0);
+        shared.rawClearRect(Math.floor(sx * dpr), Math.floor(sy * dpr), Math.ceil(sw * dpr), Math.ceil(sh * dpr));
       }
       shared.ctx.restore();
     } else if (wc) {
@@ -2120,7 +2174,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private willPageRefuseDirect(widget: Widget, selected: Selected, target: number, request: FrameRequest): boolean {
     if (this.seekSuperseded(request.seek) || widget.withdrawn === widget.binding.generation || target < selected.window[0] || target > selected.window[1]) return true;
-    if (!request.exact || !this.keptPicture(widget)) return false;
+    if (!request.exact || request.speed > 0 || !this.keptPicture(widget)) return false;
     const route = this.routeOf(widget);
     const open = this.isOpenFollowed(widget, selected) ? 'followed' : this.isOpenPanel(widget, selected) ? 'panel' : undefined;
     const confirmed = open && route !== null

@@ -780,7 +780,7 @@ test('round-3 regressions: uncovered refusal restores installed model while park
       1,
     );
     assert.equal(geom.clipPathFallback, false);
-    assert.match(geom.lanes.get(0)!.clipPath, /^path\("M0 0H300V200H0Z M320 0H620V200H320Z"\)$/);
+    assert.equal(geom.lanes.get(0)!.clipPath, '');
 
     const kind = 'test-round3-uncovered-restore';
     registerFamilyProjection({
