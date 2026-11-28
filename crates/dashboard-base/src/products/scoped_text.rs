@@ -19,7 +19,7 @@ use replay::campaign::Replay;
 use replay_columnar::{manifest::Status, store::{ColumnState, TableState, Value}};
 use replay_data::rows::TableId;
 use replay_frame::frame::{DecodedFrame, Metrics, NOT_SELECTED, READ_TIME_NOT_RECORDED, SharedView, TABLE_COUNT, TableView, not_selected};
-use replay_lanes::at::LexicalCursor;
+use replay_lanes::at::{CompleteCursor, LexicalCursor};
 use replay_recording::{cells::TableReader, columnar_frames::TableCoverage};
 use std::{
     borrow::BorrowMut,
@@ -33,6 +33,8 @@ pub const MAX_CACHED_FRAMES: usize = 4;
 const UNRECORDED_RANDOM_SEED: &str = "random seed is not recorded for this text";
 const VARIABLE_READER_BYTES: usize = 32 * 1024 * 1024;
 const VARIABLES: TableId = TableId::ScriptVariableValues;
+const COMPANION_TABLES: [TableId; 3] = [TableId::Characters, TableId::States, TableId::CountryCharacters];
+const COMPANION_BYTES: usize = 8 * 1024 * 1024;
 static UNSELECTED: LazyLock<[SharedView; TABLE_COUNT]> = LazyLock::new(|| {
     std::array::from_fn(|_| TableView::Unavailable { reason: NOT_SELECTED.into() }.into())
 });
@@ -43,6 +45,55 @@ impl Lexical {
     pub fn for_source(source: &Source) -> Self { Self(source.state::<LexicalCursor>()) }
 
     pub fn release(&self) { *self.0.lock().unwrap_or_else(|e| e.into_inner()) = LexicalCursor::default(); }
+}
+
+pub struct CompanionTables(Arc<Mutex<CompanionReaders>>);
+
+#[derive(Default)]
+struct CompanionReaders {
+    run: Option<u32>,
+    tables: [CompleteCursor; COMPANION_TABLES.len()],
+}
+
+impl CompanionTables {
+    pub fn for_source(source: &Source) -> Self { Self(source.state::<CompanionReaders>()) }
+
+    pub fn release(&self) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = CompanionReaders::default();
+    }
+
+    fn read(&self, replay: &Replay, run: u32, hour: i32, tables: &[TableId]) -> io::Result<DecodedFrame> {
+        if !tables.iter().any(|table| COMPANION_TABLES.contains(table)) {
+            return read_replay_tables(replay, run, hour, tables);
+        }
+        let mut remaining = tables.to_vec();
+        let kept = {
+            let mut readers = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            if readers.run != Some(run) {
+                *readers = CompanionReaders { run: Some(run), ..Default::default() };
+            }
+            let mut kept = Vec::new();
+            let mut bytes = readers.tables.iter().map(CompleteCursor::retained_bytes).sum::<usize>();
+            for (table, reader) in COMPANION_TABLES.into_iter().zip(&mut readers.tables) {
+                if !tables.contains(&table) { continue; }
+                bytes -= reader.retained_bytes();
+                let read = dashboard_query::cost::storage(|| reader.read(replay.recording(), run, hour, table, COMPANION_BYTES - bytes));
+                bytes += reader.retained_bytes();
+                if let Some(view) = read {
+                    remaining.retain(|&id| id != table);
+                    kept.push((table, view));
+                }
+            }
+            kept
+        };
+        let mut frame = read_replay_tables(replay, run, hour, &remaining).inspect_err(|_| self.release())?;
+        for (table, (view, sampled, rows)) in kept {
+            at_hour::count_rows(|| rows);
+            frame.tables[table.index()] = view;
+            if sampled { frame.metrics.table_ns[table.index()] = READ_TIME_NOT_RECORDED; }
+        }
+        Ok(frame)
+    }
 }
 
 pub(crate) fn read_with_lexical<F: BorrowMut<DecodedFrame>>(
@@ -253,13 +304,17 @@ impl FrameReader<'_> {
         }
     }
 
-    fn read(&self, run: u32, hour: i32, tables: &[TableId], lexical: Option<&Lexical>) -> io::Result<DecodedFrame> {
-        match self {
-            Self::Borrowed(replay) => read_with_lexical(lexical, replay, (run, hour), tables, |tables| read_replay_tables(replay, run, hour, tables)),
-            Self::Owned(replay) => read_with_lexical(lexical, replay, (run, hour), tables, |tables| read_replay_tables(replay, run, hour, tables)),
+    fn read(&self, run: u32, hour: i32, tables: &[TableId], lexical: Option<&Lexical>, companions: Option<&CompanionTables>) -> io::Result<DecodedFrame> {
+        let replay = match self {
+            Self::Borrowed(replay) => *replay,
+            Self::Owned(replay) => replay,
             #[cfg(any(test, feature = "test-support"))]
-            Self::Custom(read) => read(run, hour, tables),
-        }
+            Self::Custom(read) => return read(run, hour, tables),
+        };
+        read_with_lexical(lexical, replay, (run, hour), tables, |tables| match companions {
+            Some(companions) => companions.read(replay, run, hour, tables),
+            None => read_replay_tables(replay, run, hour, tables),
+        })
     }
 }
 
@@ -314,6 +369,7 @@ pub struct ScopedText<'a> {
     frames: Mutex<BoundedFrames>,
     variables: Option<Arc<KeyedVariables>>,
     lexical: Option<&'a Lexical>,
+    companions: Option<&'a CompanionTables>,
 }
 
 impl<'a> ScopedText<'a> {
@@ -324,6 +380,7 @@ impl<'a> ScopedText<'a> {
             frames: Mutex::new(BoundedFrames::new()),
             variables: None,
             lexical: None,
+            companions: None,
         }
     }
 
@@ -334,6 +391,11 @@ impl<'a> ScopedText<'a> {
 
     pub fn with_lexical(mut self, lexical: &'a Lexical) -> Self {
         self.lexical = Some(lexical);
+        self
+    }
+
+    pub fn with_companions(mut self, companions: &'a CompanionTables) -> Self {
+        self.companions = Some(companions);
         self
     }
 }
@@ -350,6 +412,7 @@ impl ScopedText<'static> {
             frames: Mutex::new(BoundedFrames::new()),
             variables: None,
             lexical: None,
+            companions: None,
         }
     }
 
@@ -377,6 +440,7 @@ impl ScopedText<'static> {
             frames: Mutex::new(BoundedFrames::new()),
             variables: None,
             lexical: None,
+            companions: None,
         }
     }
 }
@@ -401,7 +465,7 @@ impl ScopedText<'_> {
             if needed.is_empty() {
                 break;
             }
-            let partial = match self.reader.read(run, hour, &needed, self.lexical) {
+            let partial = match self.reader.read(run, hour, &needed, self.lexical, self.companions) {
                 Ok(partial) => partial,
                 Err(error) => {
                     self.frames
@@ -597,7 +661,7 @@ impl ScopedText<'_> {
                 }
                 break;
             }
-            let partial = match self.reader.read(run, hour, &needed, self.lexical) {
+            let partial = match self.reader.read(run, hour, &needed, self.lexical, self.companions) {
                 Ok(partial) => partial,
                 Err(error) => {
                     self.frames
