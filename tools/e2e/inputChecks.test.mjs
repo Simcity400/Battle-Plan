@@ -158,7 +158,7 @@ test('createOutcomeWatcher scans once on playing transition, stops polling, and 
   assert.equal(result.b.outcome, 'content');
 });
 
-test('playback outcome watcher distinguishes recovered loading, persistent loading and failure', () => {
+test('playback outcome watcher distinguishes recovered loading, persistent loading, held pictures and failure', () => {
   assert.deepEqual(classifyWidgetSnapshot({ probeState: 'loading' }, true), { outcome: 'loading', detail: 'still loading' });
   assert.deepEqual(classifyWidgetSnapshot({ domState: 'loading', errorDetail: 'section failed' }, true), { outcome: 'error', detail: 'section failed' });
   assert.deepEqual(classifyWidgetSnapshot({ domState: 'loading', unavailableText: 'refused' }, true), { outcome: 'refusal', detail: 'refused' });
@@ -166,6 +166,7 @@ test('playback outcome watcher distinguishes recovered loading, persistent loadi
   const grid = { querySelectorAll: () => [widget] };
   const observation = { selector: '.fh-overlay div.widget-state', text: 'Loading spending…', bodyStatus: 'loading', metaMode: 'picture', installedBinding: 12 };
   const loading = { frames: 2, firstHour: 100, lastHour: 148, observation };
+  const held = { selector: 'div.fh-frame', bodyStatus: 'ready', metaMode: 'picture', installedBinding: 12 };
   for (const final of ['content', 'loading', 'error', 'later-loading']) {
     let state = 'loading';
     let hour = 100;
@@ -214,6 +215,16 @@ test('playback outcome watcher distinguishes recovered loading, persistent loadi
     }
     assert.equal(raf, undefined, 'the watcher cancels its animation frame');
   }
+  let hour = 100;
+  const watcher = createOutcomeWatcher({
+    grid, isPlaying: () => true, readHour: () => hour,
+    classify: () => hour === 100 ? { outcome: 'content', detail: null, held } : { outcome: 'content', detail: null },
+    observe: () => () => {},
+  });
+  hour = 148;
+  const outcome = watcher.end().spending;
+  assert.deepEqual(outcome, { outcome: 'content', detail: null, held: { hour: 100, ...held } });
+  assert.deepEqual(mergeWidgetOutcomes([{ id: 'spending', outcome: 'content' }], { spending: outcome })[0].held, outcome.held);
 });
 
 test('measureIdleCost returns bounds on success and records a failure without throwing when pause or speed fails', async () => {
@@ -295,6 +306,14 @@ test('browser widget classifier expression delegates directly to classifyWidgetS
   assert.deepEqual(observed.observation, {
     source: 'probe', selector: '.fh-overlay div.widget-state', text: 'Loading spending…', domState: null,
     bodyStatus: 'loading', metaMode: 'picture', installedBinding: 12,
+  });
+  assert.deepEqual(classify(makeNode({}, { state: 'content', held: {
+    ...element, classList: ['fh-frame'], textContent: 'Recorded value',
+    closest: selector => selector === '.fh-frame' ? frame : null,
+  } }), true), {
+    outcome: 'content', detail: null,
+    held: { source: 'held-picture', selector: 'div.fh-frame', text: 'Recorded value', domState: null,
+      bodyStatus: 'loading', metaMode: 'picture', installedBinding: 12 },
   });
 });
 

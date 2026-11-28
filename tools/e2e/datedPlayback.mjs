@@ -252,16 +252,16 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const placementStart = placements.length;
     for (const widget of w.widgets ?? []) {
       if (!widget.visible) continue;
-      const loading = widget.loading ? { loading: widget.loading } : {};
+      const display = { ...(widget.loading ? { loading: widget.loading } : {}), ...(widget.held ? { held: widget.held } : {}) };
       if (widget.outcome === 'refusal') {
         const detail = widget.detail ?? 'refused';
-        placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, ...loading, status: 'refused', reason: detail, pass: false });
+        placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, ...display, status: 'refused', reason: detail, pass: false });
         reasons.push(`${widget.kind} refused: ${detail}`);
         continue;
       }
       if (widget.outcome === 'error') {
         const detail = widget.detail ?? 'error';
-        placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, ...loading, status: 'error', reason: detail, pass: false });
+        placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, ...display, status: 'error', reason: detail, pass: false });
         reasons.push(`${widget.kind} error: ${detail}`);
         continue;
       }
@@ -345,7 +345,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, p95: Number.isFinite(age) ? age : null,
         eligibleP95: Number.isFinite(eligible) ? eligible : null, surfaces, samples: samples.length, distinctHoursPerSecond: hours.size / seconds,
         missing, late, lateWithoutCrossing, structureCrossings, future, exact, ...(unauditedPictures > 0 && { unauditedPictures }), boundaryErrors,
-        ...(recovered && { status: 'loading-recovered', reason: widget.detail }), ...loading,
+        ...(recovered && { status: 'loading-recovered', reason: widget.detail }), ...display,
         ...(playLost.count > 0 && { lostRecords: playLost.count, reason: `perf log lost ${playLost.count} records during playing window` }), pass: pass && !recovered });
       reasons.push(...boundaryErrors);
     }
@@ -632,7 +632,8 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
     const lowFrameCount = main.n > 0 && main.n < WIDGET_LOW_FRAMES;
     const costScoreMs = complete && Number.isFinite(mainDelta.p95) ? mainDelta.p95 + (worker.p95 ?? 0) : null;
     return {
-      kind: w.kind, ...(w.view ? { view: w.view } : {}), title: w.title ?? w.kind, outcome, detail, ...(w.loading ? { loading: w.loading } : {}),
+      kind: w.kind, ...(w.view ? { view: w.view } : {}), title: w.title ?? w.kind, outcome, detail,
+      ...(w.loading ? { loading: w.loading } : {}), ...(w.held ? { held: w.held } : {}),
       seconds, clockHps: clock.hps, main, mainDelta, interval, worker,
       commits, commitsPerSec,
       requests: liveQueries.length, requestsPerSec, requestsByProduct, requestCountsByProduct, cacheHitsPerSec,

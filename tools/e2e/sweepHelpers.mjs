@@ -12,7 +12,7 @@ export function mergeWidgetOutcomes(widgets, observed) {
     if (!seen) return widget;
     const worse = (OUTCOME_RANK[seen.outcome] ?? 0) > (OUTCOME_RANK[widget.outcome ?? 'content'] ?? 0);
     return { ...widget, ...(worse ? { outcome: seen.outcome, detail: seen.detail } : {}),
-      ...(seen.loading ? { loading: seen.loading } : {}) };
+      ...(seen.loading ? { loading: seen.loading } : {}), ...(seen.held ? { held: seen.held } : {}) };
   });
 }
 
@@ -48,6 +48,7 @@ export function createOutcomeWatcher({ grid, playHost, isPlaying, classify, obse
   const worst = new Map();
   const loading = new Map();
   const firstLoading = new Map();
+  const firstHeld = new Map();
   let active = !waitForPlaying || isPlaying();
   let stopped = false;
   let rafId = 0;
@@ -75,6 +76,7 @@ export function createOutcomeWatcher({ grid, playHost, isPlaying, classify, obse
     const id = a?.dataset?.widget;
     if (!id) return;
     const next = classify(a, true);
+    if (next.held && !firstHeld.has(id)) firstHeld.set(id, { hour: readHour(), ...next.held });
     if (next.outcome === 'loading') {
       if (!loading.has(id)) loading.set(id, { firstHour: readHour(), frames: 0, detail: next.detail, observation: next.observation });
       scheduleLoading();
@@ -158,7 +160,11 @@ export function createOutcomeWatcher({ grid, playHost, isPlaying, classify, obse
         remember(id, { outcome: 'error', detail: pending.detail ?? 'still loading' });
       }
       if (gridStop) { gridStop(); gridStop = null; }
-      return Object.fromEntries([...worst].map(([id, outcome]) => [id, firstLoading.has(id) ? { ...outcome, loading: firstLoading.get(id) } : outcome]));
+      return Object.fromEntries([...worst].map(([id, outcome]) => [id, {
+        ...outcome,
+        ...(firstLoading.has(id) ? { loading: firstLoading.get(id) } : {}),
+        ...(firstHeld.has(id) ? { held: firstHeld.get(id) } : {}),
+      }]));
     },
   };
 }
@@ -186,20 +192,22 @@ export function buildWidgetClassifierExpr(classifySnapshot) {
       probeState: probe?.state ?? null,
       probeDrawing: Boolean(probe?.drawing),
     }, tracking);
-    if (result.outcome !== 'loading') return result;
-    const element = domState === 'loading' ? bodyState : probe?.element;
-    const host = element?.closest('.fh-frame') ?? a.querySelector('.fh-frame');
-    const diagnostics = host?.playbackDiagnostics;
-    const selector = element ? element.localName + [...element.classList].map(name => '.' + window.CSS.escape(name)).join('') : null;
-    return { ...result, observation: {
-      source: domState === 'loading' ? 'body-state' : 'probe',
-      selector: element?.closest('.fh-overlay') ? '.fh-overlay ' + selector : selector,
-      text: element?.textContent?.trim() || element?.getAttribute('aria-label') || null,
-      domState,
-      bodyStatus: diagnostics?.bodyStatus ?? null,
-      metaMode: diagnostics?.metaMode ?? null,
-      installedBinding: diagnostics?.installedBinding ?? null,
-    } };
+    const describe = (element, source) => {
+      const host = element?.closest('.fh-frame') ?? a.querySelector('.fh-frame');
+      const diagnostics = host?.playbackDiagnostics;
+      const selector = element ? element.localName + [...element.classList].map(name => '.' + window.CSS.escape(name)).join('') : null;
+      return {
+        source, selector: element?.closest('.fh-overlay') ? '.fh-overlay ' + selector : selector,
+        text: element?.textContent?.trim() || element?.getAttribute('aria-label') || null,
+        domState, bodyStatus: diagnostics?.bodyStatus ?? null, metaMode: diagnostics?.metaMode ?? null,
+        installedBinding: diagnostics?.installedBinding ?? null,
+      };
+    };
+    if (probe?.held) result.held = describe(probe.held, 'held-picture');
+    if (result.outcome === 'loading') {
+      result.observation = domState === 'loading' ? describe(bodyState, 'body-state') : describe(probe?.element, 'probe');
+    }
+    return result;
   })`;
 }
 
