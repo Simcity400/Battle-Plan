@@ -952,11 +952,13 @@ mod tests {
             let damaged_entry = entry(damaged_block);
             let restore_entry = entry(restore_block);
             assert!(damaged_entry.unit.restore.is_none() && restore_entry.unit.restore.is_some());
-            let units = unit::column_stream(dashboard_declare::field(table, "units").unwrap());
+            let units = dashboard_declare::field(table, "units").unwrap();
             let frame = if corrupt_restore {
-                &restore_entry.unit.restore.as_ref().unwrap().streams.iter().find(|(stream, _)| *stream == units).unwrap().1[0].frame
+                let stream = unit::restore::column_stream(units);
+                &restore_entry.unit.restore.as_ref().unwrap().streams.iter().find(|(id, _)| *id == stream).unwrap().1[0].frame
             } else {
-                damaged_entry.unit.parts.iter().flat_map(|part| &part.frames).find(|frame| frame.streams.contains(&units)).unwrap()
+                let stream = unit::column_stream(units);
+                damaged_entry.unit.parts.iter().flat_map(|part| &part.frames).find(|frame| frame.streams.contains(&stream)).unwrap()
             };
             let mut bytes = clean.bytes().to_vec();
             bytes[(frame.offset + u64::from(frame.stored / 2)) as usize] ^= 0x40;
