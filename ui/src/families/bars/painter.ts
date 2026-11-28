@@ -63,7 +63,19 @@ export interface BarsEasedRow {
   readonly rightFrac?: number;
   readonly rightSideFrac?: number;
   readonly targetFrac?: number;
+  readonly targetWidths?: TargetBarWidths;
   readonly segmentShares?: Readonly<Record<string, number>>;
+}
+
+interface TargetBarWidths {
+  readonly target: number;
+  readonly delivered: number;
+}
+
+export function targetBarWidths(plotWidth: number, targetFraction: number, deliveredFraction: number): TargetBarWidths {
+  const target = Math.min(plotWidth, Math.max(2, targetFraction * plotWidth));
+  const delivered = deliveredFraction > 0 ? Math.min(target, Math.max(2, deliveredFraction * plotWidth)) : 0;
+  return { target, delivered };
 }
 
 export interface DrawFamilyBarsInput {
@@ -727,12 +739,11 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
 
     let drawnEndX = layout.plotLeft;
     if (row.target && row.target.numeric > 0) {
-      const targetFrac = eased?.targetFrac !== undefined ? eased.targetFrac : row.target.numeric / layout.scaleMax;
-      const targetW = Math.min(layout.plotWidth, Math.max(2, targetFrac * layout.plotWidth));
-      const deliveredFrac = eased?.numericFrac !== undefined ? eased.numericFrac : Math.max(0, row.numeric ?? 0) / layout.scaleMax;
-      const deliveredW = deliveredFrac > 0
-        ? Math.min(targetW, Math.max(2, deliveredFrac * layout.plotWidth))
-        : 0;
+      const { target: targetW, delivered: deliveredW } = eased?.targetWidths ?? targetBarWidths(
+        layout.plotWidth,
+        eased?.targetFrac ?? row.target.numeric / layout.scaleMax,
+        eased?.numericFrac ?? Math.max(0, row.numeric ?? 0) / layout.scaleMax,
+      );
       if (deliveredW > 0) {
         drawBar(ctx, layout.plotLeft, barY, deliveredW, layout.barHeight, barColor, 'right');
       }

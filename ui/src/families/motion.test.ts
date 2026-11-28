@@ -1233,24 +1233,27 @@ describe('Ordered bar playback', () => {
     });
   });
 
-  it('tweens target and delivered edges to the cold endpoint when the readout changes the plot width', async () => {
+  it('tweens target and delivered edges to the cold endpoint through plot changes and subpixel fills', async () => {
     const small = { value: 50, target: 100, scale: 100 };
     const large = { value: 505, target: 1000, scale: 1000 };
-    for (const [first, next] of [[small, large], [large, small]] as const) await withLane(async f => {
+    const tiny = { value: .1, target: 100, scale: 100 };
+    const zero = { value: 0, target: 100, scale: 100 };
+    for (const [first, next] of [[small, large], [large, small], [tiny, zero], [zero, tiny]] as const) await withLane(async f => {
       f.bind(1, 1, false, 'target');
       f.record(100, first);
       f.record(101, next);
       await f.request(100);
       const edges = () => {
         const gap = f.operations().find(op => op.op === 'roundRect' && op.globalAlpha === 0.16);
+        const fill = f.operations().find(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE);
         assert.ok(gap);
-        return [Number(f.bar().args[0]) + f.barWidth(), Number(gap.args[0]) + Number(gap.args[2])];
+        return [fill ? Number(fill.args[0]) + Number(fill.args[2]) : Number(gap.args[0]), Number(gap.args[0]) + Number(gap.args[2])];
       };
       const start = edges();
       f.canvas.clearOps();
       await f.request(101);
       const cold = edges();
-      assert.ok(Math.abs(start[1]! - cold[1]!) > 4, 'the readout shifts the plot edge');
+      if (first.target !== next.target) assert.ok(Math.abs(start[1]! - cold[1]!) > 4, 'the readout shifts the plot edge');
       for (const fraction of [.5, .99]) {
         f.canvas.clearOps();
         f.clock(100 + fraction, 1);

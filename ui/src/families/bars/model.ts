@@ -256,7 +256,7 @@ export function isSingleValueOrdered(model: BarsModel, form: BarsPlaybackForm = 
     && model.rows.every(row => row.kind === 'section' || (row.kind === 'data' && row.value !== undefined
       && row.segments === undefined && !row.left && !row.right && !row.rightSide && !row.pair
       && (form === true ? !row.target && !row.readout
-        : !row.readout || !!row.target || (row.value.value.kind === 'zero' && row.numeric === 0))));
+        : !!row.target || (row.value.value.kind === 'zero' && row.numeric === 0))));
 }
 
 export class FutureBarsDataError extends Error {

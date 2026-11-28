@@ -5,7 +5,7 @@ import type { MotionSampleDiagnostic } from '../motion.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
 import { barsAuditWindow, barsRangeForBand, barsScrollHeight, layoutFamilyBars, visibleBarsRange, barsScales, type BarsLayout } from './layout.ts';
 import { assertBarsModelValid, barsLabelText, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, formatBarsValueField, isSingleValueOrdered, type BarsDataRow, type BarsModel, type BarsRow, type BarsValueField } from './model.ts';
-import { collectVisibleBarsIcons, drawFamilyBars, easeBarFraction, hitFamilyBars, type BarsEasedRow, type BarsGlideOffset } from './painter.ts';
+import { collectVisibleBarsIcons, drawFamilyBars, easeBarFraction, hitFamilyBars, targetBarWidths, type BarsEasedRow, type BarsGlideOffset } from './painter.ts';
 import { hitPickList, pickAudit, pickedKey, pickNav, pickTooltip } from './pickList.ts';
 import { barsRegionRows } from './shareRows.ts';
 import { regionHitKey } from '../regions/regionRows.ts';
@@ -19,7 +19,9 @@ export interface FamilyBarsBinding<TOptions = unknown> extends LaneBinding<TOpti
   readonly pauseFlush?: number;
 }
 
-type BarsFrame = LaneFrame<FamilyBarsBinding, BarsModel, BarsLayout>;
+type BarsFrame = LaneFrame<FamilyBarsBinding, BarsModel, BarsLayout> & {
+  readonly playbackValues?: ReadonlyMap<string, BarsEasedRow>;
+};
 
 interface Glide {
   readonly duration: number;
@@ -256,29 +258,17 @@ function matchingRows(first: BarsModel, second: BarsModel, diagnostic?: MotionSa
   return endpoints;
 }
 
-function targetMotionLayout(start: BarsLayout, end: BarsLayout, fraction: number) {
-  const interpolate = (first: number, second: number) => first + (second - first) * fraction;
-  const plotWidth = interpolate(start.plotWidth, end.plotWidth);
-  const plotLeft = interpolate(start.plotLeft, end.plotLeft);
-  const startWeight = (1 - fraction) * start.plotWidth / start.scaleMax;
-  const endWeight = fraction * end.plotWidth / end.scaleMax;
-  const pixelsPerUnit = startWeight + endWeight;
-  return {
-    fraction: endWeight / pixelsPerUnit,
-    layout: { ...start, plotWidth, plotLeft, plotRight: plotLeft + plotWidth, scaleMax: plotWidth / pixelsPerUnit },
-  };
-}
-
 function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, nextLayout: () => BarsLayout, diagnostic?: MotionSampleDiagnostic): BarsFrame | false | null {
   const current = frame.model;
   const endpoints = matchingRows(current, next, diagnostic);
   if (!endpoints) return null;
+  const start = frame.layout;
   const endLayout = current.rows.some(row => row.kind === 'data' && row.target) ? nextLayout() : undefined;
-  const targetLayout = endLayout && targetMotionLayout(frame.layout, endLayout, fraction);
-  const amountFraction = targetLayout?.fraction ?? fraction;
+  const playbackValues = endLayout && new Map<string, BarsEasedRow>();
+  const interpolate = (from: number, to: number) => from + (to - from) * fraction;
   const rows: BarsModel['rows'][number][] = [];
-  let changed = endLayout !== undefined && (frame.layout.plotWidth !== endLayout.plotWidth
-    || frame.layout.plotLeft !== endLayout.plotLeft || frame.layout.scaleMax !== endLayout.scaleMax);
+  let changed = endLayout !== undefined && (start.plotLeft !== endLayout.plotLeft
+    || (start.showAxis && (start.plotWidth !== endLayout.plotWidth || start.scaleMax !== endLayout.scaleMax)));
   for (let i = 0; i < current.rows.length; i++) {
     const row = current.rows[i]!;
     const end = endpoints[i]!;
@@ -287,24 +277,29 @@ function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, next
       || !row.value || !end.value
       || (row.value.value.kind !== 'zero' && row.value.value.kind !== 'known')
       || (end.value.value.kind !== 'zero' && end.value.value.kind !== 'known')) return null;
-    let target = row.target;
-    if (target && end.target) {
-      if (!measuredTarget(target) || !measuredTarget(end.target)) return null;
-      if (target.numeric !== end.target.numeric) {
-        target = { ...target, numeric: target.numeric + (end.target.numeric - target.numeric) * amountFraction };
-      }
+    if (row.target && end.target && endLayout && playbackValues) {
+      if (!measuredTarget(row.target) || !measuredTarget(end.target)) return null;
+      const from = targetBarWidths(start.plotWidth, row.target.numeric / start.scaleMax, Math.max(0, row.numeric) / start.scaleMax);
+      const to = targetBarWidths(endLayout.plotWidth, end.target.numeric / endLayout.scaleMax, Math.max(0, end.numeric) / endLayout.scaleMax);
+      playbackValues.set(row.key, { targetWidths: { target: interpolate(from.target, to.target), delivered: interpolate(from.delivered, to.delivered) } });
+      changed ||= from.target !== to.target || from.delivered !== to.delivered;
+      rows.push(row);
+      continue;
     }
-    if (row.numeric === end.numeric && target === row.target) { rows.push(row); continue; }
+    if (row.numeric === end.numeric) { rows.push(row); continue; }
     changed = true;
-    rows.push({ ...row, numeric: row.numeric + (end.numeric - row.numeric) * amountFraction, ...(target ? { target } : {}) });
+    rows.push({ ...row, numeric: interpolate(row.numeric, end.numeric) });
   }
   if (!changed) return false;
-  const currentScale = frame.layout.scaleMax;
-  const endScale = endLayout?.scaleMax ?? barsScales(next, frame.layout.showAxis).scaleMax;
+  const plotWidth = endLayout ? interpolate(start.plotWidth, endLayout.plotWidth) : start.plotWidth;
+  const plotLeft = endLayout ? interpolate(start.plotLeft, endLayout.plotLeft) : start.plotLeft;
+  const scaleMax = endLayout ? plotWidth / interpolate(start.plotWidth / start.scaleMax, endLayout.plotWidth / endLayout.scaleMax)
+    : interpolate(start.scaleMax, barsScales(next, start.showAxis).scaleMax);
   return {
     ...frame,
     model: { ...current, rows },
-    layout: targetLayout?.layout ?? { ...frame.layout, scaleMax: currentScale + (endScale - currentScale) * fraction },
+    layout: { ...start, plotWidth, plotLeft, plotRight: plotLeft + plotWidth, scaleMax },
+    ...(playbackValues ? { playbackValues } : {}),
   };
 }
 
@@ -330,9 +325,10 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
       return textWidth(measure, text);
     });
   },
-  paint(ctx, frame) {
+  paint(ctx, frame: BarsFrame) {
     const glide = glideOf(frame);
     const eased = easedBarsOf(frame);
+    const values = frame.playbackValues ?? eased.map;
     drawFamilyBars(ctx, {
       model: frame.model,
       layout: frame.layout,
@@ -341,7 +337,7 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
       now: frame.now,
       glideDuration: glide.duration,
       glide: glide.offsets,
-      ...(eased.map ? { easedValues: eased.map } : {}),
+      ...(values ? { easedValues: values } : {}),
       artCache: frame.art,
       inspectedKey: inspected(frame.inspect)?.key ?? null,
       selectedKey: frame.binding.selectedKey,
