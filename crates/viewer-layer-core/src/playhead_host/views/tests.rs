@@ -661,11 +661,18 @@ fn a_mirror_short_of_the_posted_hour_makes_no_frame_of_that_hour() {
     apart.post_at(4);
     assert_eq!(reader.frame().map(|frame| frame.hour), Some(3), "no frame of hour 4 from mirrors standing at 3");
     assert!(views.held().iter().any(|&(table, bytes)| table == COMBATS && bytes > 0));
-    super::lock(&views.shared.jobs).made.told.push((COMBATS.index(), super::view::EVERY, Some(vec![(1, 1)])));
+    {
+        let mut jobs = super::lock(&views.shared.jobs);
+        jobs.made.told.push((COMBATS.index(), super::view::EVERY, Some(vec![(1, 1)])));
+        jobs.running += 1;
+    }
     drop(apart);
     assert!(views.held().is_empty(), "a handle outliving its store cannot keep the built views alive");
     assert!(reader.frame().is_none());
-    assert!(super::lock(&views.shared.jobs).made.told.is_empty(), "a retired store keeps no pending row changes");
+    let mut jobs = super::lock(&views.shared.jobs);
+    assert!(jobs.made.told.is_empty(), "a retired store keeps no pending row changes");
+    assert_eq!(jobs.running, 1, "a reader still republishing can finish after the store has retired");
+    jobs.running -= 1;
 }
 
 #[test]

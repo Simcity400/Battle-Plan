@@ -1186,7 +1186,10 @@ impl Drop for Store {
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
-        *lock(&self.shared.jobs) = Jobs { stop: true, ..Jobs::default() };
+        {
+            let mut jobs = lock(&self.shared.jobs);
+            *jobs = Jobs { stop: true, running: jobs.running, ..Jobs::default() };
+        }
         writing(&self.shared).iter_mut().for_each(|kept| *kept = None);
         lock(&self.shared.readers).clear();
     }
