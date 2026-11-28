@@ -1669,7 +1669,7 @@ test('SharedSurfaceHost aligns slots to viewport device pixels without double ro
   }
 });
 
-test('S1: unmounting a shared widget clears its full clip box to transparent when lane-slots arrives after with unchanged bounds', async () => {
+test('S1: unmounting a shared widget at dpr 1.75 clears its full device-pixel clip box when lane-slots arrives after with unchanged bounds', async () => {
   const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
   Object.defineProperty(globalThis, 'OffscreenCanvas', {
     value: class {
@@ -1681,48 +1681,10 @@ test('S1: unmounting a shared widget clears its full clip box to transparent whe
     configurable: true,
   });
   try {
-    const cw = 220;
-    const ch = 120;
-    const alpha = new Uint8Array(cw * ch);
-    let tx = 0;
-    let ty = 0;
-    let sx = 1;
-    let sy = 1;
-    const stack: { tx: number; ty: number; sx: number; sy: number }[] = [];
-    const paintRect = (x: number, y: number, w: number, h: number, value: number) => {
-      const x0 = Math.max(0, Math.floor(x * sx + tx));
-      const y0 = Math.max(0, Math.floor(y * sy + ty));
-      const x1 = Math.min(cw, Math.ceil((x + w) * sx + tx));
-      const y1 = Math.min(ch, Math.ceil((y + h) * sy + ty));
-      for (let py = y0; py < y1; py++) {
-        for (let px = x0; px < x1; px++) alpha[py * cw + px] = value;
-      }
-    };
-    const ctx: Record<string, unknown> = {
-      fillStyle: TEST_THEME.surface,
-      strokeStyle: TEST_THEME.surface,
-      font: '12px sans-serif',
-      save() { stack.push({ tx, ty, sx, sy }); },
-      restore() { const s = stack.pop(); if (s) ({ tx, ty, sx, sy } = s); },
-      beginPath() {},
-      rect() {},
-      clip() {},
-      fillRect(x: number, y: number, w: number, h: number) { paintRect(x, y, w, h, 255); },
-      clearRect(x: number, y: number, w: number, h: number) { paintRect(x, y, w, h, 0); },
-      drawImage() {},
-      fillText() {},
-      measureText(text: string) { return { width: text.length * 7 }; },
-      setTransform(a?: number, _b?: number, _c?: number, d?: number, e?: number, f?: number) {
-        sx = typeof a === 'number' ? a : 1;
-        sy = typeof d === 'number' ? d : 1;
-        tx = typeof e === 'number' ? e : 0;
-        ty = typeof f === 'number' ? f : 0;
-      },
-      getTransform() { return { a: sx, b: 0, c: 0, d: sy, e: tx, f: ty }; },
-      translate(dx: number, dy: number) { tx += dx * sx; ty += dy * sy; },
-      scale(fx: number, fy: number) { sx *= fx; sy *= fy; },
-    };
-    const canvas = { width: cw, height: ch, getContext: () => ctx } as unknown as OffscreenCanvas;
+    const dpr = 1.75;
+    const cssW = 300;
+    const cssH = 120;
+    const pc = pixelCanvas(Math.round(cssW * dpr), Math.round(cssH * dpr));
     const kind = 'test-s1-unmount-clear-box';
     registerFamilyProjection({ family: 'bars', kind, project(v) { return { hour: v.hour }; } }, 'main');
     const family: LaneFamily<LaneBinding, { readonly hour: number }, { readonly hour: number }> = {
@@ -1733,7 +1695,8 @@ test('S1: unmounting a shared widget clears its full clip box to transparent whe
       view: [],
       layout: m => m,
       paint(pctx) {
-        pctx.fillRect(0, 0, 70, 40);
+        pctx.fillStyle = TEST_THEME.text;
+        pctx.fillRect(0, 0, 80, 40);
         return false;
       },
       hit: () => null,
@@ -1756,7 +1719,7 @@ test('S1: unmounting a shared widget clears its full clip box to transparent whe
       clock: () => 0,
       budget: Infinity,
     });
-    lane.setLaneSurface(canvas, true);
+    lane.setLaneSurface(pc.canvas, true);
     const binding = {
       family: 'bars',
       kind,
@@ -1768,14 +1731,15 @@ test('S1: unmounting a shared widget clears its full clip box to transparent whe
     } satisfies LaneBinding;
     lane.mount(1, [], 'bars', binding);
     lane.mount(2, [], 'bars', binding);
-    lane.bind(1, { generation: 1, surfaces: [{ width: 70, height: 40, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 5 } });
-    lane.bind(2, { generation: 1, surfaces: [{ width: 70, height: 40, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 5 } });
-    const slot1 = { widget: 1, x: 10, y: 12, w: 70, h: 40, bx: 6, by: 8, bw: 80, bh: 48, visible: true };
-    const slot2 = { widget: 2, x: 110, y: 12, w: 70, h: 40, bx: 106, by: 8, bw: 80, bh: 48, visible: true };
+    lane.bind(1, { generation: 1, surfaces: [{ width: 80, height: 40, dpr }], offset: 0, pin: null, dated: { h: 1, c: 5 } });
+    lane.bind(2, { generation: 1, surfaces: [{ width: 80, height: 40, dpr }], offset: 0, pin: null, dated: { h: 1, c: 5 } });
+    const bx1 = 61 / dpr;
+    const slot1 = { widget: 1, x: bx1, y: 12, w: 80, h: 40, bx: bx1, by: 8, bw: 80, bh: 48, visible: true };
+    const slot2 = { widget: 2, x: 160, y: 12, w: 80, h: 40, bx: 156, by: 8, bw: 88, bh: 48, visible: true };
     lane.setLaneSlots({
-      width: cw,
-      height: ch,
-      dpr: 1,
+      width: cssW,
+      height: cssH,
+      dpr,
       scrollTop: 0,
       scrollLeft: 0,
       originX: 0,
@@ -1787,14 +1751,19 @@ test('S1: unmounting a shared widget clears its full clip box to transparent whe
     lane.frame({ type: 'frame', serial: 1, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed: [], refused: [] });
     for (let i = 0; i < 6; i++) await Promise.resolve();
 
-    assert.equal(alpha[slot1.by * cw + slot1.bx], 255);
-    assert.equal(alpha[slot2.y * cw + slot2.x], 255);
+    const boxTop = Math.round(slot1.by * dpr);
+    const boxBottom = Math.round((slot1.by + slot1.bh) * dpr);
+    const bodyY = Math.round(slot1.y * dpr) + 5;
+    const siblingX = Math.round(slot2.x * dpr) + 5;
+    assert.equal(pc.pixelAt(61, bodyY), TEST_THEME.text);
+    assert.equal(pc.pixelAt(200, bodyY), TEST_THEME.text);
+    assert.equal(pc.pixelAt(siblingX, bodyY), TEST_THEME.text);
 
     lane.unmount(1);
     lane.setLaneSlots({
-      width: cw,
-      height: ch,
-      dpr: 1,
+      width: cssW,
+      height: cssH,
+      dpr,
       scrollTop: 0,
       scrollLeft: 0,
       originX: 0,
@@ -1805,14 +1774,135 @@ test('S1: unmounting a shared widget clears its full clip box to transparent whe
     });
     for (let i = 0; i < 6; i++) await Promise.resolve();
 
-    let opaqueInOldBox = 0;
-    for (let py = slot1.by; py < slot1.by + slot1.bh; py++) {
-      for (let px = slot1.bx; px < slot1.bx + slot1.bw; px++) {
-        if (alpha[py * cw + px] !== 0) opaqueInOldBox++;
+    for (let py = boxTop; py < boxBottom; py++) {
+      for (let px = 61; px < 201; px++) {
+        assert.equal(pc.pixelAt(px, py), 'cleared', `pixel (${px},${py}) in old unmounted box must be cleared`);
       }
     }
-    assert.equal(opaqueInOldBox, 0, 'old unmounted clip box holds no opaque pixel');
-    assert.equal(alpha[slot2.y * cw + slot2.x], 255, 'remaining sibling stays painted');
+    assert.equal(pc.pixelAt(siblingX, bodyY), TEST_THEME.text, 'surviving sibling stays painted');
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
+  }
+});
+
+test('S2: a one-device-pixel move at dpr 3 is neither stillSame nor preservedByBlit', async () => {
+  const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class {
+      width: number; height: number;
+      private readonly ctx: OffscreenCanvasRenderingContext2D;
+      constructor(w: number, h: number) { this.width = w; this.height = h; this.ctx = fakeContext2D().ctx; }
+      getContext() { return this.ctx; }
+    },
+    configurable: true,
+  });
+  try {
+    const dpr = 3;
+    const cssW = 200;
+    const cssH = 100;
+    const pc = pixelCanvas(cssW * dpr, cssH * dpr);
+    const kind = 'test-s2-dpr3-one-dev-px';
+    registerFamilyProjection({ family: 'bars', kind, project(v) { return { hour: v.hour }; } }, 'main');
+    let paints = 0;
+    const family: LaneFamily<LaneBinding, { readonly hour: number }, { readonly hour: number }> = {
+      family: 'bars',
+      boundary: (_m, hour) => hour + 10,
+      redraw: () => Infinity,
+      status: () => 'picture',
+      view: [],
+      layout: m => m,
+      paint(pctx) {
+        paints++;
+        pctx.fillStyle = TEST_THEME.text;
+        pctx.fillRect(0, 0, 50, 40);
+        return false;
+      },
+      hit: () => null,
+      tooltip: () => null,
+      structure: () => ({}),
+      mirror: null,
+      audit: () => [],
+      visibleArt: () => [],
+    };
+    const view: LaneView = createLaneView(family, () => {});
+    const presented: { id: number; widget: number; binding: number }[] = [];
+    const lane = new Lane<Bitmapped & { close(): void }>({
+      lane: 0,
+      lanes: 1,
+      views: () => view,
+      crop: async () => [],
+      present(p) {
+        for (const e of p.entries) presented.push({ id: e.id, widget: e.widget, binding: e.binding });
+      },
+      release() {},
+      fail(reason) { throw new Error(reason); },
+      later() {},
+      clock: () => 0,
+      budget: Infinity,
+    });
+    lane.setLaneSurface(pc.canvas, true);
+    lane.mount(1, [], 'bars', {
+      family: 'bars',
+      kind,
+      view: 'main',
+      options: {},
+      sources: {},
+      scrollTop: 0,
+      theme: TEST_THEME,
+    } satisfies LaneBinding);
+    lane.bind(1, { generation: 1, surfaces: [{ width: 50, height: 40, dpr }], offset: 0, pin: null, dated: { h: 1, c: 10 } });
+
+    lane.setLaneSlots({
+      width: cssW,
+      height: cssH,
+      dpr,
+      scrollTop: 0,
+      scrollLeft: 0,
+      originX: 0,
+      originY: 0,
+      surfaceColor: TEST_THEME.surface,
+      clipPathFallback: false,
+      slots: [{ widget: 1, x: 10, y: 10, w: 50, h: 40, bx: 10, by: 10, bw: 50, bh: 40, visible: true }],
+    });
+    lane.frame({ type: 'frame', serial: 1, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed: [], refused: [] });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    assert.equal(paints, 1);
+    assert.equal(pc.pixelAt(30, 35), TEST_THEME.text);
+
+    const installed1 = presented.splice(0);
+    lane.setLaneSlots({
+      width: cssW,
+      height: cssH,
+      dpr,
+      scrollTop: 0,
+      scrollLeft: 0,
+      originX: 0,
+      originY: 0,
+      surfaceColor: TEST_THEME.surface,
+      clipPathFallback: false,
+      slots: [{ widget: 1, x: 31 / dpr, y: 10, w: 50, h: 40, bx: 31 / dpr, by: 10, bw: 50, bh: 40, visible: true }],
+    });
+    assert.equal(pc.pixelAt(30, 35), 'cleared', 'old left device column must be cleared on 1-dev-px move at dpr 3');
+    lane.frame({ type: 'frame', serial: 2, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed: installed1, refused: [] });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    assert.equal(paints, 2, '1-dev-px move at dpr 3 must not pass stillSame');
+
+    const installed2 = presented.splice(0);
+    lane.setLaneSlots({
+      width: cssW,
+      height: cssH,
+      dpr,
+      scrollTop: 0,
+      scrollLeft: 10 / dpr,
+      originX: 10 / dpr,
+      originY: 0,
+      surfaceColor: TEST_THEME.surface,
+      clipPathFallback: false,
+      slots: [{ widget: 1, x: 22 / dpr, y: 10, w: 50, h: 40, bx: 22 / dpr, by: 10, bw: 50, bh: 40, visible: true }],
+    });
+    lane.frame({ type: 'frame', serial: 3, seek: 1, target: 1, now: 1, exact: true, speed: 0, inspect: [], installed: installed2, refused: [] });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    assert.equal(paints, 3, 'scroll with 1-dev-px drift at dpr 3 must not pass preservedByBlit');
   } finally {
     Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
   }

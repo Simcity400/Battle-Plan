@@ -51,6 +51,41 @@ export interface SharedLaneCanvas {
   readonly dirtySlots: Set<number>;
 }
 
+type DeviceRect = {
+  readonly left: number;
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+};
+
+type SlotDeviceGeometry = {
+  readonly inner: DeviceRect;
+  readonly box: DeviceRect;
+};
+
+function slotDeviceGeometry(slot: SharedSurfaceSlot, dpr: number): SlotDeviceGeometry {
+  const bx = slot.bx ?? slot.x;
+  const by = slot.by ?? slot.y;
+  const bw = slot.bw ?? slot.w;
+  const bh = slot.bh ?? slot.h;
+  const left = Math.round(slot.x * dpr);
+  const top = Math.round(slot.y * dpr);
+  const right = Math.round((slot.x + slot.w) * dpr);
+  const bottom = Math.round((slot.y + slot.h) * dpr);
+  const bLeft = Math.round(bx * dpr);
+  const bTop = Math.round(by * dpr);
+  const bRight = Math.round((bx + bw) * dpr);
+  const bBottom = Math.round((by + bh) * dpr);
+  return {
+    inner: { left, top, right: Math.max(left, right), bottom: Math.max(top, bottom) },
+    box: { left: bLeft, top: bTop, right: Math.max(bLeft, bRight), bottom: Math.max(bTop, bBottom) },
+  };
+}
+
+function deviceRectsOverlap(a: DeviceRect, b: DeviceRect): boolean {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+}
+
 export interface PanelValue { kind: 'panel'; bytes: Uint8Array | null; data: unknown; refused: string | null; stopped?: string }
 export interface AnswerValue { kind: 'answer'; body?: Uint8Array; answer: FollowedAnswer }
 export interface SeedValue { kind: 'seed'; values: readonly (number | string)[] }
@@ -803,26 +838,19 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const prev = shared.slots.get(widget);
       if (prev && prev.visible && shared.width > 0 && shared.height > 0) {
         const dpr = shared.dpr > 0 ? shared.dpr : 1;
-        const bx = prev.bx ?? prev.x;
-        const by = prev.by ?? prev.y;
-        const bw = prev.bw ?? prev.w;
-        const bh = prev.bh ?? prev.h;
+        const prevBox = slotDeviceGeometry(prev, dpr).box;
         shared.ctx.save();
         shared.rawSetTransform(1, 0, 0, 1, 0, 0);
         shared.rawClearRect(
-          Math.floor(bx * dpr),
-          Math.floor(by * dpr),
-          Math.ceil(bw * dpr),
-          Math.ceil(bh * dpr),
+          prevBox.left,
+          prevBox.top,
+          prevBox.right - prevBox.left,
+          prevBox.bottom - prevBox.top,
         );
         shared.ctx.restore();
         for (const [otherId, other] of shared.slots) {
           if (otherId === widget || !other.visible) continue;
-          const obx = other.bx ?? other.x;
-          const oby = other.by ?? other.y;
-          const obw = other.bw ?? other.w;
-          const obh = other.bh ?? other.h;
-          if (obx < bx + bw && obx + obw > bx && oby < by + bh && oby + obh > by) {
+          if (deviceRectsOverlap(slotDeviceGeometry(other, dpr).box, prevBox)) {
             this.markDirectDirty(otherId);
           }
         }
@@ -977,8 +1005,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const dy = Math.round((oy - shared.originY) * dpr);
     const originMoved = !resized && (dx !== 0 || dy !== 0);
     const prevSlots = new Map(shared.slots);
-    const prevW = shared.width;
-    const prevH = shared.height;
+    const prevBw = shared.canvas.width;
+    const prevBh = shared.canvas.height;
     shared.width = payload.width;
     shared.height = payload.height;
     shared.dpr = dpr;
@@ -989,35 +1017,16 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     shared.surfaceColor = payload.surfaceColor;
     shared.cornerRadius = payload.cornerRadius ?? 0;
 
-    const fillSlotBox = (slot: SharedSurfaceSlot, color: string) => {
-      if (!color || !slot.visible) return;
-      const sx = slot.bx ?? slot.x;
-      const sy = slot.by ?? slot.y;
-      const sw = slot.bw ?? slot.w;
-      const sh = slot.bh ?? slot.h;
-      if (sw <= 0 || sh <= 0) return;
-      shared.ctx.save();
-      shared.rawSetTransform(dpr, 0, 0, dpr, 0, 0);
-      shared.ctx.fillStyle = color;
-      const r = Math.min(shared.cornerRadius, sw / 2, sh / 2);
-      if (r > 0 && typeof shared.ctx.arcTo === 'function' && typeof shared.ctx.fill === 'function') {
-        shared.ctx.beginPath();
-        shared.ctx.moveTo(sx, sy);
-        shared.ctx.lineTo(sx + sw, sy);
-        shared.ctx.lineTo(sx + sw, sy + sh - r);
-        shared.ctx.arcTo(sx + sw, sy + sh, sx + sw - r, sy + sh, r);
-        shared.ctx.lineTo(sx + r, sy + sh);
-        shared.ctx.arcTo(sx, sy + sh, sx, sy + sh - r, r);
-        shared.ctx.closePath();
-        shared.ctx.fill();
-      } else {
-        shared.ctx.fillRect(sx, sy, sw, sh);
-      }
-      shared.ctx.restore();
-    };
-
     const nextSlots = new Map<number, SharedSurfaceSlot>();
-    for (const slot of payload.slots) nextSlots.set(slot.widget, slot);
+    const prevGeoms = new Map<number, SlotDeviceGeometry>();
+    const nextGeoms = new Map<number, SlotDeviceGeometry>();
+    if (!resized) {
+      for (const [wid, prev] of prevSlots) prevGeoms.set(wid, slotDeviceGeometry(prev, dpr));
+    }
+    for (const slot of payload.slots) {
+      nextSlots.set(slot.widget, slot);
+      nextGeoms.set(slot.widget, slotDeviceGeometry(slot, dpr));
+    }
 
     if (resized) {
       shared.canvas.width = bw;
@@ -1027,7 +1036,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       shared.rawClearRect(0, 0, bw, bh);
       shared.ctx.restore();
       if (payload.surfaceColor) {
-        for (const slot of payload.slots) fillSlotBox(slot, payload.surfaceColor);
+        for (const slot of payload.slots) this.fillSharedSlotBox(shared, slot, payload.surfaceColor);
       }
     } else if (originMoved && payload.width > 0 && payload.height > 0) {
       if (Math.abs(dx) < bw && Math.abs(dy) < bh) {
@@ -1050,34 +1059,40 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       }
     }
 
-    const clearedRects: { x: number; y: number; w: number; h: number }[] = [];
+    const clearedRects: DeviceRect[] = [];
     if (!resized && payload.width > 0 && payload.height > 0) {
+      const shiftX = originMoved ? dx : 0;
+      const shiftY = originMoved ? dy : 0;
       for (const [wid, prev] of prevSlots) {
         if (!prev.visible) continue;
-        const rx = originMoved ? prev.x - dx / dpr : prev.x;
-        const ry = originMoved ? prev.y - dy / dpr : prev.y;
-        const rbx = originMoved ? (prev.bx ?? prev.x) - dx / dpr : (prev.bx ?? prev.x);
-        const rby = originMoved ? (prev.by ?? prev.y) - dy / dpr : (prev.by ?? prev.y);
-        const rbw = prev.bw ?? prev.w;
-        const rbh = prev.bh ?? prev.h;
+        const pg = prevGeoms.get(wid)!;
+        const expectedInner: DeviceRect = {
+          left: pg.inner.left - shiftX,
+          top: pg.inner.top - shiftY,
+          right: pg.inner.right - shiftX,
+          bottom: pg.inner.bottom - shiftY,
+        };
+        const expectedBox: DeviceRect = {
+          left: pg.box.left - shiftX,
+          top: pg.box.top - shiftY,
+          right: pg.box.right - shiftX,
+          bottom: pg.box.bottom - shiftY,
+        };
         const next = nextSlots.get(wid);
-        const stillSame = next && next.visible
-          && Math.abs(next.x - rx) < 0.5 && Math.abs(next.y - ry) < 0.5 && next.w === prev.w && next.h === prev.h
-          && Math.abs((next.bx ?? next.x) - rbx) < 0.5 && Math.abs((next.by ?? next.y) - rby) < 0.5
-          && (next.bw ?? next.w) === rbw && (next.bh ?? next.h) === rbh;
+        const ng = next?.visible ? nextGeoms.get(wid) : undefined;
+        const stillSame = ng !== undefined
+          && ng.inner.left === expectedInner.left && ng.inner.top === expectedInner.top
+          && ng.inner.right === expectedInner.right && ng.inner.bottom === expectedInner.bottom
+          && ng.box.left === expectedBox.left && ng.box.top === expectedBox.top
+          && ng.box.right === expectedBox.right && ng.box.bottom === expectedBox.bottom;
         if (stillSame) continue;
-        clearedRects.push({ x: rbx, y: rby, w: rbw, h: rbh });
+        clearedRects.push(expectedBox);
       }
       if (clearedRects.length) {
         shared.ctx.save();
         shared.rawSetTransform(1, 0, 0, 1, 0, 0);
         for (const r of clearedRects) {
-          shared.rawClearRect(
-            Math.floor(r.x * dpr),
-            Math.floor(r.y * dpr),
-            Math.ceil(r.w * dpr),
-            Math.ceil(r.h * dpr),
-          );
+          shared.rawClearRect(r.left, r.top, r.right - r.left, r.bottom - r.top);
         }
         shared.ctx.restore();
       }
@@ -1099,28 +1114,21 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const slot of payload.slots) {
       const prev = prevSlots.get(slot.widget);
       if (slot.visible !== Boolean(prev?.visible)) directChanged = true;
-      const pbx = prev ? (prev.bx ?? prev.x) : 0;
-      const pby = prev ? (prev.by ?? prev.y) : 0;
-      const pbw = prev ? (prev.bw ?? prev.w) : 0;
-      const pbh = prev ? (prev.bh ?? prev.h) : 0;
-      const sbx = slot.bx ?? slot.x;
-      const sby = slot.by ?? slot.y;
-      const sbw = slot.bw ?? slot.w;
-      const sbh = slot.bh ?? slot.h;
-      const moved = !prev || prev.x !== slot.x || prev.y !== slot.y || prev.w !== slot.w || prev.h !== slot.h
-        || pbx !== sbx || pby !== sby || pbw !== sbw || pbh !== sbh || prev.visible !== slot.visible;
-      const overlappedClear = clearedRects.some(r =>
-        sbx < r.x + r.w && sbx + sbw > r.x && sby < r.y + r.h && sby + sbh > r.y
-      );
-      const preservedByBlit = !resized && originMoved && prev !== undefined && prev.visible
-        && Math.abs(slot.x - (prev.x - dx / dpr)) < 0.5
-        && Math.abs(slot.y - (prev.y - dy / dpr)) < 0.5
-        && slot.w === prev.w && slot.h === prev.h
-        && Math.abs(sbx - (pbx - dx / dpr)) < 0.5
-        && Math.abs(sby - (pby - dy / dpr)) < 0.5
-        && sbw === pbw && sbh === pbh
-        && pbx >= 0 && pby >= 0 && pbx + pbw <= prevW && pby + pbh <= prevH
-        && sbx >= 0 && sby >= 0 && sbx + sbw <= payload.width && sby + sbh <= payload.height
+      const pg = prev ? prevGeoms.get(slot.widget) : undefined;
+      const ng = nextGeoms.get(slot.widget)!;
+      const moved = !prev || !pg || prev.visible !== slot.visible
+        || pg.inner.left !== ng.inner.left || pg.inner.top !== ng.inner.top
+        || pg.inner.right !== ng.inner.right || pg.inner.bottom !== ng.inner.bottom
+        || pg.box.left !== ng.box.left || pg.box.top !== ng.box.top
+        || pg.box.right !== ng.box.right || pg.box.bottom !== ng.box.bottom;
+      const overlappedClear = clearedRects.some(r => deviceRectsOverlap(ng.box, r));
+      const preservedByBlit = !resized && originMoved && prev !== undefined && prev.visible && pg !== undefined
+        && ng.inner.left === pg.inner.left - dx && ng.inner.top === pg.inner.top - dy
+        && ng.inner.right === pg.inner.right - dx && ng.inner.bottom === pg.inner.bottom - dy
+        && ng.box.left === pg.box.left - dx && ng.box.top === pg.box.top - dy
+        && ng.box.right === pg.box.right - dx && ng.box.bottom === pg.box.bottom - dy
+        && pg.box.left >= 0 && pg.box.top >= 0 && pg.box.right <= prevBw && pg.box.bottom <= prevBh
+        && ng.box.left >= 0 && ng.box.top >= 0 && ng.box.right <= bw && ng.box.bottom <= bh
         && !overlappedClear;
       if (slot.visible && !preservedByBlit && (resized || originMoved || moved || overlappedClear)) {
         shared.dirtySlots.add(slot.widget);
@@ -2111,36 +2119,45 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return kept.owner !== undefined && widget.binding.owner !== undefined && kept.owner !== widget.binding.owner ? null : kept;
   }
 
+  private fillSharedSlotBox(shared: SharedLaneCanvas, slot: SharedSurfaceSlot, color: string) {
+    if (!color || !slot.visible) return;
+    const dpr = shared.dpr > 0 ? shared.dpr : 1;
+    const { box } = slotDeviceGeometry(slot, dpr);
+    const sw = box.right - box.left;
+    const sh = box.bottom - box.top;
+    if (sw <= 0 || sh <= 0) return;
+    shared.ctx.save();
+    shared.rawSetTransform(1, 0, 0, 1, 0, 0);
+    shared.ctx.fillStyle = color;
+    const r = Math.min(shared.cornerRadius * dpr, sw / 2, sh / 2);
+    if (r > 0 && typeof shared.ctx.arcTo === 'function' && typeof shared.ctx.fill === 'function') {
+      shared.ctx.beginPath();
+      shared.ctx.moveTo(box.left, box.top);
+      shared.ctx.lineTo(box.right, box.top);
+      shared.ctx.lineTo(box.right, box.bottom - r);
+      shared.ctx.arcTo(box.right, box.bottom, box.right - r, box.bottom, r);
+      shared.ctx.lineTo(box.left + r, box.bottom);
+      shared.ctx.arcTo(box.left, box.bottom, box.left, box.bottom - r, r);
+      shared.ctx.closePath();
+      shared.ctx.fill();
+    } else {
+      shared.ctx.fillRect(box.left, box.top, sw, sh);
+    }
+    shared.ctx.restore();
+  }
+
   private clearDirectSlot(shared: SharedLaneCanvas | null, slot: SharedSurfaceSlot | undefined, wc: WorkerCanvasInfo | undefined) {
     if (shared && slot && slot.visible && shared.width > 0 && shared.height > 0) {
       const dpr = shared.dpr > 0 ? shared.dpr : 1;
-      const sx = slot.bx ?? slot.x;
-      const sy = slot.by ?? slot.y;
-      const sw = slot.bw ?? slot.w;
-      const sh = slot.bh ?? slot.h;
-      shared.ctx.save();
       if (shared.surfaceColor) {
-        shared.rawSetTransform(dpr, 0, 0, dpr, 0, 0);
-        shared.ctx.fillStyle = shared.surfaceColor;
-        const r = Math.min(shared.cornerRadius, sw / 2, sh / 2);
-        if (r > 0 && typeof shared.ctx.arcTo === 'function' && typeof shared.ctx.fill === 'function') {
-          shared.ctx.beginPath();
-          shared.ctx.moveTo(sx, sy);
-          shared.ctx.lineTo(sx + sw, sy);
-          shared.ctx.lineTo(sx + sw, sy + sh - r);
-          shared.ctx.arcTo(sx + sw, sy + sh, sx + sw - r, sy + sh, r);
-          shared.ctx.lineTo(sx + r, sy + sh);
-          shared.ctx.arcTo(sx, sy + sh, sx, sy + sh - r, r);
-          shared.ctx.closePath();
-          shared.ctx.fill();
-        } else {
-          shared.ctx.fillRect(sx, sy, sw, sh);
-        }
+        this.fillSharedSlotBox(shared, slot, shared.surfaceColor);
       } else {
+        const { box } = slotDeviceGeometry(slot, dpr);
+        shared.ctx.save();
         shared.rawSetTransform(1, 0, 0, 1, 0, 0);
-        shared.rawClearRect(Math.floor(sx * dpr), Math.floor(sy * dpr), Math.ceil(sw * dpr), Math.ceil(sh * dpr));
+        shared.rawClearRect(box.left, box.top, box.right - box.left, box.bottom - box.top);
+        shared.ctx.restore();
       }
-      shared.ctx.restore();
     } else if (wc) {
       const ctx = wc.canvas.getContext('2d', wc.opaque ? { alpha: false } : undefined);
       if (ctx) {
