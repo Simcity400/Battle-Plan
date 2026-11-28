@@ -6,6 +6,7 @@ use dashboard_base::products::{
     check_reply_budget,
     idea_format::{self, LocalisedText, ModifierFormat},
     politics_content::{PoliticsContent, politics_content},
+    read_ahead::Prepare,
     scoped_text::{self, KeyedVariables, Lexical, Scope, ScopedText, Validity},
     validate_country,
 };
@@ -1292,7 +1293,7 @@ pub(crate) fn history(source: &Source, branch: u64, tag: &Country) -> io::Result
     let state = source.state::<Option<Arc<KeyedVariables>>>();
     let variables = Arc::clone(state.lock().unwrap_or_else(PoisonError::into_inner)
         .get_or_insert_with(|| Arc::new(KeyedVariables::new(source.replay()))));
-    let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())), dates: source.state::<ReadDates>(),
+    let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())), dates: ReadDates::for_scripted_source(source),
         variables, lexical: Lexical::for_source(source), presentation: Mutex::default() });
     *held = Some(Arc::clone(&read));
     Ok(read)
@@ -1419,6 +1420,12 @@ pub struct IdeaHistory;
 impl Product for IdeaHistory {
     const KEY: &'static str = "idea-history";
     const CONTENT_DEPENDENT: bool = true;
+    const PREPARE: Option<Prepare<Self::Params>> = Some(|source, params, load| {
+        if load.content.is_none() { return Ok(None); }
+        let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
+        let query = dashboard_base::queries::query(source, branch)?;
+        query.timeline.at(params.hour.min(query.timeline.last)).map_or(Ok(None), |span| ReadDates::prepare_scripted(source, span.run))
+    });
     type Params = IdeaHistoryParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read];
     type Reply = IdeaHistoryReply;
