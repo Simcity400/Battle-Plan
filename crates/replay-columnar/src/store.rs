@@ -1830,6 +1830,8 @@ impl TableState {
         }
         bytes
     }
+
+    pub fn column_capacity_bytes(&self) -> usize { self.columns.capacity() * size_of::<ColumnState>() }
 }
 
 pub trait StringSource {
@@ -1927,6 +1929,10 @@ impl Strings {
 
     pub fn bytes(&self) -> usize {
         self.held_bytes()
+    }
+
+    pub fn reader_bytes(&self) -> usize {
+        self.bytes() + 2 * (self.held.capacity() + self.pinned.capacity()) * size_of::<(u32, Box<[u8]>)>()
     }
 
     pub fn pin(&mut self, id: u32, text: &[u8]) -> io::Result<()> {
