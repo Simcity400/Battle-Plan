@@ -206,10 +206,14 @@ pub fn record(name: &str, hours: u32) -> Units {
     })
 }
 
-pub fn record_with(name: &str, hours: u32, mut hour: impl FnMut(&mut ColumnarStore, u32)) -> Units {
+pub fn record_with(name: &str, hours: u32, hour: impl FnMut(&mut ColumnarStore, u32)) -> Units {
+    record_with_settings(name, hours, Writing::at(3), hour)
+}
+
+pub fn record_with_settings(name: &str, hours: u32, settings: Writing, mut hour: impl FnMut(&mut ColumnarStore, u32)) -> Units {
     let kinds = replay_recording::schema::schema().unwrap();
     let mut store = ColumnarStore::new(kinds.clone(), vec![false; kinds.len()]);
-    store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
+    store.attach(Encoder::new(&kinds, settings).unwrap());
     let mut memory = Memory::default();
     store.begin_run(0);
     for at in 0..hours {
@@ -949,4 +953,35 @@ fn an_exact_column_uses_the_same_failure_and_key_publication_as_a_mirror() {
     let (_, published) = selected.newest().unwrap();
     store.post(&mirrors, 0, RECORDING.branch, 0, false);
     assert_eq!(selected.newest().unwrap().1, published);
+}
+
+#[test]
+fn an_exact_selection_carries_changed_values_even_when_the_selected_keys_expand() {
+    use super::SCRIPT_VALUES as table;
+
+    let units = record_with("exact column changes", 2, |store, at| {
+        store.status(table.index(), Status::Complete, true, Some(at as Hour), true).unwrap();
+        write_rows(store, table, &[(1u128 << 32, vec![Put::Cell(Cell::I64(-20 + i64::from(at)))]), (2u128 << 32, vec![Put::Cell(Cell::I64(4))])]);
+    });
+    let entry = open(units, hourly_steps()).unwrap();
+    let mut store = Store::new(&entry);
+    let reader = Arc::new(store.handle().telling("explicit selection with changes", &[Need::every(table)]));
+    reader.declare_keyed(table, Arc::new(BTreeSet::from([1])));
+    let mirrors = Arc::new(Mirrors::default());
+    store.post(&mirrors, 0, RECORDING.branch, 0, false);
+    let (frame, _, _) = reader.take_keyed().unwrap();
+    assert_eq!(frame.complete::<tables::ScriptVariableValues>().unwrap()[0].value_raw, -20);
+
+    let expanded = Arc::new(BTreeSet::from([1, 2]));
+    *store.shared.chosen.lock().unwrap() = Some(Box::new({
+        let (reader, keys) = (Arc::clone(&reader), Arc::clone(&expanded));
+        move || reader.declare_keyed(table, keys)
+    }));
+    store.post(&mirrors, 1, RECORDING.branch, 0, false);
+    let (frame, told, keys) = reader.take_keyed().unwrap();
+    assert_eq!(frame.hour, 1);
+    assert_eq!(keys.of(table), Some(&expanded));
+    let rows = frame.complete::<tables::ScriptVariableValues>().unwrap();
+    assert_eq!(rows.iter().map(|row| row.value_raw).collect::<Vec<_>>(), vec![-19, 4]);
+    assert_eq!(told.get(&table), Some(&None));
 }

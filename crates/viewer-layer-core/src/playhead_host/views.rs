@@ -1540,7 +1540,8 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
     let rows_at = |table| if table == SCRIPT_VALUES.index() { RowsAt::Exact(&shared.script_values, hour, epoch) } else { RowsAt::Mirror(mirrors.get(TableId::ALL[table])) };
     for &place in places {
         let Some(reading) = readers.get(place).filter(|reading| reading.open) else { continue };
-        if republishing && reading.stands() == Some((hour, epoch)) && reading.frame().is_some_and(|frame| frame.branch == branch) && !reading.keys_moved() {
+        let same_head = reading.stands() == Some((hour, epoch)) && reading.frame().is_some_and(|frame| frame.branch == branch);
+        if republishing && same_head && !reading.keys_moved() {
             continue;
         }
         let is_written = |table: usize| matches!(shared.written[table], playhead::pages::TableWritten::Written);
@@ -1626,6 +1627,7 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
             keys.push((keyed.table, Arc::clone(&keyed.keys)));
             views.push((keyed.table, stamp, keyed.version, Arc::clone(&keyed.keys), view, failure));
         }
+        let script_changed = !same_head && held[SCRIPT_VALUES.index()].is_some() && is_written(SCRIPT_VALUES.index());
         let mut failures: Vec<view::HeadFailure> = Vec::new();
         let tables = std::array::from_fn(|table| match held[table].take() {
             Some((view, failure)) => {
@@ -1660,6 +1662,9 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
         (reading.frame_keys, reading.keyed_views) = (keys, views);
         reading.arriving.clear();
         if let Some(telling) = &mut reading.told {
+            if script_changed {
+                telling.pending.insert(SCRIPT_VALUES, None);
+            }
             for (table, rows) in std::mem::take(&mut telling.pending) {
                 tell(&mut telling.unread, table, rows.as_ref());
             }
