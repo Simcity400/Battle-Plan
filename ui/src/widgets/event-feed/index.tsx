@@ -26,13 +26,18 @@ function EventFeedView(props: FamilyViewProps) {
   const groups = useExpandedGroups(scope);
   const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: FeedDetailSubject } | null>(null);
   const kinds = useProduct(props.runtime.client, track ? kindsRequest(track) : null, props.active, validateKinds, track?.source);
-  const [frozenState, setFrozenState] = useState<{ readonly scope: string; readonly hour: number | null }>({ scope: '', hour: null });
-  const [installedState, setInstalledState] = useState<{ readonly scope: string; readonly hour: number | null }>({ scope: '', hour: null });
+  const [frozenState, setFrozenState] = useState<{ scope: string; hour: number | null; installed: number | null }>(
+    { scope: '', hour: null, installed: null },
+  );
+  const installed = useRef<{ scope: string; hour: number | null }>({ scope: '', hour: null });
+  const frozenHere = frozenState.scope === scope && frozenState.hour !== null;
   const onFrozenHour = useCallback((hour: number | null) => {
-    setFrozenState(prev => (prev.scope === scope && prev.hour === hour ? prev : { scope, hour }));
+    const installedHour = installed.current.scope === scope ? installed.current.hour : null;
+    setFrozenState(prev => prev.scope === scope && prev.hour === hour ? prev : { scope, hour, installed: installedHour });
   }, [scope]);
   const onInstalledHour = useCallback((hour: number | null) => {
-    setInstalledState(prev => (prev.scope === scope && prev.hour === hour ? prev : { scope, hour }));
+    installed.current = { scope, hour };
+    setFrozenState(prev => prev.scope === scope && prev.hour !== null && prev.installed !== hour ? { ...prev, installed: hour } : prev);
   }, [scope]);
   const shown = opened && opened.scope === scope ? opened.subject : null;
   const recipient = useCountryNameAt(props.runtime.client, track, shown?.countryTag ?? null, shown?.countryNameHour ?? null, shown !== null, { exact: true });
@@ -106,15 +111,16 @@ function EventFeedView(props: FamilyViewProps) {
     ? Math.max(Math.floor(win.firstHour), track.branch.firstHour)
     : null;
   const pinnedHour = track && !following && win ? Math.floor(win.lastHour) : null;
-  const frozenHour = following && frozenState.scope === scope ? frozenState.hour : null;
-  const installedHour = following && installedState.scope === scope ? installedState.hour : null;
+  const frozenHour = following && frozenHere ? frozenState.hour : null;
+  const installedHour = following && frozenHere ? frozenState.installed : null;
 
   return (
     <div ref={anchor} className="fh-detail-anchor">
       <PickerContext.Provider value={(hour, _selected, children) => kinds.error
         ? children([], { kind: 'failed', message: failureText(kinds.error, 'Event kinds could not be loaded.') })
         : recordingKinds === undefined ? children([], { kind: 'loading' }) : children(feedKindItems(recordingKinds, CATEGORIES, categories, excludedKinds, hour))}><LogKindFilter
-        shownHour={() => frozenHour ?? installedHour ?? pinnedHour ?? (track ? resolveWindow(props.widget, track, props.runtime.tracks, props.runtime.clock.getHour())?.lastHour ?? null : null)}
+        shownHour={() => frozenHour ?? (following && installed.current.scope === scope ? installed.current.hour : null)
+          ?? pinnedHour ?? (track ? resolveWindow(props.widget, track, props.runtime.tracks, props.runtime.clock.getHour())?.lastHour ?? null : null)}
         slot={props.filterSlot}
         allLabel="All kinds"
         noun="kinds"
