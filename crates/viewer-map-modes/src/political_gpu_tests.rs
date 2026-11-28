@@ -976,7 +976,8 @@ fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
         b.show(&harness.device, &harness.queue, &second).unwrap();
         if round == 0 {
             for view in [&a, &b] {
-                assert_eq!(view.shown.as_ref().unwrap().lock().naval.dispatched_cells, 0);
+                let fill = view.shown.as_ref().unwrap().lock();
+                assert_eq!(fill.naval.dispatched_cells, fill.naval.dirty.len());
             }
         }
         both(&a, &b);
@@ -993,9 +994,6 @@ fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
     }
     let air = Draw { channels: [Source::Strategic, Source::Empty], strategic: None, country: None, layer: None, second: None, political: [0.0; 2] };
     let in_air = Arc::new(Regions { mode: Some(Arc::new(air)), ..(*tables(vec![3; (columns * (height / GRID_CELL) + 1) as usize])).clone() });
-    let mut c = new_view();
-    c.show(&harness.device, &harness.queue, &in_air).unwrap();
-    assert_eq!(c.shown.as_ref().unwrap().lock().naval.dispatched_cells, 0, "the sea stood in its half: nothing to redraw");
     let fill = a.shown.as_ref().unwrap().lock();
     assert!(fill.gpu.dispatched_cells < fill.gpu.dirty.len());
     let rows = fill
@@ -1010,6 +1008,11 @@ fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
         "the incremental update must copy a row with a gap: {:?}",
         fill.gpu.copies
     );
+    drop(fill);
+    a.show(&harness.device, &harness.queue, &in_air).unwrap();
+    assert_eq!(a.shown.as_ref().unwrap().lock().naval.dispatched_cells, 0, "the sea stood in its half: nothing to redraw");
+    let (_, _, sea) = harness.view(&a);
+    compare(&naval, &sea, "first strategic air frame");
 }
 
 fn political_gpu_fallback_lockstep(fallback: &Fallback) {
