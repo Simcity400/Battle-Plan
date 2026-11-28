@@ -236,9 +236,6 @@ impl Product for TerritoryTransfers {
 
 pub(crate) fn dated_transfers(source: &Arc<Source>, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
     use dashboard_base::products::at_hour;
-    at_hour::dated_product::<TerritoryTransfers>(source, load, asked, |params, hour| params["through"] = hour.into(),
-        |_, reply| at_hour::before(reply.next_change), |data, hour| {
-            if data.as_ref().as_ref().is_ok_and(|value| value["through"].as_i64() == Some(i64::from(hour))) { return; }
-            if let Ok(value) = Arc::make_mut(data) { value["through"] = hour.into(); }
-        }, |source, params, load, cancelled, _| TerritoryTransfers::load(source, params, load, cancelled))
+    at_hour::product_interval_panel::<TerritoryTransfers>(source, load, asked, |params, hour| params["through"] = hour.into(),
+        |reply| at_hour::before(reply.next_change))
 }

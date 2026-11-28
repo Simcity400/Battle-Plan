@@ -246,7 +246,7 @@ fn a_relation_kind_the_content_cannot_title_keeps_its_id_with_why_and_its_count(
 }
 
 #[test]
-fn following_pacts_redates_active_rows_and_unread_spans_and_rereads_on_a_link_change() {
+fn following_pacts_holds_active_rows_and_unread_spans_and_rereads_on_a_link_change() {
     use dashboard_base::test_fixtures::{CAMPAIGN, played, records, source};
     use replay_data::rows::{CountryLinkRow, CountryRow, LexicalTokenRow, RelationTupleRow, TableRows};
 
@@ -285,12 +285,24 @@ fn following_pacts_redates_active_rows_and_unread_spans_and_rereads_on_a_link_ch
     let steps = played(source.replay_ref(), exact, 100, 108);
     for step in &steps {
         let cold = (exact.cold)(step.hour, &cancelled).unwrap();
-        assert_eq!(step.value.as_ref().as_ref().unwrap(), &cold, "pacts at {}", step.hour);
+        let mut shown = step.value.as_ref().as_ref().unwrap().clone();
+        let read_hour = shown["hour"].clone();
+        shown["hour"] = step.hour.into();
+        for pact in shown["pacts"].as_array_mut().unwrap() {
+            if pact["held"] == true { pact["lastSeen"] = step.hour.into(); }
+        }
+        if let Some(gap) = shown["unobserved"].as_array_mut().unwrap().last_mut()
+            && gap["lastHour"] == read_hour
+        {
+            gap["lastHour"] = step.hour.into();
+        }
+        assert_eq!(shown, cold, "pacts at {}", step.hour);
     }
     let at = |hour| steps.iter().find(|step| step.hour == hour).unwrap();
     assert_eq!(at(102).value.as_ref().as_ref().unwrap()["pacts"][0]["second"], "BBB");
     assert_eq!(at(103).value.as_ref().as_ref().unwrap()["pacts"][0]["second"], "CCC");
-    assert_eq!(at(108).value.as_ref().as_ref().unwrap()["unobserved"][0]["lastHour"], 108);
+    assert_eq!(at(108).value.as_ref().as_ref().unwrap()["unobserved"][0]["lastHour"], 106);
+    assert_eq!(steps.windows(2).filter(|pair| pair[0].value != pair[1].value).count(), 2);
     assert_eq!(steps.iter().filter(|step| step.hour > 100).map(|step| step.product_calls).sum::<u64>(), 2);
 }
 

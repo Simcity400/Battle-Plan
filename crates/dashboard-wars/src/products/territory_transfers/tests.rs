@@ -143,7 +143,10 @@ fn following_transfers_keeps_the_prefix_until_points_are_read() {
     let exact = panel.exact().unwrap();
     let steps = played(source.replay_ref(), exact, 100, 106);
     for step in &steps {
-        assert_eq!(step.value.as_ref(), &(exact.cold)(step.hour, &cancelled), "transfers at {}", step.hour);
+        let mut shown = step.value.as_ref().as_ref().unwrap().clone();
+        shown["through"] = step.hour.into();
+        assert_eq!(shown, (exact.cold)(step.hour, &cancelled).unwrap(), "transfers at {}", step.hour);
     }
+    assert_eq!(steps.windows(2).filter(|pair| pair[0].value != pair[1].value).count(), 2);
     assert_eq!(steps.iter().filter(|step| step.hour > 100).map(|step| step.product_calls).sum::<u64>(), 2);
 }

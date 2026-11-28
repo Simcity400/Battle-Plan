@@ -565,28 +565,7 @@ impl Product for ReserveHistory {
 
 pub(crate) fn dated_reserve_history(source: &Arc<Source>, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
     use dashboard_base::products::at_hour;
-    let last = dashboard_query::branch(asked).and_then(|branch| dashboard_base::queries::query(source, branch))
-        .map_err(|error| error.to_string())?.timeline.last;
-    at_hour::dated_product::<ReserveHistory>(source, load, asked, at_hour::at_hour, |_, reply| at_hour::before(reply.next_change),
-        move |data, hour| {
-            let hour = hour.min(last);
-            if data.as_ref().as_ref().is_ok_and(|value| value["hour"].as_i64() == Some(i64::from(hour))) { return; }
-            let Ok(value) = Arc::make_mut(data) else { return };
-            let old = value["hour"].as_i64();
-            value["hour"] = hour.into();
-            if let Some(segment) = value["segments"].as_array_mut().and_then(|segments| segments.last_mut())
-                && segment["lastHour"].as_i64() == old
-            {
-                segment["lastHour"] = hour.into();
-            }
-            for source in value["sources"].as_array_mut().into_iter().flatten() {
-                if let Some(tag) = source["tags"].as_array_mut().and_then(|tags| tags.last_mut())
-                    && tag["lastHour"].as_i64() == old
-                {
-                    tag["lastHour"] = hour.into();
-                }
-            }
-        }, |source, params, load, cancelled, _| ReserveHistory::load(source, params, load, cancelled))
+    at_hour::product_interval_panel::<ReserveHistory>(source, load, asked, at_hour::at_hour, |reply| at_hour::before(reply.next_change))
 }
 
 #[cfg(test)]
@@ -722,8 +701,23 @@ mod tests {
         let exact = panel.exact().unwrap();
         let steps = dashboard_base::test_fixtures::played(src.replay_ref(), exact, 10, 20);
         for step in &steps {
-            assert_eq!(step.value.as_ref(), &(exact.cold)(step.hour, &false.into()), "reserve history at {}", step.hour);
+            let mut shown = step.value.as_ref().as_ref().unwrap().clone();
+            let read_hour = shown["hour"].clone();
+            shown["hour"] = step.hour.into();
+            let extend = |entries: &mut serde_json::Value| {
+                if let Some(last) = entries.as_array_mut().unwrap().last_mut()
+                    && last["lastHour"] == read_hour
+                {
+                    last["lastHour"] = step.hour.into();
+                }
+            };
+            extend(&mut shown["segments"]);
+            for source in shown["sources"].as_array_mut().unwrap() {
+                extend(&mut source["tags"]);
+            }
+            assert_eq!(shown, (exact.cold)(step.hour, &false.into()).unwrap(), "reserve history at {}", step.hour);
         }
+        assert_eq!(steps.windows(2).filter(|pair| pair[0].value != pair[1].value).count(), 2);
         assert_eq!(steps.iter().filter(|step| step.hour > 10).map(|step| step.product_calls).sum::<u64>(), 2);
     }
 
