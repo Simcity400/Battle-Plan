@@ -1,12 +1,42 @@
 use super::{MapPresented, Uploaded, Viewer, load_scene};
-use eframe::egui;
+use eframe::{egui, wgpu};
 use job_priority::SpawnCarried as _;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
+use viewer_runtime::retirement::Dropper;
 use viewer_world::scene::Scene;
+
+struct RetiredGraphics<T> {
+    resources: Option<T>,
+    device: Option<wgpu::Device>,
+}
+
+impl<T> Drop for RetiredGraphics<T> {
+    fn drop(&mut self) {
+        drop(self.resources.take());
+        if let Some(device) = &self.device {
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        }
+    }
+}
+
+fn retire_graphics<T: Send + 'static>(
+    dropper: Option<&Dropper>,
+    device: Option<&wgpu::Device>,
+    resources: T,
+) {
+    let retired = RetiredGraphics {
+        resources: Some(resources),
+        device: device.cloned(),
+    };
+    match dropper {
+        Some(dropper) => dropper.drop_later(retired),
+        None => drop(retired),
+    }
+}
 
 pub(super) struct PendingScene<C, S> {
     content: Weak<C>,
@@ -209,17 +239,22 @@ impl Viewer {
     }
 
     pub(super) fn cancel_scene_build(&mut self) {
-        let dropper = self.dropper.clone();
-        cancel(&mut self.scene_build, &mut |build| match &dropper {
-            Some(dropper) => dropper.drop_later(build),
-            None => drop(build),
+        let device = self.gpu.as_ref()
+            .filter(|_| self.shown_maps().wanted(false) == Wanted::Release)
+            .map(|(device, _)| device);
+        let dropper = self.dropper.as_deref();
+        cancel(&mut self.scene_build, &mut |build| {
+            retire_graphics(dropper, device, build);
         });
     }
 
     pub(super) fn follow_shown_maps(&mut self, ctx: &egui::Context, frame: Option<&eframe::Frame>) {
         let shown = self.shown_maps();
         let fallback_current = self.document_fallback_current();
-        let dropper = self.dropper.clone();
+        let dropper = self.dropper.as_deref();
+        let hidden_device = self.gpu.as_ref()
+            .filter(|_| shown.wanted(false) == Wanted::Release)
+            .map(|(device, _)| device);
         let action = reconcile(
             Inputs {
                 content: self.document.as_ref().map(|document| &document.content),
@@ -232,14 +267,8 @@ impl Viewer {
                 has_scene: self.scene.is_some(),
             },
             &mut self.scene_build,
-            &mut |build| match &dropper {
-                Some(dropper) => dropper.drop_later(build),
-                None => drop(build),
-            },
-            &mut |scene| match &dropper {
-                Some(dropper) => dropper.drop_later(scene),
-                None => drop(scene),
-            },
+            &mut |build| retire_graphics(dropper, hidden_device, build),
+            &mut |scene| retire_graphics(dropper, hidden_device, scene),
         );
         match action {
             Action::Idle => {}
@@ -319,7 +348,7 @@ impl Viewer {
         self.presented = MapPresented::default();
         self.shown_whole = false;
         let retired = (scene, std::mem::take(&mut self.faction_highlight));
-        self.retire(retired);
+        retire_graphics(self.dropper.as_deref(), self.gpu.as_ref().map(|(device, _)| device), retired);
     }
 
     fn build_scene(&mut self, ctx: &egui::Context) {
@@ -361,8 +390,13 @@ impl Viewer {
                         .map_err(|error| error.to_string())
                 }))
                 .unwrap_or_else(|_| Err("Native map scene creation panicked".into()));
-                if job_keep.load(Ordering::Acquire) {
-                    let _ = sender.send(built);
+                let abandoned = if job_keep.load(Ordering::Acquire) {
+                    sender.send(built).err().map(|error| error.0)
+                } else {
+                    Some(built)
+                };
+                if let Some(abandoned) = abandoned {
+                    retire_graphics(None, Some(&device), abandoned);
                 }
                 wake.request_repaint();
             });
