@@ -2206,6 +2206,7 @@ impl Scene {
     pub fn warm_political(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         map: &content_reader_map::map::MapData,
         strategic_regions: &BTreeMap<u32, content_reader_regions::regions::StrategicRegion>,
         field: &viewer_gpu::gradient_math::FieldDefines,
@@ -2217,6 +2218,7 @@ impl Scene {
         let strategic = viewer_map_modes::political::strategic_regions_of(map, strategic_regions)?;
         let base = cache.warm(
             device,
+            queue,
             viewer_map_modes::political_gpu::Inputs {
                 map: ProvinceMap {
                     width: map.width,
@@ -2230,7 +2232,7 @@ impl Scene {
         let colors = viewer_map_modes::political_gpu::ProvinceColors::new(device, &base)?;
         self.secondary = colors.bound.share();
         self.province_colors = Some(colors);
-        self.political = Some(viewer_map_modes::political_gpu::View::new(base, device)?);
+        self.political = Some(viewer_map_modes::political_gpu::View::new(base, device, queue)?);
         Ok(())
     }
 

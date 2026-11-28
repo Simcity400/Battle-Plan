@@ -148,6 +148,7 @@ impl Cache {
     pub fn warm(
         &self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         inputs: Inputs<'_>,
     ) -> io::Result<Arc<Static>> {
         let mut entries = self.0.lock().unwrap_or_else(|error| error.into_inner());
@@ -158,7 +159,7 @@ impl Cache {
         {
             return Ok(shared);
         }
-        let shared = Arc::new(Static::new(device, inputs)?);
+        let shared = Arc::new(Static::new(device, queue, inputs)?);
         entries.push((device.clone(), Arc::downgrade(&shared)));
         Ok(shared)
     }
@@ -166,6 +167,7 @@ impl Cache {
 
 pub struct Static {
     strategic: PoliticalGpu,
+    scratch: Arc<Scratch>,
     size: [u32; 2],
     field: FieldDefines,
     strategic_keys: Vec<u32>,
@@ -190,7 +192,7 @@ impl Registry {
 }
 
 impl Static {
-    fn new(device: &wgpu::Device, inputs: Inputs<'_>) -> io::Result<Self> {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, inputs: Inputs<'_>) -> io::Result<Self> {
         let Inputs {
             map,
             strategic,
@@ -205,9 +207,17 @@ impl Static {
         );
         layer.region_opacity = 0;
         layer.no_region_color = field.navy_neutral;
-        let gpu = PoliticalGpu::new(device, map, &layer)?;
+        let mut gpu = PoliticalGpu::new(device, map, &layer)?;
+        gpu.update(device, queue, &layer)?;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("warm strategic gradient"),
+        });
+        gpu.dispatch(&mut encoder);
+        queue.submit([encoder.finish()]);
+        let scratch = Arc::new(Scratch::new(device, &gpu.params)?);
         Ok(Self {
             strategic: gpu,
+            scratch,
             size: gradient_size(MapSize {
                 width: map.width,
                 height: map.height,
@@ -220,16 +230,16 @@ impl Static {
         })
     }
 
-    fn state(&self, device: &wgpu::Device) -> io::Result<Arc<State>> {
+    fn state(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> io::Result<Arc<State>> {
         let empty = vec![0; self.strategic.provinces.len()];
         let color = |_| [0; 3];
         let layer = Layer::new(gradient::LayerKind::Country, &empty, &color, &self.field);
         let gpu = self
             .strategic
-            .layer_with(device, &layer, Some(Arc::clone(&self.strategic.scratch)))?;
+            .layer_with(device, &layer, Some(Arc::clone(&self.scratch)))?;
         let mode = self
             .strategic
-            .layer_with(device, &layer, Some(Arc::clone(&self.strategic.scratch)))?;
+            .layer_with(device, &layer, Some(Arc::clone(&self.scratch)))?;
         let [width, height] = self.size;
         let textures = ["GradientBorderChannel1", "GradientBorderChannel2"].map(|label| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -249,17 +259,23 @@ impl Static {
                 view_formats: &[],
             })
         });
-        let mut layer = Layer::new(
-            gradient::LayerKind::Fixed(self.field.strategic_thickness),
-            &self.strategic_keys,
-            &color,
-            &self.field,
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("strategic gradient copy"),
+        });
+        let naval = self.strategic.resumed(
+            device,
+            queue,
+            &mut encoder,
+            Arc::clone(&self.scratch),
+        )?;
+        let params = &self.strategic.params;
+        self.strategic.copy(
+            &mut encoder,
+            [&textures[0], &textures[1]],
+            0,
+            &[[0, 0, params.width / 2, params.height / 2]],
         );
-        layer.region_opacity = 0;
-        layer.no_region_color = self.field.navy_neutral;
-        let naval = self
-            .strategic
-            .layer_with(device, &layer, Some(Arc::clone(&self.strategic.scratch)))?;
+        queue.submit([encoder.finish()]);
         let state = Arc::new(State {
             textures,
             fill: Mutex::new(Fill {
@@ -439,7 +455,7 @@ pub struct View {
 }
 
 impl View {
-    pub fn new(base: Arc<Static>, device: &wgpu::Device) -> io::Result<Self> {
+    pub fn new(base: Arc<Static>, device: &wgpu::Device, queue: &wgpu::Queue) -> io::Result<Self> {
         base.registry().views += 1;
         let mut view = Self {
             pulses: std::cell::Cell::new(None),
@@ -450,7 +466,7 @@ impl View {
         };
         view.spare = Some(match view.base.recycle() {
             Some(state) => state,
-            None => view.base.state(device)?,
+            None => view.base.state(device, queue)?,
         });
         Ok(view)
     }
@@ -599,7 +615,7 @@ impl View {
                     .or_else(|| self.base.recycle())
                 {
                     Some(state) => state,
-                    None => self.base.state(device)?,
+                    None => self.base.state(device, queue)?,
                 }
             };
             let mut fill = state.lock();
@@ -949,6 +965,103 @@ impl PoliticalGpu {
             Some(self),
             scratch,
         )
+    }
+
+    fn resumed(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        scratch: Arc<Scratch>,
+    ) -> io::Result<Self> {
+        let rw = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        let uniform = buffer(
+            device,
+            "political params",
+            bytemuck::bytes_of(&self.params),
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        )?;
+        let mapping_buffer = buffer(
+            device,
+            "political region of province",
+            bytemuck::cast_slice(&self.mapping),
+            rw,
+        )?;
+        let region_buffer = zero_buffer(device, "political regions", self.region_buffer.size(), rw)?;
+        shader_pipeline::gpu::stats::write_buffer(queue, &region_buffer, 0, bytemuck::cast_slice(&self.regions));
+        let alpha_buffer = zero_buffer(device, "political exact alpha", self.alpha_buffer.size(), rw)?;
+        if !self.alpha.is_empty() {
+            shader_pipeline::gpu::stats::write_buffer(queue, &alpha_buffer, 0, &self.alpha);
+        }
+        let cells = zero_buffer(
+            device,
+            "political boundary masks",
+            self.cells.size(),
+            rw | wgpu::BufferUsages::COPY_SRC,
+        )?;
+        encoder.copy_buffer_to_buffer(&self.cells, 0, &cells, 0, self.cells.size());
+        let dirty_buffer = zero_buffer(device, "political dirty cells", self.dirty_buffer.size(), rw)?;
+        let indirect = buffer(
+            device,
+            "political dispatch",
+            &[0; 12],
+            wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+        )?;
+        let group = bind(
+            device,
+            &self.kernel.layout,
+            [
+                &uniform,
+                &self.ids,
+                &mapping_buffer,
+                &region_buffer,
+                &alpha_buffer,
+                &cells,
+                &scratch.distances,
+                &scratch.output,
+                &dirty_buffer,
+            ],
+        );
+        Ok(Self {
+            params: self.params,
+            uniform,
+            ids: self.ids.clone(),
+            provinces: Arc::clone(&self.provinces),
+            mapping: self.mapping.clone(),
+            members: self.members.clone(),
+            member_at: self.member_at.clone(),
+            source_keys: self.source_keys.clone(),
+            mapping_buffer,
+            keys: self.keys.clone(),
+            free: self.free.clone(),
+            areas: self.areas.clone(),
+            thickness: self.thickness.clone(),
+            regions: self.regions.clone(),
+            region_buffer,
+            alpha: self.alpha.clone(),
+            alpha_buffer,
+            alpha_stride: self.alpha_stride,
+            capacity: self.capacity,
+            alpha_keys: self.alpha_keys.clone(),
+            alpha_users: self.alpha_users.clone(),
+            alpha_free: self.alpha_free.clone(),
+            alpha_slots: self.alpha_slots,
+            cells,
+            scratch,
+            dirty_buffer,
+            indirect,
+            dirty: vec![false; self.dirty.len()],
+            marked: Vec::new(),
+            copies: Vec::new(),
+            group,
+            kernel: Arc::clone(&self.kernel),
+            field: self.field,
+            kind: self.kind,
+            initialized: true,
+            pending: false,
+            recorded: false,
+            dispatched_cells: 0,
+        })
     }
 
     fn new_shared(

@@ -434,6 +434,7 @@ impl DemilitarizedPass {
             .map(|run| super::border_shader::Run {
                 vertices: &run.vertices,
                 indices: &run.indices,
+                index_format: wgpu::IndexFormat::Uint32,
                 range: viewer_scene_base::line_lod::drawn(run.fine, run.coarse, coarse),
             })
             .collect::<Vec<_>>();

@@ -677,6 +677,21 @@ impl PlannedBuffer {
 static PLANNED: std::sync::LazyLock<std::sync::Mutex<PlannedBuffers>> =
     std::sync::LazyLock::new(Default::default);
 
+fn index_buffer(device: &wgpu::Device, indices: &[u32]) -> io::Result<wgpu::Buffer> {
+    let indices = indices
+        .iter()
+        .copied()
+        .map(u16::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| invalid("border chunk index exceeds 16 bits"))?;
+    buffer(
+        device,
+        "border indices",
+        wgpu::BufferUsages::INDEX,
+        bytemuck::cast_slice(&indices),
+    )
+}
+
 fn planned_buffer(device: &wgpu::Device, indices: &Arc<Vec<u32>>) -> io::Result<Arc<wgpu::Buffer>> {
     let key = Arc::as_ptr(indices) as usize;
     let mut planned = PLANNED.lock().unwrap_or_else(|error| error.into_inner());
@@ -689,12 +704,7 @@ fn planned_buffer(device: &wgpu::Device, indices: &Arc<Vec<u32>>) -> io::Result<
     }) {
         return Ok(held);
     }
-    let made = Arc::new(buffer(
-        device,
-        "border indices",
-        wgpu::BufferUsages::INDEX,
-        bytemuck::cast_slice(indices),
-    )?);
+    let made = Arc::new(index_buffer(device, indices)?);
     let planned = &mut *planned;
     planned.since_sweep += 1;
     if planned.since_sweep >= planned.lists.len() {
@@ -918,12 +928,7 @@ impl BorderPass {
                     chunk,
                     fine,
                     coarse: indices.len() as u32 - fine,
-                    indices: Arc::new(buffer(
-                        device,
-                        "border indices",
-                        wgpu::BufferUsages::INDEX,
-                        bytemuck::cast_slice(&indices),
-                    )?),
+                    indices: Arc::new(index_buffer(device, &indices)?),
                     planned: None,
                 })
             })
@@ -967,6 +972,7 @@ impl BorderPass {
                                 .map(|vertices| super::border_shader::Run {
                                     vertices,
                                     indices: &run.indices,
+                                    index_format: wgpu::IndexFormat::Uint16,
                                     range,
                                 })
                         })

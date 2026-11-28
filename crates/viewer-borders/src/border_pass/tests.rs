@@ -59,13 +59,7 @@ fn a_covered_border_wakes_the_map_only_while_its_draw_pulses() {
         &[0; 48],
     )
     .unwrap();
-    let indices = buffer(
-        &device,
-        "fixture border indices",
-        wgpu::BufferUsages::INDEX,
-        bytemuck::cast_slice(&[0u32, 1, 2, 2, 1, 0]),
-    )
-    .unwrap();
+    let indices = index_buffer(&device, &[0, 1, 2, 2, 1, 0]).unwrap();
     for (selection, live) in [([0.; 4], false), ([1.; 4], true), ([0.; 4], false)] {
         targets.surface_motion.begin(&device, true, 1, true);
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -91,6 +85,7 @@ fn a_covered_border_wakes_the_map_only_while_its_draw_pulses() {
                     runs: vec![Run {
                         vertices: &vertices,
                         indices: &indices,
+                        index_format: wgpu::IndexFormat::Uint16,
                         range: 0..6,
                     }],
                 }],
