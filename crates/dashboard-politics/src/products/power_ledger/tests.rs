@@ -546,8 +546,7 @@ fn overlapping_coverage_gap_preserves_specific_day_log_refusal_on_affected_hour(
         LogGap { first: 142, last: 143, status: Status::Unavailable { reason: 1 }, reason: Some("gap a".into()) },
         LogGap { first: 149, last: 153, status: Status::Unavailable { reason: 2 }, reason: Some("gap b".into()) },
     ];
-    let mut hours = std::collections::BTreeMap::new();
-    super::apply_log_gaps(&mut runs, &gaps, "Daily spending log", &mut hours);
+    super::apply_log_gaps(&mut runs, &gaps, "Daily spending log");
     assert_eq!(
         runs,
         [
@@ -1421,6 +1420,8 @@ fn format_155_summary_logs_skip_legacy_walks_and_surface_log_gaps() {
         synthetic.table(TableId::PowerSpendCoverage, Input::Snapshot { rows: &coverage, partial: None, read: true, sample: Sample::FromReadBit })?;
         if decoded.hour == 110 {
             synthetic.table::<replay_data::rows::PowerSpendDayRow>(TableId::PowerSpendDays, Input::Unavailable { reason: "days lost", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 112 {
+            synthetic.table::<replay_data::rows::PowerSpendDayRow>(TableId::PowerSpendDays, Input::Unavailable { reason: "writer withheld", read: false, sample: Sample::FromReadBit })?;
         } else {
             synthetic.table(TableId::PowerSpendDays, Input::Snapshot { rows: &[] as &[replay_data::rows::PowerSpendDayRow], partial: None, read: true, sample: Sample::FromReadBit })?;
         }
@@ -1431,7 +1432,9 @@ fn format_155_summary_logs_skip_legacy_walks_and_surface_log_gaps() {
         } else {
             synthetic.table(TableId::PowerSpendPayments, Input::Snapshot { rows: &[] as &[replay_data::rows::PowerSpendPaymentRow], partial: None, read: true, sample: Sample::FromReadBit })?;
         }
-        if decoded.hour == 115 {
+        if decoded.hour == 112 {
+            synthetic.table::<PowerSpendGainRow>(TableId::PowerSpendGains, Input::Unavailable { reason: "writer withheld", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 115 {
             synthetic.table::<PowerSpendGainRow>(TableId::PowerSpendGains, Input::Unavailable { reason: "gains lost", read: false, sample: Sample::FromReadBit })?;
         } else if decoded.hour == 122 {
             let split = [
@@ -1463,6 +1466,18 @@ fn format_155_summary_logs_skip_legacy_walks_and_surface_log_gaps() {
         "a payment log gap in the second of two adjacent holder pieces must surface as uncovered: {:?}",
         reply.coverage
     );
+    assert!(
+        reply.gain_coverage.iter().any(|span| {
+            !span.covered
+                && span.first_hour == 112
+                && span.last_hour == 112
+                && span.reason.as_deref().is_some_and(|r| r.contains("Spending gains log unavailable: writer withheld"))
+        }),
+        "a shared writer refusal on PowerSpendDays and PowerSpendGains while raw inputs are complete must still mark gain_coverage uncovered: {:?}",
+        reply.gain_coverage
+    );
+    assert!(reply.warnings.iter().any(|w| w.contains("Daily spending log unavailable: writer withheld (hours: 1)")), "warnings: {:?}", reply.warnings);
+    assert!(!reply.warnings.iter().any(|w| w.contains("Spending gains log unavailable: writer withheld")), "identical shared refusal warning is deduplicated: {:?}", reply.warnings);
     assert!(
         reply.gain_coverage.iter().any(|span| {
             !span.covered

@@ -2305,8 +2305,12 @@ fn republished_changes_are_deduped_large_gains_split_daily_gains_survive_change_
     let (h4, _) = run_custom(4, scenario);
     assert!(keys(&h4, TableId::PowerSpendGains).is_empty(), "republishing an instant gain with the same country, sequence and epoch must not count it twice");
     assert!(keys(&h4, TableId::PowerSpendPayments).is_empty(), "republishing a charge with the same country, sequence and epoch must not count it twice");
-    assert_eq!(spend(&h4, 10, POLITICAL, 0, "payments"), Some(1));
-    assert_eq!(spend(&h4, 10, POLITICAL, 0, "known"), Some(25 * Q));
+    let charge_ordinal = keys(&h4, TableId::PowerItems)
+        .into_iter()
+        .find(|&key| (key >> 32) as u32 == 10 && cell::<Item>(&h4, TableId::PowerItems, key, "cause") == Some(i64::from(PowerCause::Decision as u16)))
+        .expect("decision item recorded") as u32;
+    assert_eq!(spend(&h4, 10, POLITICAL, charge_ordinal, "payments"), Some(1));
+    assert_eq!(spend(&h4, 10, POLITICAL, charge_ordinal, "known"), Some(25 * Q));
     assert_resumes_match(&[2, 3], 4, scenario);
 
     let daily_during_outage = |store: &mut Store, hour: i32| {

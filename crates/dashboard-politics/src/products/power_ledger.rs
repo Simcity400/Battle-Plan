@@ -681,7 +681,16 @@ fn combine_gap_reason(covered: bool, existing: Option<&str>, day_reason: &str) -
     }
 }
 
-fn apply_log_gaps(coverage: &mut Vec<SpendCoverage>, gaps: &[lanes::LogGap], label: &str, gap_hours: &mut BTreeMap<String, u64>) {
+fn count_log_gap_hours(gaps: &[lanes::LogGap], label: &str, gap_hours: &mut BTreeMap<String, u64>) {
+    for gap in gaps {
+        let reason = log_gap_reason(gap, label);
+        if !reason.is_empty() {
+            *gap_hours.entry(reason).or_default() += u64::try_from(i64::from(gap.last) - i64::from(gap.first) + 1).unwrap_or(0);
+        }
+    }
+}
+
+fn apply_log_gaps(coverage: &mut Vec<SpendCoverage>, gaps: &[lanes::LogGap], label: &str) {
     if gaps.is_empty() {
         return;
     }
@@ -691,7 +700,6 @@ fn apply_log_gaps(coverage: &mut Vec<SpendCoverage>, gaps: &[lanes::LogGap], lab
         if reason.is_empty() {
             continue;
         }
-        *gap_hours.entry(reason.clone()).or_default() += u64::try_from(i64::from(gap.last) - i64::from(gap.first) + 1).unwrap_or(0);
         resolved.push((gap.first, gap.last, reason));
     }
     if resolved.is_empty() {
@@ -1455,11 +1463,14 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
                 ask(ordinal, hour, true);
                 reply.days.push(day);
             }
-            apply_log_gaps(&mut piece_cov, &day_gaps, "Daily spending log", &mut day_gap_hours);
+            apply_log_gaps(&mut piece_cov, &day_gaps, "Daily spending log");
+            count_log_gap_hours(&day_gaps, "Daily spending log", &mut day_gap_hours);
             let extra_payment_gaps = uncovered_gaps(&payment_gaps, &day_gaps);
-            apply_log_gaps(&mut piece_cov, &extra_payment_gaps, "Spending payments log", &mut day_gap_hours);
+            apply_log_gaps(&mut piece_cov, &extra_payment_gaps, "Spending payments log");
+            count_log_gap_hours(&extra_payment_gaps, "Spending payments log", &mut day_gap_hours);
+            apply_log_gaps(&mut piece_gain_cov, &gain_gaps, "Spending gains log");
             let extra_gain_gaps = uncovered_gaps(&gain_gaps, &day_gaps);
-            apply_log_gaps(&mut piece_gain_cov, &extra_gain_gaps, "Spending gains log", &mut day_gap_hours);
+            count_log_gap_hours(&extra_gain_gaps, "Spending gains log", &mut day_gap_hours);
             for span in piece_cov {
                 push_coverage(&mut reply.coverage, span);
             }
@@ -1496,7 +1507,8 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
                     day.read = hour;
                     reply.days.push(day);
                 })?;
-                apply_log_gaps(&mut piece_cov, &gaps, "Daily spending log", &mut day_gap_hours);
+                apply_log_gaps(&mut piece_cov, &gaps, "Daily spending log");
+                count_log_gap_hours(&gaps, "Daily spending log", &mut day_gap_hours);
             }
             for span in piece_cov {
                 push_coverage(&mut reply.coverage, span);
