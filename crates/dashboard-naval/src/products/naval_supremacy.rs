@@ -153,7 +153,7 @@ pub struct NavalSupremacyReply {
     #[serde(skip)]
     ship_inputs: ShipInputs,
     #[serde(skip)]
-    dated_refusal: bool,
+    exact_hour_only: bool,
     #[doc = " Day 0 starts at this hour (a multiple of `dayHours`); day `n` covers the `n`th day after."]
     pub first_day_hour: i32,
     pub day_hours: i32,
@@ -896,7 +896,7 @@ impl NavalSupremacy {
             last_hour: last,
             valid_through: last,
             ship_inputs: inputs,
-            dated_refusal: !notes.is_empty() || ships_at_end.as_ref().is_some_and(|ships| {
+            exact_hour_only: !notes.is_empty() || ships_at_end.as_ref().is_some_and(|ships| {
                 [&ships.own, &ships.enemy].iter().filter_map(|result| result.as_ref().err())
                     .any(|reason| reason.contains(&format!("hour {look_hour} ")))
             }),
