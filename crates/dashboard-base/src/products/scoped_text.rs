@@ -23,7 +23,7 @@ use replay::campaign::Replay;
 use replay_columnar::{manifest::Status, store::{ColumnState, TableState, Value}};
 use replay_data::rows::TableId;
 use replay_frame::frame::{DecodedFrame, Metrics, NOT_SELECTED, READ_TIME_NOT_RECORDED, SharedView, TABLE_COUNT, TableView, not_selected};
-use replay_lanes::at::{CompleteCursor, LexicalCursor};
+use replay_lanes::at::{CheckpointProofs, CompleteCursor, LexicalCursor};
 use replay_recording::{cells::TableReader, columnar_frames::TableCoverage};
 use std::{
     borrow::BorrowMut,
@@ -63,13 +63,20 @@ pub struct CompanionTables(Arc<Mutex<CompanionReaders>>);
 struct CompanionReaders {
     run: Option<u32>,
     tables: [CompleteCursor; COMPANION_TABLES.len()],
+    proofs: CheckpointProofs,
 }
 
 impl CompanionTables {
     pub fn for_source(source: &Source) -> Self { Self(source.state::<CompanionReaders>()) }
 
     pub fn release(&self) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = CompanionReaders::default();
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).tables = Default::default();
+    }
+
+    pub fn prepare_characters(&self, replay: &Replay, run: u32) {
+        if let Some(anchors) = CheckpointProofs::prepare(replay.recording(), run, TableId::Characters) {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).proofs.insert(anchors);
+        }
     }
 
     fn read(&self, replay: &Replay, run: u32, hour: i32, tables: &[TableId]) -> io::Result<DecodedFrame> {
@@ -80,14 +87,22 @@ impl CompanionTables {
         let kept = {
             let mut readers = self.0.lock().unwrap_or_else(|e| e.into_inner());
             if readers.run != Some(run) {
-                *readers = CompanionReaders { run: Some(run), ..Default::default() };
+                readers.run = Some(run);
+                readers.tables = Default::default();
             }
             let mut kept = Vec::new();
             let mut bytes = readers.tables.iter().map(CompleteCursor::retained_bytes).sum::<usize>();
-            for (table, reader) in COMPANION_TABLES.into_iter().zip(&mut readers.tables) {
+            let CompanionReaders { tables: cursors, proofs, .. } = &mut *readers;
+            for (table, reader) in COMPANION_TABLES.into_iter().zip(cursors) {
                 if !tables.contains(&table) { continue; }
                 bytes -= reader.retained_bytes();
-                let read = dashboard_query::cost::storage(|| reader.read(replay.recording(), run, hour, table, COMPANION_BYTES - bytes));
+                let read = dashboard_query::cost::storage(|| {
+                    if table == TableId::Characters {
+                        reader.read_with(replay.recording(), run, hour, table, COMPANION_BYTES - bytes, Some(proofs))
+                    } else {
+                        reader.read(replay.recording(), run, hour, table, COMPANION_BYTES - bytes)
+                    }
+                });
                 bytes += reader.retained_bytes();
                 if let Some(view) = read {
                     remaining.retain(|&id| id != table);

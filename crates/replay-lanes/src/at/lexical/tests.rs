@@ -1,5 +1,5 @@
 use super::*;
-use replay_data::{format::FormatVersion, rows::{LexicalTokenRow, StateRow}};
+use replay_data::{format::FormatVersion, rows::{CharacterRow, LexicalTokenRow, StateRow}};
 use replay_journal::{fixtures, synthetic::{Input, Sample}};
 
 const START: i32 = 100;
@@ -183,4 +183,42 @@ fn preparing_another_run_keeps_the_verified_checkpoint_on_revisit() {
         assert_eq!(decoded, 0);
         assert_eq!(cache.0.held.as_ref().unwrap().reader.restores(), 1);
     }
+}
+
+#[test]
+fn character_views_apply_writes_insertions_and_deletions_since_the_held_hour() {
+    let table = TableId::Characters;
+    let bytes = fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(),
+        b"characters", &[(1, START, 2)], &[table], |synthetic, _, ordinal| {
+            let mut rows = vec![CharacterRow { id: 1, name_token_id: i32::from(ordinal >= 3), ..Default::default() }];
+            let id = if ordinal < 10 { 2 } else { 3 };
+            rows.push(CharacterRow { id, ..Default::default() });
+            if (11..14).contains(&ordinal) { rows.push(CharacterRow { id: 4, ..Default::default() }); }
+            synthetic.table(table, Input::Snapshot {
+                rows: &rows, partial: None, read: true, sample: Sample::FromReadBit,
+            }).unwrap();
+        }).0;
+    let recording = Recording::open(bytes).unwrap();
+    let mut cursor = CompleteCursor::default();
+    let mut proofs = CheckpointProofs::default();
+    proofs.insert(CheckpointProofs::prepare(&recording, 0, table).unwrap());
+    for (offset, decoded) in [(0, 2), (3, 1), (10, 1), (15, 0), (BLOCK as i32, 0)] {
+        let hour = START + offset;
+        let got = cursor.read_with(&recording, 0, hour, table, RETAINED_BYTES, Some(&proofs)).unwrap();
+        let expected = super::super::frame(&recording, 0, hour, &[super::super::Read::all(table)]).unwrap();
+        assert_eq!(got.0, expected.tables[table.index()]);
+        assert_eq!(got.0.sampled_at(), Some(hour));
+        assert_eq!(got.2, decoded);
+        assert_eq!(cursor.held.as_ref().unwrap().reader.restores(), 1);
+    }
+}
+
+#[test]
+fn a_duplicate_live_character_key_declines_the_sparse_patch() {
+    let mut cells = TableState::new(&[]);
+    let empty = TableState::new(&[]);
+    cells.put_row_from(7, &empty, 0, &[]).unwrap();
+    cells.put_row_from(7, &empty, 0, &[]).unwrap();
+    assert_eq!(cells.rows().count(), 2);
+    assert!(character_slots(&cells, &[7]).is_none());
 }

@@ -1510,8 +1510,12 @@ impl Product for IdeaHistory {
             KeyedVariables::for_source(source).prepare_country(span.run, id);
         }
         let lexical = Lexical::for_source(source);
+        let companions = CompanionTables::for_source(source);
         ReadDates::prepare_selected(source, span.run, (span.first, span.last), DATE_SELECTIONS,
-            move |replay, run| lexical.prepare_checkpoints(replay, run))
+            move |replay, run| {
+                lexical.prepare_checkpoints(replay, run);
+                companions.prepare_characters(replay, run);
+            })
     });
     type Params = IdeaHistoryParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read];
