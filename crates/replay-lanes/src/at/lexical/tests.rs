@@ -3,11 +3,10 @@ use replay_data::{format::FormatVersion, rows::LexicalTokenRow};
 use replay_journal::{fixtures, synthetic::{Input, Sample}};
 
 const START: i32 = 100;
+const RUNS: [(u64, i32, u32); 2] = [(1, START, 2), (2, START + 10_000, 1)];
 
 fn fixture() -> Vec<u8> {
-    fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(), b"exact lexical", &[
-        (1, START, BLOCK + 10), (2, START + 10_000, 5),
-    ], &[TABLE], |synthetic, _, ordinal| {
+    fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(), b"exact lexical", &RUNS, &[TABLE], |synthetic, _, ordinal| {
         let mut rows = vec![LexicalTokenRow { token: 1, literal: if ordinal < 51 { b"one" } else { b"uno" }.to_vec() }];
         if ordinal >= 51 { rows.push(LexicalTokenRow { token: 2, literal: b"two".to_vec() }); }
         let input = if ordinal == 123 {
@@ -61,7 +60,7 @@ fn lexical_playback_releases_its_view_on_a_seek_or_inexact_read() {
     let (before, _) = compared(&mut cache, &recording, 0, START + BLOCK as i32 - 1);
     let (after, _) = compared(&mut cache, &recording, 0, START + BLOCK as i32);
     assert!(!SharedView::ptr_eq(&before, &after));
-    assert!(cache.read(&recording, 0, START + BLOCK as i32 + 11).is_none());
+    assert!(cache.read(&recording, 0, START + (RUNS[0].2 * BLOCK) as i32).is_none());
     assert!(cache.held.is_none());
     let (other, _) = compared(&mut cache, &recording, 1, START + 10_000);
     assert!(!SharedView::ptr_eq(&after, &other));
