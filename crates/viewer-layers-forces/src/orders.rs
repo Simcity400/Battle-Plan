@@ -389,28 +389,38 @@ impl Orders {
             return Err(io::Error::other("The orders layer has no rows at the head"));
         }
         let until = Instant::now() + settling.waiting(WHOLE);
+        let strict = settling.strict();
         self.take_vision();
         let began = Instant::now();
         let mut waited = false;
         loop {
             self.take();
             if self.refused.is_some() {
-                if settling.strict() {
+                if strict {
                     return Err(io::Error::other(format!("{}: hour {hour} asked; {}", self.refused.as_deref().unwrap_or_default(), self.maker_state())));
                 }
                 return Ok(());
             }
-            if self.made_for().is_some_and(|stands| stands == hour || (stands > hour && !settling.strict())) {
+            if self.made_for().is_some_and(|stands| stands == hour || (stands > hour && !strict)) {
                 self.mark_join(began, waited, true);
                 timeline::mark(self.maker, Mark::Joined);
                 return Ok(());
             }
-            if Instant::now() >= until {
-                if settling.strict() {
+            let now = Instant::now();
+            if now >= until {
+                if strict {
                     return Err(io::Error::other(format!("The orders layer made no plan at {hour:?} in time: the plan it holds stands at {:?}; {}", self.made_for(), self.maker_state())));
                 }
                 self.mark_join(began, waited, false);
                 timeline::mark(self.maker, Mark::Joined);
+                return Ok(());
+            }
+            let rows = self.rows.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !strict && !rows.as_deref().is_some_and(|reader| {
+                reader.newest().and_then(|(frame, _)| reader.through_seek(Arc::as_ptr(&frame)))
+                    .is_some_and(|(through, seek)| through >= hour && seek == reader.seek())
+            }) {
+                viewer_runtime::view_record::add("arrows", "joins_left_rows_pending", 1);
                 return Ok(());
             }
             if viewer_runtime::view_record::on() {
@@ -419,7 +429,7 @@ impl Orders {
                 viewer_runtime::view_record::add("arrows", if held { "waits_for_the_build" } else { "waits_for_the_rows" }, 1);
             }
             waited = true;
-            self.shared.wait(until)?;
+            self.shared.wait(if strict { until } else { until.min(now + LOOK) })?;
         }
     }
 
