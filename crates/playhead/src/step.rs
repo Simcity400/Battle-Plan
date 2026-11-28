@@ -1,5 +1,5 @@
 
-use crate::{changes::Changes, playhead::Reader, state::State};
+use crate::{changes::Changes, playhead::Reader, state::PendingState};
 use replay_data::Hour;
 use std::sync::Mutex;
 
@@ -23,7 +23,7 @@ pub struct Step {
 pub(crate) struct Rebuilt {
     pub(crate) reader: Reader,
     pub(crate) table: usize,
-    pub(crate) state: State,
+    pub(crate) state: PendingState,
 }
 
 impl Step {

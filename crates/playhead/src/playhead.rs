@@ -9,7 +9,7 @@ use crate::{
     },
     pages::Pages,
     ring::Ring,
-    state::{Flight, Rebuild, State},
+    state::{PendingStates, Flight, Rebuild, State, PendingState},
     step::{Built, Fetching, Rebuilt, Seeking, Step},
 };
 use replay::campaign::timelines;
@@ -161,6 +161,7 @@ struct Declaration {
     tables: Vec<Declared>,
     since: Vec<u64>,
     rebuild: Option<Rebuild>,
+    states: PendingStates,
 }
 
 #[derive(Clone)]
@@ -359,7 +360,7 @@ struct Prepare {
 struct Prepared {
     generation: u64,
     lane: Box<Lane>,
-    states: Vec<(Reader, State)>,
+    states: Vec<(Reader, PendingState)>,
     sought: Sought,
     rebuild_ns: u64,
     ns: u64,
@@ -763,6 +764,11 @@ impl Shared {
         self.queue([((0, 0), Job::Drop(Box::new(retired)))]);
     }
 
+    fn hold(&self, reader: Reader, state: State) -> Option<PendingState> {
+        let control = lock(&self.control);
+        Some(state.hold(&self.flight, &control.readers.get(&reader)?.states))
+    }
+
     fn free_after_prepares(&self, retired: impl Send + 'static) {
         self.queue([((1, i64::MAX), Job::Drop(Box::new(retired)))]);
     }
@@ -866,10 +872,11 @@ impl Shared {
                 break;
             }
             let began = Instant::now();
-            let mut state = rebuild(&lane, columns)?;
+            let state = rebuild(&lane, columns)?;
             rebuild_ns += began.elapsed().as_nanos() as u64;
-            state.hold(&self.flight);
-            states.push((*reader, state));
+            if let Some(state) = self.hold(*reader, state) {
+                states.push((*reader, state));
+            }
         }
         Ok(Box::new(Prepared { generation: prepare.generation, lane, states, sought, rebuild_ns, ns: started.elapsed().as_nanos() as u64, ahead_ns, thread: std::thread::current().id() }))
     }
@@ -1087,7 +1094,7 @@ impl Consumer {
     pub fn state(&self, step: &Step, table: usize) -> Option<State> {
         let mut states = lock(&step.states);
         let at = states.iter().position(|held| held.reader == self.reader && held.table == table)?;
-        let mut state = states.swap_remove(at).state;
+        let mut state = states.swap_remove(at).state.take()?;
         drop(states);
         state.release();
         Some(state)
@@ -1272,7 +1279,7 @@ impl Playhead {
             control.selection += 1;
             control.caught_up_at = None;
             let since = vec![control.selection; tables.len()];
-            control.readers.insert(Reader(id), Declaration { tables, since, rebuild });
+            control.readers.insert(Reader(id), Declaration { tables, since, rebuild, states: PendingStates::default() });
         });
         self.shared.notify_control();
         Ok(Reader(id))
@@ -1350,12 +1357,17 @@ impl Playhead {
 
     pub fn retire(&self, reader: Reader) {
         lock(&self.shared.ring).forget(reader);
+        let mut states = BTreeMap::new();
         self.shared.nudge(|control| {
-            if control.readers.remove(&reader).is_some() {
+            if let Some(held) = control.readers.remove(&reader) {
+                states = held.states.release();
                 control.selection += 1;
                 control.caught_up_at = None;
             }
         });
+        if !states.is_empty() {
+            self.shared.free(states);
+        }
         self.shared.notify_control();
     }
 
@@ -3332,9 +3344,9 @@ impl Stepper {
         }
         let mut states: Vec<Vec<Rebuilt>> = (0..targets.len()).map(|_| Vec::new()).collect();
         for ((target, place, reader, ..), state) in work.iter().zip(rebuilt) {
-            let mut state = state?;
-            state.hold(&self.shared.flight);
-            states[*target].push(Rebuilt { reader: *reader, table: self.slots[*place].table, state });
+            if let Some(state) = self.shared.hold(*reader, state?) {
+                states[*target].push(Rebuilt { reader: *reader, table: self.slots[*place].table, state });
+            }
         }
         let mut steps = Vec::with_capacity(targets.len());
         for ((consumer, reader, tables), states) in targets.into_iter().zip(states) {
