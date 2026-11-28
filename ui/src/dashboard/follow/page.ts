@@ -63,6 +63,7 @@ export interface FrameRequest {
   seek: number;
   speed: number;
   installed: Ack[];
+  keptOnSeek?: readonly number[];
   refused: Refusal[];
   inspect: [widget: number, key: string][];
 }
@@ -128,7 +129,7 @@ interface RouteState { reset: number; command: number; failed: { seek: number; r
 export interface RebindChange { pin?: number | null; offset?: number; owner?: string; subscription?: boolean; bounds?: readonly [number, number] | null }
 
 const STRUCTURAL = /^(model|refused):|^(rows|failed)$/;
-const MAX_EARLY = 4;
+export const MAX_EARLY = 4;
 const MAX_AHEAD = 4;
 const structureOf = (content: Readonly<Record<string, string>>, fields: Readonly<Record<string, unknown>>) => [
   ...Object.entries(content).filter(([key]) => STRUCTURAL.test(key)).map(([key, id]) => `${key}=${id}`),
@@ -360,7 +361,7 @@ export class Page<B extends Bitmap = Bitmap> {
       }
     }
     this.tell();
-    this.request(wake || !playing, wake);
+    this.request(wake || !playing, wake, sought);
   }
 
   frame() {
@@ -369,13 +370,15 @@ export class Page<B extends Bitmap = Bitmap> {
     if (this.acks.some(list => list.length) || this.refusals.some(list => list.length)) this.request(true, false);
   }
 
-  private request(exact: boolean, retire: boolean) {
+  private request(exact: boolean, retire: boolean, sought = false) {
     if (exact && retire && this.earlyWidgets.size) {
       for (const widget of [...this.earlyWidgets]) {
         this.stats.visited++;
         this.retireEarly(widget, 'retired');
       }
     }
+    const kept = sought ? Array.from({ length: this.lanes }, () => [] as number[]) : undefined;
+    if (kept) for (const widget of this.widgets.values()) if (widget.installed) kept[widget.lane]!.push(widget.installed.id);
     for (let lane = 0; lane < this.lanes; lane++) {
       if (this.laneWidgetCounts[lane] === 0 && this.acks[lane]!.length === 0 && this.refusals[lane]!.length === 0) continue;
       const lead = Math.min(MAX_AHEAD, Math.max(1, Math.round(this.ahead[lane]!)));
@@ -388,7 +391,8 @@ export class Page<B extends Bitmap = Bitmap> {
         this.stats.visited++;
         if (widget.inspect !== null) inspect.push([widget.id, widget.inspect]);
       }
-      this.post(lane, { type: 'frame', serial, now: this.T, target, exact, seek: this.seek, speed: this.playing ? this.speed : 0, installed: this.acks[lane]!.splice(0), refused: this.refusals[lane]!.splice(0), inspect });
+      const keptOnSeek = kept?.[lane];
+      this.post(lane, { type: 'frame', serial, now: this.T, target, exact, seek: this.seek, speed: this.playing ? this.speed : 0, installed: this.acks[lane]!.splice(0), ...(keptOnSeek?.length ? { keptOnSeek } : {}), refused: this.refusals[lane]!.splice(0), inspect });
     }
     if (this.sent.size > 256) for (const key of [...this.sent.keys()].slice(0, 128)) this.sent.delete(key);
   }

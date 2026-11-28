@@ -420,7 +420,7 @@ test('stationary widget costs zero repaints with shared surface on while active 
   }
 });
 
-test('direct shared and worker targets paint request.now instead of lookahead request.target, repaint across in-flight slot moves, and repaint on shared-to-worker fallback', async () => {
+test('shared targets paint look-ahead across in-flight moves and worker fallback paints the current hour', async () => {
   const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
   Object.defineProperty(globalThis, 'OffscreenCanvas', {
     value: class {
@@ -433,6 +433,7 @@ test('direct shared and worker targets paint request.now instead of lookahead re
         this.ctx = fakeContext2D().ctx;
       }
       getContext() { return this.ctx; }
+      transferToImageBitmap() { return { width: this.width, height: this.height, close() {} }; }
     },
     configurable: true,
   });
@@ -459,7 +460,7 @@ test('direct shared and worker targets paint request.now instead of lookahead re
       paint(ctx, frame) {
         painted.push({
           hour: frame.hour,
-          target: ctx === sharedCanvas.ctx ? 'shared' : 'worker',
+          target: ctx === workerCanvas.ctx ? 'worker' : 'shared',
         });
         return false;
       },
@@ -531,7 +532,7 @@ test('direct shared and worker targets paint request.now instead of lookahead re
     };
 
     await sendFrame(1, 1, 3, false);
-    assert.deepEqual(painted, [{ hour: 1, target: 'shared' }]);
+    assert.deepEqual(painted, [{ hour: 3, target: 'shared' }]);
 
     lane.setLaneSlots({
       width: 800,
@@ -547,7 +548,7 @@ test('direct shared and worker targets paint request.now instead of lookahead re
     });
     await sendFrame(2, 1, 3, false);
     assert.equal(painted.length, 2);
-    assert.deepEqual(painted.at(-1), { hour: 1, target: 'shared' });
+    assert.deepEqual(painted.at(-1), { hour: 3, target: 'shared' });
 
     lane.setLaneSlots({
       width: 0,
@@ -561,7 +562,7 @@ test('direct shared and worker targets paint request.now instead of lookahead re
       clipPathFallback: false,
       slots: [],
     });
-    await sendFrame(3, 1, 3, true);
+    await sendFrame(3, 1, 3, false);
     assert.equal(painted.length, 3);
     assert.deepEqual(painted.at(-1), { hour: 1, target: 'worker' });
 
@@ -943,7 +944,9 @@ function pixelCanvas(initialW: number, initialH: number) {
         style: 'cleared',
       });
     },
-    drawImage() {},
+    drawImage(image: { pixels?: typeof fills }, x: number, y: number) {
+      for (const fill of image.pixels ?? []) fills.push({ ...fill, x: x + fill.x, y: y + fill.y });
+    },
     fillText() {},
     measureText(text: string) { return { width: text.length * 7 }; },
     setTransform(a?: unknown, b?: unknown, c?: unknown, d?: unknown, e?: unknown, f?: unknown) {
@@ -965,6 +968,10 @@ function pixelCanvas(initialW: number, initialH: number) {
     get height() { return h; },
     set height(v: number) { h = v; fills.length = 0; },
     getContext() { return ctx; },
+    transferToImageBitmap() {
+      const pixels = fills.splice(0);
+      return { width: w, height: h, pixels, close() { pixels.length = 0; } };
+    },
   };
   const pixelAt = (px: number, py: number): string => {
     for (let i = fills.length - 1; i >= 0; i--) {
@@ -973,7 +980,7 @@ function pixelCanvas(initialW: number, initialH: number) {
     }
     return 'empty';
   };
-  return { canvas: canvas as unknown as OffscreenCanvas, ctx: ctx as unknown as OffscreenCanvasRenderingContext2D, pixelAt };
+  return { canvas: canvas as unknown as OffscreenCanvas, ctx: ctx as unknown as OffscreenCanvasRenderingContext2D, pixelAt, painted: (style: string) => fills.some(fill => fill.style === style) };
 }
 
 function makeDirectHarness(kind: string) {
@@ -1068,6 +1075,93 @@ function makeDirectHarness(kind: string) {
 
   return { page, lane, surface, bindingModel, drainLane, deliverToPage, requests, heldPresentations, paints: () => paintCalls };
 }
+
+test('shared playback paints look-ahead and copies pixels only when the page accepts the hour', async () => {
+  const original = globalThis.OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class { constructor(width: number, height: number) { return pixelCanvas(width, height).canvas; } }, configurable: true,
+  });
+  try {
+    const h = makeDirectHarness('test-direct-look-ahead');
+    h.lane.bind(1, { generation: 1, surfaces: [{ width: 300, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 20 } });
+    h.page.publish(2, { playing: true, seek: 1, speed: 24, step: 4 });
+    await h.drainLane();
+    h.deliverToPage();
+    h.page.frame();
+    await h.drainLane();
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h2:installed');
+
+    h.page.publish(3);
+    const lookAhead = h.requests.at(-1)!.target;
+    assert.ok(lookAhead > h.page.T);
+    await h.drainLane();
+    assert.equal(h.heldPresentations.at(-1)?.entries[0]?.lo, lookAhead);
+    assert.equal(h.surface.pixelAt(80, 60), 'pixel:h2:installed');
+    h.deliverToPage();
+    h.page.frame();
+    assert.equal(h.page.view(1).painted, 2);
+
+    h.page.publish(lookAhead);
+    await h.drainLane();
+    assert.equal(h.page.view(1).painted, lookAhead);
+    assert.equal(h.surface.pixelAt(80, 60), `pixel:h${lookAhead}:installed`);
+
+    h.page.publish(lookAhead + 1, { playing: false, seek: 2, speed: 0 });
+    await h.drainLane();
+    h.deliverToPage();
+    h.page.frame();
+    assert.equal(h.page.view(1).painted, lookAhead + 1);
+    assert.equal(h.surface.pixelAt(80, 60), `pixel:h${lookAhead + 1}:installed`);
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: original, configurable: true });
+  }
+});
+
+test('a delayed acknowledgement restores a staged picture only when the seek keeps it', async () => {
+  const original = globalThis.OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class { constructor(width: number, height: number) { return pixelCanvas(width, height).canvas; } }, configurable: true,
+  });
+  try {
+    for (const kept of [true, false]) {
+      const h = makeDirectHarness(`test-staged-ack-after-seek-${kept}`);
+      h.lane.bind(1, { generation: 1, surfaces: [{ width: 300, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 20 } });
+      h.page.publish(2, { playing: true, seek: 1, speed: 24, step: 4 });
+      await h.drainLane();
+      h.deliverToPage();
+      h.page.frame();
+      await h.drainLane();
+
+      h.page.publish(3);
+      const lookAhead = h.requests.at(-1)!.target;
+      await h.drainLane();
+      h.deliverToPage();
+      h.page.publish(lookAhead);
+      const delayed = h.requests.pop()!.installed;
+      assert.equal(delayed.length, 1);
+      const pausedHour = kept ? lookAhead : 2;
+      h.page.publish(pausedHour, { playing: false, seek: 2, speed: 0 });
+      assert.equal(h.page.view(1).painted, kept ? lookAhead : undefined);
+      const owned = pixelCanvas(300, 200);
+      if (!kept) {
+        h.lane.disposeLaneSurface();
+        h.lane.setCanvas(1, owned.canvas, false);
+      }
+      const exact = h.requests.pop()!;
+      h.requests.push({ ...exact, installed: delayed });
+      await h.drainLane();
+      const visible = kept ? h.surface : owned;
+      assert.equal(visible.pixelAt(80, 60), `pixel:h${pausedHour}:installed`);
+      if (!kept) assert.equal(owned.painted(`pixel:h${lookAhead}:installed`), false);
+      h.deliverToPage();
+      h.page.frame();
+      assert.equal(h.page.view(1).mode, 'picture');
+      assert.equal(h.page.view(1).painted, pausedHour);
+    }
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: original, configurable: true });
+  }
+});
 
 test('direct-surface rules: content identity rejects uncovered pause replacement and restores installed pixels past parked entry', async () => {
   const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
