@@ -24,6 +24,7 @@ function territoryUnit(measure: TerritoryMeasure): string {
 export const factionStrengthRaceProjection: BarsProjection<FactionTotalsRaceOptions> = registerFamilyProjection({
   kind: 'faction-strength',
   family: 'bars',
+  singleValueBars: () => true,
   project(readView: BoundedReadView, options: FactionTotalsRaceOptions): BarsModel {
     return projectFactionTotalsRace(readView, options);
   },

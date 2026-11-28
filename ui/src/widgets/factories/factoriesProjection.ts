@@ -205,6 +205,7 @@ function makeRow(
 export const factoriesProjection: BarsProjection<FactoriesProjectionOptions> = registerFamilyProjection({
   kind: 'factories',
   family: 'bars',
+  singleValueBars: options => !options.split && options.mode !== 'built',
   nextChange(readView, options) {
     const hour = readView.hour;
     return nextHoldersChange(options.holders, hour);

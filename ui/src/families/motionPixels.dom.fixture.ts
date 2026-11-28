@@ -36,10 +36,11 @@ function rig(kind: string, dpr: number) {
     family: 'bars', kind, view: 'main', options: {}, sources: { main: 1 }, scrollTop: 0, width: 481, height: 235, theme,
   } satisfies FamilyBarsBinding);
   lane.bind(1, { generation: 1, pin: null, offset: 0, surfaces: [{ width: 481, height: 235, dpr }] });
-  lane.setLaneSlots({
-    width: 490, height: 250, dpr, scrollLeft: 0, scrollTop: 0, clipPathFallback: false, surfaceColor: theme.surface, cornerRadius: 9,
+  const layout = (width = 490, scrollLeft = 0) => lane.setLaneSlots({
+    width, height: 250, dpr, scrollLeft, scrollTop: 0, clipPathFallback: false, surfaceColor: theme.surface, cornerRadius: 9,
     slots: [{ widget: 1, x: 3, y: 4, w: 481, h: 235, bx: 3, by: 2, bw: 481, bh: 238, visible: true }],
   });
+  layout();
   lane.receive('panels', datedPanel(1, 100, 30));
   lane.receive('panels', datedPanel(1, 101, 150));
   const request = async (now: number, speed = 0, acknowledge = false, refused: Refusal[] = []) => {
@@ -55,7 +56,8 @@ function rig(kind: string, dpr: number) {
     for (const draw of queued.splice(0)) draw();
   };
   return {
-    request, clock, step, pixels: () => canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data,
+    request, clock, step, layout,
+    pixels: (x = 0, y = 0, w = canvas.width, h = canvas.height) => canvas.getContext('2d')!.getImageData(x, y, w, h).data,
     later: () => lane.receive('panels', datedPanel(1, 104, 185)),
     revoke: () => lane.receive('panels', datedRecord(1, 101, 0, 'Withdrawn')),
     lastEntry: () => presented?.entries.at(-1),
@@ -80,6 +82,7 @@ async function checkSettledPixels() {
   const kind = 'ordered-bars-pixel-settle';
   registerFamilyProjection({
     family: 'bars', kind,
+    singleValueBars: () => true,
     project(view): BarsModel {
       const value = Number(view.panel('main'));
       return {
@@ -136,8 +139,20 @@ async function checkSettledPixels() {
       histories.push({ revoked, history, difference: changedBytes(expected, played.pixels()) });
     }
   }
+  const geometry = rig(kind, 1);
+  geometry.clock(true);
+  await geometry.request(100, 1);
+  geometry.step(500);
+  const region = () => geometry.pixels(3, 2, 481, 238);
+  const moving = region();
+  geometry.layout(490, 12);
+  const afterScroll = changedBytes(moving, region());
+  geometry.layout(525, 12);
+  const afterResize = region().some(value => value !== 0);
+  geometry.step(0);
+  const afterTick = changedBytes(moving, region());
   bitmap.close();
-  return { results, histories };
+  return { results, histories, afterScroll, afterResize, afterTick };
 }
 
 (window as unknown as { checkSettledPixels: typeof checkSettledPixels }).checkSettledPixels = checkSettledPixels;

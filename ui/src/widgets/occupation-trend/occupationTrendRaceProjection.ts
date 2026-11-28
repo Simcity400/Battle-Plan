@@ -31,6 +31,7 @@ function resolveRank(options: Readonly<Record<string, unknown>>): OccupationMeas
 export const occupationTrendRaceProjection: BarsProjection<OccupationTrendRaceOptions> = registerFamilyProjection({
   kind: 'occupation-trend',
   family: 'bars',
+  singleValueBars: () => true,
   nextChange: () => Infinity,
   project(readView: BoundedReadView, options: OccupationTrendRaceOptions): BarsModel {
     const label = `Average ${measureName(options.rank).toLowerCase()}`;

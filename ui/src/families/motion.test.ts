@@ -206,9 +206,10 @@ const KIND = 'worker-motion-test';
 const BLUE = '#4f86f7';
 type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; segments?: boolean; scale?: number; whole?: boolean; art?: boolean; renames?: readonly number[] };
 
-registerFamilyProjection({
+const testProjection = registerFamilyProjection({
   family: 'bars',
   kind: KIND,
+  singleValueBars: () => true,
   project(view, options): BarsModel {
     const sample = view.panel('s') as Sample;
     const nextRename = sample?.renames?.find(at => view.hour < at);
@@ -236,6 +237,7 @@ registerFamilyProjection({
     };
   },
 }, 'main');
+registerFamilyProjection({ ...testProjection, kind: `${KIND}-mixed`, singleValueBars: () => false }, 'main');
 
 type TestBitmap = Bitmapped & { close(): void };
 
@@ -319,12 +321,12 @@ function fixture(budget: number) {
   lane.setLaneSurface(canvas.canvas, true);
   lane.follow(1, 'panel', 'p');
   lane.bindRoute(1, 1, 9, 1, 0);
-  const bind = (measure = 1, id = 1, reducedMotion = false) => {
+  const bind = (measure = 1, id = 1, reducedMotion = false, mixed = false) => {
     lane.payloads({ type: 'payloads', put: [[1, { s: 1 }], [10 + measure, measure]] });
     lane.bind(id, {
       generation: measure, owner: 'track', surfaces: [{ width: 480, height: 240, dpr: 1 }], offset: 0, pin: null,
     }, {
-      family: 'bars', kind: KIND, view: 'main', options: measure, sources: { s: 1 }, scrollTop: 0,
+      family: 'bars', kind: mixed ? `${KIND}-mixed` : KIND, view: 'main', options: measure, sources: { s: 1 }, scrollTop: 0,
       width: 480, height: 240, theme: TEST_THEME, audit: true, reducedMotion,
       revisions: { options: 10 + measure, sources: 1 },
     } satisfies FamilyBarsBinding);
@@ -447,8 +449,8 @@ describe('Ordered bar playback', () => {
     }
   }));
 
-  it('paints a covered pause after an older eligible stage is acknowledged, even without a prior playback owner', async () => withLane(async f => {
-    f.record(100, { value: 30, target: true });
+  it('paints a covered pause after an older eligible stage is acknowledged over a direct picture', async () => withLane(async f => {
+    f.record(100, { value: 30 });
     f.record(123);
     f.record(124, { value: 60 });
     f.clock(100, 1);
@@ -463,19 +465,16 @@ describe('Ordered bar playback', () => {
   }));
 
   it('resumes a matching renderer from a picture accepted while paused', async () => withLane(async f => {
-    f.record(100, { value: 30, target: true });
-    f.record(123);
     f.record(124, { value: 60 });
     f.record(147);
     f.record(148, { value: 100 });
-    await f.request(100);
-    const unit = f.barWidth() / 30;
     f.clock(100, 1);
-    await f.request(101, 1, 1, true, false, 124);
+    await f.request(101, 1, 1, false, false, 124);
     const staged = f.presented.at(-1)!.entries[0]!;
     assert.equal(staged.lo, 124);
     f.clock(124, 0);
     await f.request(124, 0, 1, [staged]);
+    const unit = f.barWidth() / 60;
     f.clock(136, 1);
     await f.request(136, 1, 1, true);
     f.tick(0);
@@ -483,35 +482,35 @@ describe('Ordered bar playback', () => {
   }));
 
   it('rebuilds the exact paused picture and renderer for direct, staged, extended and never-owned slots', async () => {
+    let exactWidth: number | undefined;
     for (const history of ['direct', 'staged', 'extended', 'never-owned']) await withLane(async f => {
-      f.record(100, { value: 30, target: true });
+      f.record(100, { value: 30 });
       f.record(123);
       f.record(124, { value: 60 });
       f.record(147);
       f.record(148, { value: 100 });
       if (history === 'extended') f.lane.supply(1, { dated: { h: 100, c: 148 } });
       f.clock(100, 1);
-      await f.request(100, 1);
-      const unit = f.barWidth() / 30;
-      f.clock(124, 1);
-      if (history === 'direct') await f.request(124, 1, 1, true);
-      else await f.request(100, 1, 1, true, false, 124);
+      if (history === 'direct') await f.request(124, 1);
+      else await f.request(100, 1, 1, false, false, 124);
       const ready = f.presented.at(-1)!.entries[0]!;
       assert.equal(ready.lo, 124);
-      if (history === 'extended' || history === 'staged') await f.request(100, 1, 1, false, true);
+      if (history === 'extended') await f.request(100, 1, 1, false, true);
       if (history === 'extended') f.lane.supply(1, { dated: { h: 100, c: 149 } });
       f.canvas.clearOps();
       f.clock(124, 0);
       await f.request(124, 0, 1, history === 'never-owned' ? [] : [ready]);
       const widths = f.operations()
         .filter(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE)
-        .map(op => Number(op.args[2]) / unit);
+        .map(op => Number(op.args[2]));
+      assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '60'), history);
       assert.equal(widths.length, 1, history);
-      assert.ok(Math.abs(widths[0]! - 60) < .01, history);
+      exactWidth ??= widths[0]!;
+      assert.equal(widths[0], exactWidth, history);
       f.clock(136, 1);
       await f.request(136, 1, 1, true);
       f.tick(0);
-      assert.ok(Math.abs(f.barWidth() / unit - 80) < .01, history);
+      assert.ok(Math.abs(f.barWidth() / exactWidth - 80 / 60) < .01, history);
     });
   });
 
@@ -530,21 +529,20 @@ describe('Ordered bar playback', () => {
   }));
 
   it('animates the accepted interval even while a later staged picture awaits acknowledgement', async () => withLane(async f => {
-    f.record(100, { value: 30, target: true });
-    f.record(123);
     f.record(124, { value: 60 });
     f.record(147);
     f.record(148, { value: 100 });
     f.clock(100, 1);
-    await f.request(100, 1, 1, false, true);
-    const unit = f.barWidth() / 30;
-    await f.request(101, 1, 1, true, false, 124);
+    await f.request(101, 1, 1, false, false, 124);
     const first = f.presented.at(-1)!.entries[0]!;
     await f.request(102, 1, 1, false, false, 148);
     const later = f.presented.at(-1)!.entries[0]!;
     assert.deepEqual([first.lo, later.lo], [124, 148]);
+    f.clock(124, 1);
+    await f.request(124, 1, 1, [first], false, 148);
+    f.tick(0);
+    const unit = f.barWidth() / 60;
     f.clock(136, 1);
-    await f.request(136, 1, 1, [first], false, 148);
     f.tick(0);
     assert.ok(Math.abs(f.barWidth() / unit - 80) < .01);
     await f.request(148, 1, 1, [later], false, 148);
@@ -584,18 +582,14 @@ describe('Ordered bar playback', () => {
   }));
 
   it('hands a staged slot to playback at the accepted hour', async () => withLane(async f => {
-    f.record(100, { value: 30, target: true });
-    f.record(123);
     f.record(124, { value: 60 });
     f.record(147);
     f.record(148, { value: 100 });
     f.clock(100.5, 1);
-    await f.request(100, 1, 1, false, true);
-    const exact = f.barWidth();
-    await f.request(101, 1, 1, true, false, 124);
+    f.canvas.clearOps();
+    await f.request(101, 1, 1, false, false, 124);
     const staged = f.presented.at(-1)?.entries[0];
     assert.equal(staged?.lo, 124);
-    assert.equal(f.barWidth(), exact);
     f.tick(0);
     assert.deepEqual(f.sampled, []);
     assert.equal(f.canvas.stagedCopies().length, 0);
@@ -604,14 +598,15 @@ describe('Ordered bar playback', () => {
     assert.equal(f.canvas.stagedCopies().length, 0);
     f.tick(0);
     assert.equal(f.sampled.length, 1);
-    assert.ok(Math.abs(f.barWidth() / exact - 60 / 30) < .01);
+    assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '60'));
+    const exact = f.barWidth();
     f.clock(136, 1);
     f.tick(0);
     assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '60'));
-    assert.ok(Math.abs(f.barWidth() / exact - 80 / 30) < .01);
+    assert.ok(Math.abs(f.barWidth() / exact - 80 / 60) < .01);
     f.clock(148, 0);
     await f.request(148);
-    assert.ok(Math.abs(f.barWidth() / exact - 100 / 30) < .01);
+    assert.ok(Math.abs(f.barWidth() / exact - 100 / 60) < .01);
     assert.equal(f.canvas.stagedCopies().length, 0);
   }));
 
@@ -771,6 +766,7 @@ describe('Ordered bar playback', () => {
   }));
 
   it('does not paint or publish newly segmented rows between page requests', async () => withLane(async f => {
+    f.bind(1, 1, false, true);
     f.record(100, { value: 100 });
     f.record(101, { value: 200, segments: true });
     f.record(102, { value: 300, segments: true });
@@ -785,6 +781,97 @@ describe('Ordered bar playback', () => {
     assert.equal(f.presented.length, before);
     await f.request(101, 1);
     assert.equal(f.presented.at(-1)?.entries[0]?.lo, 101);
+  }));
+
+  it('keeps a mixed-form binding on the page path regardless of intervening ticks', async () => {
+    for (const visitSegments of [false, true]) await withLane(async f => {
+      f.bind(1, 1, false, true);
+      f.record(100, { value: 100 });
+      f.record(101, { value: 200, segments: true });
+      f.record(102, { value: 300 });
+      f.record(103, { value: 400 });
+      f.clock(100, 1);
+      await f.request(100, 1);
+      const width = f.barWidth();
+      if (visitSegments) {
+        f.clock(101.5, 1);
+        f.tick(0);
+      }
+      f.clock(102.5, 1);
+      f.tick(0);
+      assert.equal(f.barWidth(), width);
+      assert.deepEqual(f.sampled, []);
+      await f.request(101, 1, 1, true);
+      assert.equal(f.presented.at(-1)?.entries[0]?.lo, 101);
+    });
+  });
+
+  it('reports an invalid single-value declaration and keeps that binding on the ordinary path', async t => withLane(async f => {
+    const errors = t.mock.method(console, 'error', () => {});
+    f.record(100, { value: 100, target: true });
+    f.record(101, { value: 200 });
+    f.record(102, { value: 300 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    assert.equal(errors.mock.callCount(), 1);
+    assert.match(String(errors.mock.calls[0]?.arguments[0]), /single-value guarantee/);
+    f.clock(101.5, 1);
+    await f.request(101, 1, 1, true);
+    const width = f.barWidth();
+    f.tick(0);
+    assert.equal(f.barWidth(), width);
+    assert.deepEqual(f.sampled, []);
+  }));
+
+  it('retains ordinary pause priority for a target-marked bar', async () => withLane(async f => {
+    f.mount(2, true);
+    f.bind(1, 1, false, true);
+    f.record(100, { value: 100, target: true });
+    f.record(101, { value: 200, target: true });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    f.painted.length = 0;
+    f.clock(101, 0);
+    await f.request(101, 0, 1, true);
+    assert.equal(f.painted[0], 1);
+  }));
+
+  it('builds a renderer when an uncovered pause restores an accepted stage', async () => withLane(async f => {
+    f.lane.supply(1, { dated: { h: 124, c: 124 } });
+    f.record(124, { value: 60 });
+    f.record(147);
+    f.record(148, { value: 100 });
+    f.clock(100, 1);
+    await f.request(100, 1, 1, false, false, 124);
+    const staged = f.presented.at(-1)?.entries[0];
+    assert.equal(staged?.lo, 124);
+    f.clock(125, 0);
+    await f.request(125, 0, 1, [staged!]);
+    const exact = f.barWidth();
+    f.lane.supply(1, { dated: { h: 124, c: 148 } });
+    f.clock(136, 1);
+    await f.request(136, 1, 1, true);
+    f.tick(0);
+    assert.ok(Math.abs(f.barWidth() / exact - 80 / 60) < .01);
+  }));
+
+  it('keeps an uncovered pause pending until the accepted picture can actually draw', async () => withLane(async f => {
+    f.record(124, { value: 60 });
+    f.clock(100, 1);
+    await f.request(100, 1, 1, false, false, 124);
+    const staged = f.presented.at(-1)?.entries[0];
+    assert.equal(staged?.lo, 124);
+    f.canvas.clearOps();
+    f.ready(false);
+    f.clock(125, 0);
+    await f.request(125, 0, 1, [staged!]);
+    assert.ok(!f.operations().some(op => op.op === 'fillText' && op.args[0] === '60'));
+    f.ready(true);
+    await f.request(125);
+    assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '60'));
+    f.canvas.clearOps();
+    await f.request(125);
+    assert.equal(f.operations().length, 0);
   }));
 
   it('keeps the recorded labels, tooltip, mirror and audit through ordinary presentation', async () => withLane(async f => {
@@ -812,6 +899,7 @@ describe('Ordered bar playback', () => {
   }));
 
   it('leaves target bars and the exact page path alone', async () => withLane(async f => {
+    f.bind(1, 1, false, true);
     f.record(100, { value: 100, target: true });
     f.record(101, { value: 200, target: true });
     f.clock(100.5, 1);
@@ -1060,6 +1148,7 @@ describe('Ordered bar playback', () => {
 
   it('does not serve a target bar or its dirty sibling between page requests', async () => withLane(async f => {
     f.mount(2, true);
+    f.bind(1, 1, false, true);
     f.record(100, { value: 100, target: true });
     f.clock(100, 1);
     await f.request(100, 1);

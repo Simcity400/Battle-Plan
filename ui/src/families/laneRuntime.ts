@@ -107,7 +107,8 @@ export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   status(model: TModel): LaneStatus;
   readonly view: readonly (keyof TBinding & string)[];
   readonly playback?: {
-    supports(model: TModel, binding: TBinding): boolean;
+    enabled(binding: TBinding): boolean;
+    supports(model: TModel): boolean;
     frame(frame: LaneFrame<TBinding, TModel, TLayout>, next: TModel, fraction: number): LaneFrame<TBinding, TModel, TLayout> | false | null;
   };
   layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number, step: LaneStep<TModel, TLayout>): TLayout;
@@ -426,6 +427,9 @@ export function lazyLaneView(family: string, load: LaneFamilyLoad, wake: (widget
       const loaded = ready(scene.widget);
       return loaded?.next ? loaded.next(scene, hour, state) : null;
     },
+    playbackEligible(widget, model) {
+      return view?.playbackEligible?.(widget, model) ?? false;
+    },
     unmount(widget, state) {
       waiting.delete(widget);
       failedGenerations.delete(widget);
@@ -480,6 +484,14 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
   };
   const projectionOf = (binding: TBinding, widget: number) =>
     ensureBoundProjection<TModel, unknown>(binding, wakerOf(widget)) as FamilyProjection<TModel, unknown> | 'loading' | 'unknown';
+  const invalidPlayback = new WeakSet<TBinding>();
+  const playbackEligible = (binding: TBinding, projection: FamilyProjection<TModel, unknown>) =>
+    !invalidPlayback.has(binding) && family.playback?.enabled(binding) === true && projection.singleValueBars?.(binding.options) === true;
+  const reportInvalidPlayback = (binding: TBinding) => {
+    if (invalidPlayback.has(binding)) return;
+    invalidPlayback.add(binding);
+    console.error(`Bars projection ${binding.kind}/${binding.view ?? 'main'} produced a form outside its single-value guarantee`);
+  };
   const sameInputs = (held: Held<TBinding, TModel, TLayout>, binding: TBinding, scene: Scene, hour: number): boolean =>
     held.projected !== null
     && held.kind === binding.kind
@@ -590,6 +602,11 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
   }
 
   return {
+    playbackEligible(widget, binding) {
+      if (!family.playback || !isBinding(binding)) return false;
+      const projection = projectionOf(binding, widget);
+      return typeof projection !== 'string' && playbackEligible(binding, projection);
+    },
     scrub(scene, statics, state, readers) {
       const binding = scene.model;
       if (!isBinding(binding)) {
@@ -780,11 +797,15 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const nextChangeAt = Number.isFinite(keep.drawUntil) ? { nextChangeAt: keep.drawUntil } : {};
 
       const shared = input.sharedSurface;
-      const animation = (shared || keep.workerCanvas) && input.binding.pin === null && family.playback?.supports(model, binding) ? family.playback : undefined;
-      const playbackOwnsPixels = input.playbackOwnsPixels === 'refused' || (animation !== undefined && input.playbackOwnsPixels === true);
+      const playbackOwnsPixels = input.playbackOwnsPixels === true;
+      const direct = (shared || keep.workerCanvas) && input.binding.pin === null;
+      let animation = playbackOwnsPixels || (direct && playbackEligible(binding, projection)) ? family.playback : undefined;
+      if (animation && !playbackOwnsPixels && !animation.supports(model)) {
+        reportInvalidPlayback(binding);
+        animation = undefined;
+      }
       const status = family.status(model);
-      if (input.pausePlayback === 'only' && (!animation || status !== 'picture')) return EMPTY;
-      const settlePlayback = input.restorePlayback || (input.pausePlayback !== undefined && animation !== undefined);
+      const settlePlayback = input.restorePlayback;
       if (status === 'waiting') {
         resetMirror(keep);
         return WAITING;
@@ -842,8 +863,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const speedRedraw = speedChanged && keep.content !== '' && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame) === false;
       keep.speed = effectiveSpeed;
       const drawChanged = !sameKey(keep.drawKey, drawKey);
-      const shouldPaint = settlePlayback || (input.playbackOwnsPixels && !animation)
-        || slotDirty || keep.motion || effectiveNow >= keep.expiry || speedRedraw || drawChanged;
+      const shouldPaint = settlePlayback || slotDirty || keep.motion || effectiveNow >= keep.expiry || speedRedraw || drawChanged;
       const drawCanvas = (shown = frame, sharedTarget = shared) => {
         if (sharedTarget) {
           const { lane: sharedLane, slot } = sharedTarget;
@@ -1003,8 +1023,13 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
             artRevision = keep.artRevision;
           }
           const exact = modelAt(current);
-          if (!exact || family.status(exact.model) !== 'picture' || !animation.supports(exact.model, binding)) {
-            if (diagnostic) diagnostic.reason = exact ? 'notEligible' : 'modelValidity';
+          if (!exact) {
+            if (diagnostic) diagnostic.reason = 'modelValidity';
+            return 'empty';
+          }
+          if (!animation.supports(exact.model)) {
+            reportInvalidPlayback(binding);
+            if (diagnostic) diagnostic.reason = 'notEligible';
             return 'release';
           }
           const begin = exact.from;

@@ -251,6 +251,12 @@ export interface BarsProjection<TOptions = unknown> extends FamilyProjection<Bar
   nextChange?(readView: BoundedReadView, options: TOptions): number;
 }
 
+export function isSingleValueOrdered(model: BarsModel): boolean {
+  return model.form === 'ordered' && !model.pickList && !model.twoSidedLayout
+    && model.rows.every(row => row.kind === 'section' || (row.kind === 'data' && row.value !== undefined
+      && row.segments === undefined && !row.target && !row.left && !row.right && !row.rightSide && !row.pair && !row.readout));
+}
+
 export class FutureBarsDataError extends Error {
   constructor(message: string) {
     super(message);

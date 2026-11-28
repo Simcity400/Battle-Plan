@@ -3,7 +3,7 @@ import { textWidth } from '../../charts/textWidth.ts';
 import type { LaneBinding, LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
 import { barsAuditWindow, barsRangeForBand, barsScrollHeight, layoutFamilyBars, visibleBarsRange, barsScales, type BarsLayout } from './layout.ts';
-import { assertBarsModelValid, barsLabelText, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, formatBarsValueField, type BarsDataRow, type BarsModel, type BarsValueField } from './model.ts';
+import { assertBarsModelValid, barsLabelText, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, formatBarsValueField, isSingleValueOrdered, type BarsDataRow, type BarsModel, type BarsValueField } from './model.ts';
 import { collectVisibleBarsIcons, drawFamilyBars, easeBarFraction, hitFamilyBars, type BarsEasedRow, type BarsGlideOffset } from './painter.ts';
 import { hitPickList, pickAudit, pickedKey, pickNav, pickTooltip } from './pickList.ts';
 import { barsRegionRows } from './shareRows.ts';
@@ -184,13 +184,6 @@ function inspected(inspect: string | null): { readonly key: string; readonly sid
   return null;
 }
 
-function canAnimate(model: BarsModel, binding: FamilyBarsBinding): boolean {
-  return !binding.reducedMotion && !binding.motion && model.form === 'ordered' && !model.pickList
-    && !model.twoSidedLayout && model.rows.length > 0 && model.rows.some(row => row.kind === 'data')
-    && model.rows.every(row => row.kind === 'section' || (row.kind === 'data' && row.value !== undefined
-      && row.segments === undefined && !row.target && !row.left && !row.right && !row.rightSide && !row.pair && !row.readout));
-}
-
 function sameFormat(first: ValueFormat | undefined, second: ValueFormat | undefined): boolean {
   return first === second || (typeof first === 'object' && typeof second === 'object'
     && first.decimals === second.decimals && first.maxDecimals === second.maxDecimals
@@ -215,7 +208,7 @@ function sameRows(first: BarsModel, second: BarsModel): boolean {
 
 function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number): BarsFrame | false | null {
   const current = frame.model;
-  if (!canAnimate(next, frame.binding) || !sameRows(current, next)) return null;
+  if (!isSingleValueOrdered(next) || !sameRows(current, next)) return null;
   const rows: BarsModel['rows'][number][] = [];
   let changed = false;
   for (let i = 0; i < current.rows.length; i++) {
@@ -247,7 +240,7 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     return model.nextChangeAt ?? Infinity;
   },
   redraw: () => Infinity,
-  playback: { supports: canAnimate, frame: orderedMotion },
+  playback: { enabled: binding => !binding.reducedMotion && !binding.motion, supports: isSingleValueOrdered, frame: orderedMotion },
   status: model => (model.rows.length > 0 || model.empty !== undefined ? 'picture' : 'scene'),
   view: [],
   layout(model, _binding, surface, theme, measure) {
