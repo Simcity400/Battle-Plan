@@ -1350,7 +1350,8 @@ impl<P: PlaybackProducts> MapSide<P> {
             let restored = !reset && !step.gap() && self.applied == Some(step.last()) && self.epoch == step.epoch()
                 && step.first() > step.last() && !step.tables().is_empty()
                 && step.tables().iter().all(|change| change.reset() && change.renumber().is_none());
-            crossing |= self.take_step(&step, &mut frame, &mut compose, restored);
+            let (crossed, restored) = self.take_step(&step, &mut frame, &mut compose, restored);
+            crossing |= crossed;
             if restored {
                 restored_restep = restored_restep.max(step.restep());
             } else {
@@ -2073,7 +2074,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         }
     }
 
-    fn take_step(&mut self, step: &Arc<Step>, frame: &mut Frame, compose: &mut [bool], restored: bool) -> bool {
+    fn take_step(&mut self, step: &Arc<Step>, frame: &mut Frame, compose: &mut [bool], mut restored: bool) -> (bool, bool) {
         let mut reset_tables = BTreeSet::new();
         let mut compare = Vec::new();
         let mut judged: Vec<(usize, Box<Mirror>)> = Vec::new();
@@ -2104,6 +2105,8 @@ impl<P: PlaybackProducts> MapSide<P> {
                     }
                 }
                 reset_tables.insert(changes.table());
+            } else if self.declared_layers.contains_key(&changes.table()) {
+                restored = false;
             }
             if let Some(old) = changes.renumber() {
                 let moved = old.iter().enumerate().filter(|&(new, &from)| from as usize != new).count();
@@ -2118,13 +2121,13 @@ impl<P: PlaybackProducts> MapSide<P> {
         let (started, cycles) = (Instant::now(), replay_frame::cpu::thread_cycles());
         mirrors.apply_timed(step, &mut frame.mirror_tables, &mut frame.mirror_split, &mut self.views.noting(&self.layers_awake));
         for (table, old) in compare {
-            let restored = mirrors.get(TableId::ALL[table]).expect("the restored mirror");
+            let replacement = mirrors.get(TableId::ALL[table]).expect("the restored mirror");
             let read = &self.declared_layers[&table];
-            if old.same_rows(restored, read.keyed) {
+            if restored && old.same_rows(replacement, read.keyed) {
                 reset_tables.remove(&table);
                 let kinds = &self.entry.kinds()[table];
                 let changed: Vec<_> = read.columns.iter().copied()
-                    .filter(|&column| !old.same_column(restored, column, kinds[column])).collect();
+                    .filter(|&column| !old.same_column(replacement, column, kinds[column])).collect();
                 for (wanted, declared) in compose.iter_mut().zip(&self.declared_each) {
                     *wanted |= declared.as_ref().and_then(|(reads, _)| reads.get(&table))
                         .is_some_and(|read| read.columns.iter().any(|column| changed.contains(column)));
@@ -2167,7 +2170,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         for (wanted, reads) in compose.iter_mut().zip(&self.reads) {
             *wanted |= reads.as_ref().is_ok_and(|tables| step.reset() || tables.iter().any(|table| reset_tables.contains(table)));
         }
-        crossing
+        (crossing, restored)
     }
 
     fn compose_here(&mut self, compose: &[bool], frame: &mut Frame) {
