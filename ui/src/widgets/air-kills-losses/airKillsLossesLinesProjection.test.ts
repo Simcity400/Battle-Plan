@@ -215,6 +215,14 @@ test('unrecorded air losses stay not recorded with their reason, never zero or b
   assert.deepEqual(model.auditRows?.map(r => r.value), ['Aircraft loss events were not recorded at this hour']);
 });
 
+test('a recorded hour without ranked losses publishes a settled empty roster', () => {
+  const recorded = createBoundedReadView({ hour: displayedHour(100), panels: new Map([['head', airReply({ rows: [] })]]) });
+  const pending = createBoundedReadView({ hour: displayedHour(100) });
+  const options = makeOptions();
+  assert.deepEqual(airKillsLossesLinesProjection.project(recorded, options).followedTileRanks, { head: { tags: [], refused: null } });
+  assert.equal(airKillsLossesLinesProjection.project(pending, options).followedTileRanks, undefined);
+});
+
 test('hover detail scopes requests and rows to dated eligible slots and preserves absent countries as missing', () => {
   const k1 = countryKey(1);
   const k2 = countryKey(2);

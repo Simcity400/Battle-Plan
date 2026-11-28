@@ -702,6 +702,40 @@ describe('time-chart legend art', () => {
 });
 
 describe('time-chart laneView integration', () => {
+  it('publishes stable tile rank structure as values move and omits it for other charts', () => {
+    registerFamilyProjection({
+      kind: 'tile-rank-test',
+      family: 'time-chart',
+      variant: 'line',
+      measureTitle: 'Total',
+      project({ hour }, { follow }: { follow: boolean }): TimeChartModel {
+        const tags = hour < 102 ? ['GER', 'ITA'] : ['ITA', 'GER'];
+        return { kind: 'tile-rank-test', measureTitle: 'Total', mode: 'lines', hour, extent: [90, 110],
+          yAxis: { format: 'number' }, series: [{ id: 'GER', key: 'GER', name: 'Germany', color: '#ff0000',
+            role: 'primary', points: [{ hour, value: hour }], headValue: hour, headHour: hour }],
+          ...(follow ? { followedTileRanks: { head: { tags, refused: null } } } : {}) };
+      },
+    });
+    const created = mockCanvas(600, 240), lane = laneOn(created);
+    const state = new Map<string, unknown>(), transport = new LaneTransport();
+    let seq = 0;
+    const draw = (hour: number, follow: boolean) => lane.paint({
+      widget: 1, subs: [], pictures: [], hour, seek: 0, speed: 24, inspect: null, now: 0,
+      model: transport.carry({ family: 'time-chart', kind: 'tile-rank-test', options: { follow }, sources: {},
+        extent: [90, 110], width: 600, height: 240, scrollTop: 0, theme: LANE_THEME } as TimeChartBinding),
+      binding: { generation: 1, surfaces: [{ width: 600, height: 240, dpr: 1 }], offset: 0, pin: null },
+    }, state, () => `rank${++seq}`).fields;
+    const first = draw(100, true)['model:tile-rank'];
+    assert.deepEqual(first?.value, { head: { tags: ['GER', 'ITA'], refused: null } });
+    assert.equal(draw(101, true)['model:tile-rank']?.content, first?.content, 'different values do not change the rank structure');
+    const reordered = draw(102, true)['model:tile-rank'];
+    assert.deepEqual(reordered?.value, { head: { tags: ['ITA', 'GER'], refused: null } });
+    assert.notEqual(reordered?.content, first?.content, 'rank order is structure');
+    const ordinary = draw(103, false);
+    assert.ok(ordinary.drawnKeys && ordinary.meta && ordinary.nav);
+    assert.equal(ordinary['model:tile-rank'], undefined);
+  });
+
   it('paints a registered chart over BoundedReadView with LaneArtCache demands, hit-tests lines, emits tooltip and audit rows', () => {
     registerFamilyProjection({
       kind: 'test-pp',

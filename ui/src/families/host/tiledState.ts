@@ -71,7 +71,8 @@ export function chartTileLane(
         },
       }
     : undefined;
-  return { key: laneKey, tags: laneTags, within: read.within, lastHour, ask, prepared, promote, ...(top ? { top } : {}) };
+  return { key: laneKey, tags: laneTags, within: read.within, lastHour, ask, prepared, promote,
+    ...(top ? { top, ...(read.followRank === undefined ? {} : { followRank: read.followRank }) } : {}) };
 }
 
 export type TiledSeriesMap = Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;

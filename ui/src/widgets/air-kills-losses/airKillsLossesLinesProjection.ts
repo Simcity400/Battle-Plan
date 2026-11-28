@@ -217,7 +217,8 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
     const view = chartWindow(options.settings, hour, options.extent[0]);
     const top = options.top !== null;
 
-    const refused = readView.refused('head') ?? (top ? (readView.refused('dealt') ?? readView.refused('taken')) : undefined);
+    const headRefused = readView.refused('head');
+    const refused = headRefused ?? (top ? (readView.refused('dealt') ?? readView.refused('taken')) : undefined);
     if (refused) {
       return {
         kind: 'air-kills-losses',
@@ -228,6 +229,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         ...(view ? { view } : {}),
         yAxis,
         series: [],
+        ...(top && headRefused ? { followedTileRanks: { head: { tags: [], refused: headRefused } } } : {}),
         drawnKeys: NO_DRAWN_KEYS,
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
         empty: { message: refused, kind: 'unavailable' },
@@ -239,6 +241,8 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
     const head = headPanel ? validateMilitaryAirAt(headPanel) : undefined;
     const dealtSeries = readView.series('dealt');
     const takenSeries = readView.series('taken');
+    const rankRefused = head?.missing ?? head?.rankMissing ?? null;
+    const rank = top && head ? { followedTileRanks: { head: { tags: rankRefused ? [] : head.rows.map(slotKeyOf), refused: rankRefused } } } : {};
 
     if (head && head.missing !== null) {
       return {
@@ -250,6 +254,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         ...(view ? { view } : {}),
         yAxis,
         series: [],
+        ...rank,
         drawnKeys: NO_DRAWN_KEYS,
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
         warnings: head.warnings,
@@ -258,7 +263,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
       };
     }
 
-    if (top && head && head.rankMissing !== null && head.rows.length === 0) {
+    if (top && head && head.rankMissing !== null) {
       const note = unattributedNote(head);
       return {
         kind: 'air-kills-losses',
@@ -269,6 +274,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         ...(view ? { view } : {}),
         yAxis,
         series: [],
+        ...rank,
         drawnKeys: NO_DRAWN_KEYS,
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
         summaryText: AIR_LEDGER_NOTE,
@@ -394,6 +400,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         ...(view ? { view } : {}),
         yAxis,
         series: [],
+        ...rank,
         drawnKeys: NO_DRAWN_KEYS,
         legend,
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
@@ -424,6 +431,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
       legend,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       hoverDetail,
+      ...rank,
       summaryText: AIR_LEDGER_NOTE,
       ...(note ? { note } : {}),
       warnings,
@@ -482,7 +490,7 @@ export const airKillsLossesLinesDeclaration: TimeChartWidgetDeclaration<AirKills
         family: tileFamily(name) as unknown as Readonly<Record<string, unknown>>,
         tags,
         ...(within ? { within } : {}),
-        ...(top !== null ? { top: { n: top } } : {}),
+        ...(top !== null ? { top: { n: top }, followRank: 'head' } : {}),
         headQuery: null,
       },
     });

@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict';
+﻿import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SeriesTileReply } from '../../generated/dashboard';
 import { countryFromKey, countryKey } from '../countryKey.ts';
@@ -324,6 +324,22 @@ test('a failing top-rank read does not re-ask the same hour when setHour runs ag
   assert.deepEqual(asked, [100, 200, 200], 'retry() re-asks the failed top-rank hour');
   assert.equal(view.error, null);
   assert.deepEqual([...view.current!.keys()], ['GER']);
+  view.close();
+
+  fail = true;
+  const errors: unknown[] = [];
+  const followed = new TileView(cache, { ...top, followRank: 'head' }, () => errors.push(followed.error));
+  followed.setView({ from: 0, to: 8759, end: 8759, width: 600 });
+  followed.setHour(300);
+  await settle();
+  assert.ok(errors.at(-1) instanceof Error);
+  followed.setHour(301, true);
+  assert.equal(errors.at(-1), null, 'Play clears an exact rank error before it can block the followed head');
+  followed.setFollowedRank(301, { tags: ['GER'], refused: null, hour: 301, from: 301, until: 301 });
+  await settle();
+  assert.equal(followed.settled, true);
+  assert.deepEqual(asked, [100, 200, 200, 300]);
+  followed.close();
 });
 
 test('a top whose lines stay the same still tells the chart when its refusal or failure clears', async () => {
@@ -604,4 +620,58 @@ test('a top tile view survives an empty first window, stays quiet through the se
   assert.deepEqual(topAsked, [50, 101, 201]);
   stopWatch();
   view.close();
+});
+
+test('followed ranks ask only for newly needed keys and match exactly ranked tiles', async () => {
+  const viewport = { from: 80, to: 125, end: 125, width: 100 };
+  const before = { tags: ['GER', 'ITA'], hour: 100, from: 100, until: 110, refused: null };
+  const after = { tags: ['ITA', 'JAP'], hour: 111, from: 111, until: 115, refused: null };
+  const reordered = { tags: ['JAP', 'ITA'], hour: 116, from: 116, until: 120, refused: null };
+  const refused = { tags: [], hour: 121, from: 121, until: 125, refused: 'Rank input was not recorded' };
+  const rankAt = (hour: number) => hour >= 121 ? refused : hour >= 116 ? reordered : hour >= 111 ? after : before;
+  const make = (tags: readonly string[], binHours: number, index: number) =>
+    reply(tags, binHours, index, LAST, (at, hour) => value(TAGS.indexOf(tags[at]!), hour));
+  const calls: string[][] = [];
+  let rankedRequests = 0, exactRequests = 0;
+  const exact = new TileView(new TileCache(1024 * 1024), {
+    key: 'rank-test', tags: [], lastHour: LAST,
+    ask: async (binHours, index, tags) => make(tags, binHours, index),
+    top: { ask: async (binHours, index, hour) => {
+      exactRequests++;
+      const rank = rankAt(hour);
+      return { ...make(rank.tags, binHours, index), ranking: { ...rank, hour } };
+    } },
+  }, () => {});
+  const followed = new TileView(new TileCache(1024 * 1024), {
+    key: 'rank-test', tags: [], lastHour: LAST, followRank: 'head',
+    ask: async (binHours, index, tags) => { calls.push([...tags]); return make(tags, binHours, index); },
+    top: { ask: async (binHours, index, hour) => {
+      rankedRequests++;
+      const rank = rankAt(hour);
+      return { ...make(rank.tags, binHours, index), ranking: { ...rank, hour } };
+    } },
+  }, () => {});
+  const choices = (view: TileView) => [...(view.current ?? [])].map(([tag, line]) => [tag, line.summary.buckets]);
+  exact.setView(viewport);
+  followed.setView(viewport);
+  for (const hour of [100, 105, 111, 116, 121]) {
+    exact.setHour(hour);
+    followed.setHour(hour, true);
+    followed.setFollowedRank(hour, { ...rankAt(hour), hour });
+    await settle();
+    assert.deepEqual(choices(followed), choices(exact), `same picture at ${hour}`);
+    assert.equal(followed.top?.refused, exact.top?.refused);
+  }
+  assert.equal(rankedRequests, 0);
+  assert.equal(exactRequests, 4);
+  assert.deepEqual(calls, [['GER', 'ITA'], ['JAP']]);
+  followed.setFollowedRank(126, after);
+  assert.equal(followed.top, null, 'an earlier rank cannot cross a gap or its proof');
+  assert.deepEqual(choices(followed), []);
+  followed.setHour(116);
+  await settle();
+  assert.equal(rankedRequests, 1, 'paused reads still ask the ranked product');
+  assert.deepEqual([...followed.current!.keys()], reordered.tags);
+  exact.close();
+  followed.close();
 });
