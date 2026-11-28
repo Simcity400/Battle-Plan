@@ -32,7 +32,7 @@ const BAND_OPACITY: Readonly<Record<SupplyState, number>> = {
 };
 
 const PERCENT_TICKS = [0, 50, 100] as const;
-const SHARE_DECIMALS = 5;
+const SHARE_DECIMALS = 12;
 const DIVISIONS = 'divisions';
 
 export interface SupplyHealthOptions {

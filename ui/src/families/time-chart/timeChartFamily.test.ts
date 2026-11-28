@@ -2161,13 +2161,14 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     const hour = base + 90;
     const hoverAt = base + 50;
 
-    const supplyAnswer = parseFollowed(message(hour, [{
-      id: 1,
-      answer: { keys: [1n], names: ['GER'], columns: 1, values: [14_500n], states: [0] },
-    }])).answers[0]!.answer;
+    const supplyAnswers = parseFollowed(message(hour, [
+      { id: 1, answer: { keys: [1n], names: ['GER'], columns: 1, values: [1_000_000_000_000n], states: [0] } },
+      { id: 2, answer: { keys: [1n], names: ['GER'], columns: 1, values: [0n], states: [2], reasons: ['Supply operands were not recorded'] } },
+      { id: 3, answer: { notRecorded: 'Supply health was withheld' } },
+    ])).answers;
     const supplyModel = supplyHealthProjection.project(createBoundedReadView({
       hour,
-      answers: new Map([['inSupply', supplyAnswer]]),
+      answers: new Map([['inSupply', supplyAnswers[0]!.answer], ['strained', supplyAnswers[1]!.answer], ['noSupply', supplyAnswers[2]!.answer]]),
       hovers: new Map([['hover', {
         hour: hoverAt,
         data: {
@@ -2179,9 +2180,9 @@ describe('stacked bounded series, supply health, and ruling party', () => {
             { name: 'inSupply', decimals: 0 },
             { name: 'strained', decimals: 0 },
             { name: 'noSupply', decimals: 0 },
-            { name: 'inSupplyShare', decimals: 5 },
-            { name: 'strainedShare', decimals: 5 },
-            { name: 'noSupplyShare', decimals: 5 },
+            { name: 'inSupplyShare', decimals: 12 },
+            { name: 'strainedShare', decimals: 12 },
+            { name: 'noSupplyShare', decimals: 12 },
           ],
           rows: [{
             country: 'GER',
@@ -2190,18 +2191,19 @@ describe('stacked bounded series, supply health, and ruling party', () => {
               { hour: hoverAt, run: { valueRaw: '14' }, missing: null },
               { hour: hoverAt, run: { valueRaw: '3' }, missing: null },
               { hour: hoverAt, run: { valueRaw: '83' }, missing: null },
-              { hour: hoverAt, run: { valueRaw: '14500' }, missing: null },
-              { hour: hoverAt, run: { valueRaw: '2850' }, missing: null },
-              { hour: hoverAt, run: { valueRaw: '82650' }, missing: null },
+              { hour: hoverAt, run: { valueRaw: '145000000000' }, missing: null },
+              { hour: hoverAt, run: { valueRaw: '28500000000' }, missing: null },
+              { hour: hoverAt, run: { valueRaw: '826500000000' }, missing: null },
             ],
           }],
           warnings: [],
         },
       }]]),
     }), { surface: '#111111', subject: 'GER', extent: [base, base + 95], gaps: [] });
-    const inSupplyBand = supplyModel.stack!.bands.find(b => b.id === 'inSupply')!;
-    assert.equal(inSupplyBand.endLabel?.value, '14%', '14,500/100,000 exact share truncates to 14%');
-    assert.equal(supplyModel.auditRows?.find(r => r.row === 'inSupply')?.value, '14%');
+    assert.deepEqual(supplyModel.stack!.bands.map(band => band.endLabel?.value), [undefined, undefined, '100%']);
+    assert.deepEqual(supplyModel.auditRows?.map(row => [row.row, row.value]), [
+      ['noSupply', 'Supply health was withheld'], ['strained', 'Supply operands were not recorded'], ['inSupply', '100%'],
+    ]);
     assert.equal(supplyModel.hoverDetail?.items.find(i => i.label === 'In supply')?.value, '14% · 14 divisions');
     assert.equal(supplyModel.hoverDetail?.items.find(i => i.label === 'Strained')?.value, '2.8% · 3 divisions');
 
