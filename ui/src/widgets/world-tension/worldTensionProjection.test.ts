@@ -120,6 +120,13 @@ describe('world-tension projections', () => {
     assert.deepEqual(tensionStackAt(history, edge), full);
     assert.equal(tensionStackAt({ ...history, branchId: '2' }, edge), null);
     assert.equal(tensionStackAt({ ...history, pieceStart: H1936 }, edge), null);
+
+    const options = { extent: [H1936, H1941] as const, surface: '#111111', gaps: [] };
+    const at = (panels: [string, WorldTensionStackReply][]) => worldTensionLinesProjection.project(
+      createBoundedReadView({ hour: H1941, panels: new Map(panels), identity: makeIdentity() }), options,
+    );
+    assert.deepEqual(at([['history', history], ['main', edge]]), at([['main', full]]));
+    assert.deepEqual(at([['history', { ...history, pieceStart: H1936 }], ['main', edge]]).series, []);
   });
   it('hovers only installed contributors and Other in Share mode and withholds pre-membership readings', () => {
     const at = H1936 + 5;
@@ -155,6 +162,14 @@ describe('world-tension projections', () => {
     } as unknown as FamilyPlanContext;
     const bounds = { width: 800, height: 300, following: false, staticSpan: null };
     const plan = worldTensionDeclaration.sources(ctx, bounds);
+    const followedLines = worldTensionLinesDeclaration.sources(ctx, { ...bounds, following: true });
+    assert.equal(followedLines.entries.filter(entry => entry.read.shape === 'branch-to-hour').length, 0);
+    assert.deepEqual(followedLines.entries.flatMap(({ name, read }) => read.shape === 'point' && read.channel === 'panel'
+      ? [[name, read.followQuery?.piece, read.hourParam]] : []), [
+      ['history', 'history', 'lastHour'], ['main', 'edge', 'lastHour'],
+    ]);
+    const pausedLines = worldTensionLinesDeclaration.sources(ctx, bounds);
+    assert.equal(pausedLines.entries.filter(entry => entry.read.shape === 'branch-to-hour').length, 1);
     assert.deepEqual(hoverAsks(plan, at, name => stack.drawnKeys?.[name])[0]?.request.params,
       { branchId: '1', values: 'share', group: null, countries: [1], hour: at });
     assert.deepEqual(hoverAsks(plan, at, () => [])[0]?.request.params,
