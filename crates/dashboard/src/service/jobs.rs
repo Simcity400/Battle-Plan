@@ -30,7 +30,7 @@ pub(super) fn product_lane(product: &str, params: &serde_json::Value) -> Lane {
 
 fn work(content_dependent: bool, request: &Arc<Request>) -> dashboard_base::source::Work {
     if content_dependent {
-        dashboard_base::source::Work::Content(Arc::clone(request) as Arc<dyn dashboard_base::presentation::Cancel>)
+        dashboard_base::source::Work::Content(Arc::clone(&request.cancelled) as Arc<dyn dashboard_base::presentation::Cancel>)
     } else {
         dashboard_base::source::Work::Recorded
     }
@@ -552,7 +552,7 @@ impl Inner {
         }
     }
 
-    fn run_job(&self, job: LoadJob, lane: Lane) {
+    fn run_job(self: &Arc<Self>, job: LoadJob, lane: Lane) {
         let _ = lane;
         match job {
             LoadJob::HistoryChoice {
@@ -581,13 +581,17 @@ impl Inner {
                 lease_id,
                 source,
                 body,
+                resumed,
             } => {
                 if request.cancelled() {
                     return;
                 }
                 let mut keep = None;
                 let result = if products::find(&body.product).is_some() {
-                    self.product(&request, &lease_id, &source, body)
+                    match self.product(&request, &lease_id, &source, body, resumed).transpose() {
+                        Some(result) => result,
+                        None => return,
+                    }
                 } else {
                     self.answer(&request, &lease_id, &source, &body, &mut keep)
                 };
@@ -605,22 +609,36 @@ impl Inner {
     }
 
     fn product(
-        &self,
+        self: &Arc<Self>,
         request: &Arc<Request>,
         lease_id: &str,
         source: &Arc<Source>,
         body: ProductRequest,
-    ) -> Result<String, dashboard_core::QueryError> {
+        resumed: Option<Box<LoadContext>>,
+    ) -> Result<Option<String>, dashboard_core::QueryError> {
         let Some(product) = products::find(&body.product) else {
             return Err(format!("Unknown data product: {}", body.product).into());
         };
+        if let Some(context) = resumed {
+            return (product.load)(source, lease_id, body.params, &context, &request.cancelled).map(Some);
+        }
         let context = LoadContext {
             content: self.content_for(source, work(product.content_dependent, request)),
         };
-        if product.key == "battle-names" && let Some(branch) = body.params.get("branchId").and_then(|id| id.as_str()).and_then(|id| id.parse().ok()) {
-            crate::products::battle_names::ahead(source, branch, &context)?;
+        if let Some(prepare) = product.prepare && let Some(pending) = prepare(source, &body.params, &context)? {
+            let (service, parked) = (Arc::downgrade(self), Arc::downgrade(request));
+            let (lease_id, source) = (lease_id.to_owned(), Arc::clone(source));
+            let resumed = Some(Box::new(context));
+            request.park(&pending, Box::new(move |result| {
+                let (Some(service), Some(request)) = (service.upgrade(), parked.upgrade()) else { return };
+                match result {
+                    Ok(()) => service.submit(Arc::clone(&request), LoadJob::Product { request, lease_id, source, body, resumed }),
+                    Err(error) => service.error(request, error.into()),
+                }
+            }));
+            return Ok(None);
         }
-        (product.load)(source, lease_id, body.params, &context, &request.cancelled)
+        (product.load)(source, lease_id, body.params, &context, &request.cancelled).map(Some)
     }
 
     fn answer(
@@ -728,6 +746,16 @@ impl Inner {
                     let json = bounded_json(&reply, &job.request.cancelled);
                     match json {
                         Ok(json) => {
+                            if let Some(branch) = source.replay_ref().timelines().map(|timelines| timelines.main) {
+                                let view = reply.metadata.player_country_id.as_deref().and_then(|id| id.parse().ok()).map(dashboard_base::products::Country::Slot);
+                                let source = Arc::downgrade(&source);
+                                let _ = dashboard_base::products::read_ahead::spawn("war timeline open", move || {
+                                    job_priority::background_thread();
+                                    if let Some(source) = source.upgrade() {
+                                        source.in_scope(|| dashboard_wars::products::wars::warm(&source, branch, view.as_ref()));
+                                    }
+                                });
+                            }
                             pending.leases.insert(
                                 id.clone(),
                                 Lease {
@@ -853,6 +881,7 @@ pub(super) enum LoadJob {
         lease_id: String,
         source: Arc<Source>,
         body: ProductRequest,
+        resumed: Option<Box<LoadContext>>,
     },
 }
 
@@ -891,6 +920,28 @@ impl LoadJob {
 #[cfg(test)]
 mod lane_tests {
     use super::*;
+
+    #[test]
+    fn a_resumed_product_uses_its_admitted_context_after_rebinding() {
+        use dashboard_base::test_fixtures::{source, source_with_content, visual_mods};
+        let game = visual_mods::Machine::new(&uuid::Uuid::new_v4().to_string());
+        let (source, load) = source_with_content(vec![source(1, 100, Some(1))], &game.root);
+        let source = Arc::new(source);
+        let content = load.content.as_ref().unwrap();
+        source.bind(Some((&content.options, content.allow_unverified)), Default::default());
+        let service = super::super::Service::new(Arc::new(|_| true)).unwrap();
+        let request = Request::new("titles".into());
+        let context = LoadContext { content: source.admit_resolved(work(true, &request)) };
+        assert!(source.bind(None, Default::default()));
+        let reply = service.inner.product(&request, "fixture", &source, ProductRequest {
+            source_id: "fixture".into(),
+            revision: source.key().revision.clone(),
+            product: "battle-names".into(),
+            params: serde_json::json!({"branchId": "1", "battles": ["result:77"]}),
+        }, Some(Box::new(context))).unwrap().unwrap();
+        let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply["data"]["titles"]["result:77"]["missing"], "Battle identity not recorded");
+    }
 
     #[test]
     fn strips_use_non_interactive_reply_workers() {

@@ -426,9 +426,10 @@ impl SharedInterface {
                 GameWindowError::failed(format!("Could not determine game language: {error}"))
             })?,
         };
-        let localisation = Arc::new(localisation::read(layers, &selected).map_err(|error| {
-            GameWindowError::failed(format!("Could not load game localisation: {error}"))
-        })?);
+        let localisation = localisation::read_shared(layers, &selected, localisation::read)
+            .map_err(|error| {
+                GameWindowError::failed(format!("Could not load game localisation: {error}"))
+            })?;
         let language = if localisation.language.is_empty() {
             selected
         } else {

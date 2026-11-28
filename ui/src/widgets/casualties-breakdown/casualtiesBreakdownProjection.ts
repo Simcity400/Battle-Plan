@@ -61,5 +61,5 @@ export const casualtiesBreakdown: BreakdownWidgetSpec<CasualtiesBreakdownOptions
   countries: { mode: 'single', choose: 'Choose a country to see the casualties it took.' },
   projection: casualtiesBreakdownProjection,
   projectionOptions: () => ({}),
-  sources: ctx => breakdownAtHourSource(ctx, 'casualty-breakdown', {}, validate),
+  sources: ctx => ({ ...breakdownAtHourSource(ctx, 'casualty-breakdown', {}, validate), loadingLabel: 'Loading wars…' }),
 };

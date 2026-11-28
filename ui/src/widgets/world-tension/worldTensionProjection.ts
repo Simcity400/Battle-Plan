@@ -483,6 +483,29 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
   },
 }, 'tension');
 
+export function worldTensionStackSources(
+  ctx: FamilyPlanContext,
+  following: boolean,
+  params: Readonly<Record<string, unknown>>,
+): SourcePlan['entries'] {
+  const location = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
+  const coverage = { mode: 'population', form: 'all' } as const;
+  const product = 'world-tension-stack';
+  return following
+    ? (['history', 'edge'] as const).map(piece => {
+        const part = { ...params, piece, firstHour: ctx.branch.firstHour };
+        return { ...location, name: piece === 'history' ? 'history' : 'main', read: {
+          shape: 'point', channel: 'panel', coverage, product,
+          followQuery: { panel: product, ...part }, params: part, hourParam: 'lastHour', validate: validateWorldTensionStack,
+        } };
+      })
+    : [{ ...location, name: 'main', read: {
+        shape: 'branch-to-hour', coverage, product, followQuery: null, params,
+        dynamicKeys: ['firstHour', 'lastHour', 'width'], validate: validateWorldTensionStack,
+        provenInterval: (data, _requested, hour) => [hour, ((data as WorldTensionStackReply).nextChangeHour ?? Infinity) - 1],
+      } }];
+}
+
 export const worldTensionDeclaration: TimeChartWidgetDeclaration<WorldTensionChartOptions> = {
   family: 'time-chart',
   kind: 'world-tension',
@@ -501,26 +524,10 @@ export const worldTensionDeclaration: TimeChartWidgetDeclaration<WorldTensionCha
     const width = Math.max(240, Math.min(2400, Math.ceil(view.width ?? 1024)));
     const includeEvents = ctx.options.markers !== false;
     const params = { branchId: ctx.branch.id, layers, values, countries, top, group, width, includeStack: true, includeEvents };
-    const location = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
-    const coverage = { mode: 'population', form: 'all' } as const;
-    const product = 'world-tension-stack';
-    const stack: SourcePlan['entries'] = view.following
-      ? (['history', 'edge'] as const).map(piece => {
-          const part = { ...params, piece, firstHour: ctx.branch.firstHour };
-          return { ...location, name: piece === 'history' ? 'history' : 'main', read: {
-            shape: 'point', channel: 'panel', coverage, product,
-            followQuery: { panel: product, ...part }, params: part, hourParam: 'lastHour', validate: validateWorldTensionStack,
-          } };
-        })
-      : [{ ...location, name: 'main', read: {
-          shape: 'branch-to-hour', coverage, product, followQuery: null, params,
-          dynamicKeys: ['firstHour', 'lastHour', 'width'], validate: validateWorldTensionStack,
-          provenInterval: (data, _requested, hour) => [hour, ((data as WorldTensionStackReply).nextChangeHour ?? Infinity) - 1],
-        } }];
     return {
       owner: `world-tension:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
       entries: [
-        ...stack,
+        ...worldTensionStackSources(ctx, view.following, params),
         {
           name: 'hover',
           source: ctx.track.source,

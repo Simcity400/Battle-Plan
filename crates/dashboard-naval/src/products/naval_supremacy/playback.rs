@@ -105,7 +105,7 @@ pub fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<
             let next = query.timeline.stretches.partition_point(|stretch| stretch.first <= hour);
             return query.timeline.stretches.get(next).map_or(end, |stretch| end.min(stretch.first.saturating_sub(1)));
         };
-        if reply.dated_refusal { return hour; }
+        if reply.exact_hour_only { return hour; }
         let holder = query.holders.at(&params.country, hour);
         let viewer = holder.and_then(|holder| match holder.holder { Holder::Found { slot, .. } => Some(slot), _ => None });
         let mut changes = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -122,7 +122,15 @@ pub fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<
         let identity = holder.map_or_else(|| at_hour::before(query.holders.next_change(hour)), |holder| holder.last);
         through.min(identity).min(at_hour::before(styles.next_for(&tag, hour)))
     }, move |data, hour| date(data, if start(hour) <= last { last.min(hour) } else { hour }),
-        |source, params, load, cancelled, step| NavalSupremacy::answer(source, params, load, cancelled, Some(step)))?;
+        |source, params, load, cancelled, step| {
+            let full_day = step.step.is_some_and(|input| {
+                let step = input.step;
+                !step.gap() && step.last().saturating_sub(step.first()) >= DAY - 1
+            });
+            let mut reply = NavalSupremacy::answer(source, params, load, cancelled, Some(step))?;
+            reply.exact_hour_only |= full_day;
+            Ok(reply)
+        })?;
     let exact = panel.exact().expect("a dated panel has an exact reader");
     let advance = at_hour::shared_reader(source, load, NavalSupremacy::KEY, asked, || exact.advance.clone());
     Ok(at_hour::product_panel(advance, exact.cold.clone()))

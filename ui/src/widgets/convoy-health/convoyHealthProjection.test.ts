@@ -109,7 +109,7 @@ test('a lend-lease route stays a status in the lane, the readout and the tooltip
   assert.ok(!tip.items?.some(item => item.label === 'Efficiency'), 'no measured efficiency is claimed');
 });
 
-test('both convoy views follow today and ask for the same closed days on a pin or audit', async () => {
+test('both convoy views follow every history tile and ask for the same closed days on a pin or audit', async () => {
   const { convoyHealthDeclaration } = await import('./convoyHealthProjection.ts');
   const { DAY_TILE_HOURS } = await import('../../families/heat/dayTiles.ts');
   const branch = { id: '1', firstHour: 5, lastHour: DAY_TILE_HOURS + 60 };
@@ -123,7 +123,9 @@ test('both convoy views follow today and ask for the same closed days on a pin o
         assert.equal(read.followQuery?.panel, 'convoy-health');
         assert.equal(read.followQuery.listFrom, view === 'trade' ? 5 : undefined);
       } else {
-        assert.equal(read.followQuery, null);
+        assert.equal(read.followQuery?.panel, 'convoy-health');
+        const span = name === 'tile:0' ? [5, DAY_TILE_HOURS - 1] : [DAY_TILE_HOURS, DAY_TILE_HOURS + 47];
+        assert.deepEqual([read.followQuery.from, read.followQuery.to], span);
       }
       const exact = (hour: number) => read.buildExactParams!(read.params!, hour as never, 'exact');
       const first = exact(10);

@@ -11,7 +11,8 @@ import type { ChartGap, ChartInlinePoint, TimeChartModel, TimeChartSeriesModel }
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
 import { formatRational, formatRecordedPercent } from '../../families/valueFormat.ts';
 import type { WorldTensionStackReply } from '../../generated/dashboard';
-import { tensionBandLooks, tensionHover, validateWorldTensionHover, validateWorldTensionStack } from './worldTensionProjection.ts';
+import { tensionBandLooks, tensionHover, validateWorldTensionHover, worldTensionStackSources } from './worldTensionProjection.ts';
+import { tensionStackAt } from './stackHistory.ts';
 
 const TOP_NAMED = 8;
 
@@ -41,7 +42,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
   measureTitle: 'Contribution to world tension',
   project(readView: BoundedReadView, options: WorldTensionLinesOptions): TimeChartModel {
     const hour = readView.hour;
-    const reply = readView.panel<WorldTensionStackReply>('main');
+    const reply = tensionStackAt(readView.panel<WorldTensionStackReply>('history') ?? null, readView.panel<WorldTensionStackReply>('main') ?? null);
     if (!reply) {
       return {
         kind: 'world-tension',
@@ -192,34 +193,16 @@ export const worldTensionLinesDeclaration: TimeChartWidgetDeclaration<WorldTensi
     return {
       owner: `world-tension-lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
       entries: [
-        {
-          name: 'main',
-          source: ctx.track.source,
-          branch: ctx.branch.id,
-          offset: ctx.track.axisOffset,
-          read: {
-            shape: 'branch-to-hour',
-            coverage: { mode: 'population', form: 'all' },
-            product: 'world-tension-stack',
-            followQuery: null,
-            params: {
-              branchId: ctx.branch.id,
-              values: 'recorded',
-              countries,
-              top,
-              group,
-              width,
-              includeStack: true,
-              includeEvents: false,
-            },
-            dynamicKeys: ['firstHour', 'lastHour', 'width'],
-            validate: validateWorldTensionStack,
-            provenInterval: (data, _requested, hour) => {
-              const reply = data as WorldTensionStackReply;
-              return reply.nextChangeHour !== null ? [hour, reply.nextChangeHour - 1] : [hour, Infinity];
-            },
-          },
-        },
+        ...worldTensionStackSources(ctx, view.following, {
+          branchId: ctx.branch.id,
+          values: 'recorded',
+          countries,
+          top,
+          group,
+          width,
+          includeStack: true,
+          includeEvents: false,
+        }),
         {
           name: 'hover',
           source: ctx.track.source,

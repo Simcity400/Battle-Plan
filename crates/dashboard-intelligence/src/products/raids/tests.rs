@@ -881,9 +881,20 @@ fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps
             vec![target_row(1, scope.clone(), 40)],
         ),
     ];
+    let mut long = frames.clone();
+    let tail_end = 13 + replay_columnar::unit::BLOCK as i32;
+    long.extend((13..tail_end).map(|hour| make_frame(1, hour, countries.clone(), 20, TableView::Complete(TableRows::Raids(vec![])), vec![])));
+    let long = make_source(long);
     let source = make_source(frames);
     let ctx = LoadContext { content: None };
     let cancel = AtomicBool::new(false);
+
+    let at_success = RaidTallyParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], top: None, metric: RaidTallyMetric::Both, hour: 12 };
+    let (short_reply, short_reads) = replay_recording::cells::count_reads(|| RaidTally::load(&source, &at_success, &ctx, &cancel).unwrap());
+    let (long_reply, long_reads) = replay_recording::cells::count_reads(|| RaidTally::load(&long, &at_success, &ctx, &cancel).unwrap());
+    let lexical_steps = |reads: &replay_recording::cells::ReadCounts| reads[&TableId::LexicalTokens].stretches;
+    assert_eq!(lexical_steps(&long_reads), lexical_steps(&short_reads), "the raid-free tail needs no lexical history");
+    assert_eq!(serde_json::to_value(long_reply).unwrap(), serde_json::to_value(short_reply).unwrap());
 
     let at_10 = RaidTally::load(
         &source,

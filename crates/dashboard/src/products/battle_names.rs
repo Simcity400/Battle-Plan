@@ -1,11 +1,11 @@
-use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, Product}, queries};
+use dashboard_base::{Source, catalogue::{self, Catalogue}, presentation::Cancel, products::{LoadContext, Product, read_ahead::{Preparation, Prepare}}, queries};
 use dashboard_naval::products::naval::battles::{battle_id, tail as naval};
 use dashboard_land::products::land_battles::tail as land;
 use dashboard_query::{Query, read::Keys};
 use dashboard_world::products::place_names::{Content, PlaceHistory};
 use dashboard_text::metadata::check_cancel;
 use serde::{Deserialize, Serialize};
-use std::{collections::{BTreeMap, HashMap}, io, sync::{Arc, OnceLock, PoisonError, atomic::AtomicBool}};
+use std::{collections::{BTreeMap, HashMap}, io, sync::{Arc, OnceLock, PoisonError, atomic::{AtomicBool, Ordering}}};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -153,34 +153,55 @@ struct Cached {
     branches: HashMap<u64, Arc<Names>>,
 }
 
-type Build = Arc<OnceLock<io::Result<Arc<Names>>>>;
+#[derive(Default)]
+struct Build {
+    ready: Arc<Preparation>,
+    names: OnceLock<Arc<Names>>,
+}
 
 #[derive(Default)]
-struct Ahead(u64, HashMap<u64, Build>);
+struct Ahead(u64, HashMap<u64, Arc<Build>>);
 
-pub fn ahead(source: &Arc<Source>, branch: u64, load: &LoadContext) -> io::Result<Option<Arc<Names>>> {
-    let Some(content) = &load.content else { return read(source, branch, load, &false.into()).map(Some) };
+fn start(source: &Arc<Source>, branch: u64, load: &LoadContext, retry: bool) -> io::Result<Option<Arc<Build>>> {
+    let Some(content) = &load.content else { return Ok(None) };
     let generation = content.presentation.binding().generation;
     let state = source.state::<Ahead>();
     let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
+    check_cancel(content.presentation.binding().flag())?;
     if held.0 != generation { *held = Ahead(generation, HashMap::new()); }
-    if let std::collections::hash_map::Entry::Vacant(slot) = held.1.entry(branch) {
-        let build = Build::default();
-        let (source, load, pending) = (Arc::downgrade(source), LoadContext { content: Some(content.clone()) }, Arc::clone(&build));
-        dashboard_base::products::read_ahead::spawn("battle titles ahead", move || {
-            job_priority::background_thread();
-            let Some(source) = source.upgrade() else { return };
-            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source.in_scope(|| read(&source, branch, &load, &false.into()))))
-                .unwrap_or_else(|_| Err(io::Error::other("Battle title preparation failed")));
-            let _ = pending.set(made);
-        })?;
-        slot.insert(build);
+    if let Some(build) = held.1.get(&branch) && !(retry && build.ready.result().is_some_and(|result| result.is_err())) {
+        return Ok(Some(Arc::clone(build)));
     }
-    result(&held.1[&branch])
+    let build = Arc::<Build>::default();
+    held.1.insert(branch, Arc::clone(&build));
+    drop(held);
+    let (source, task) = (Arc::downgrade(source), Arc::clone(&build));
+    let (load, binding) = (LoadContext { content: Some(content.clone()) }, Arc::clone(content.presentation.binding()));
+    build.ready.start("battle titles ahead", move || {
+        let source = source.upgrade().ok_or_else(|| io::Error::other("Recording closed"))?;
+        let names = source.in_scope(|| read(&source, branch, &load, binding.flag()))?;
+        check_cancel(binding.flag())?;
+        let _ = task.names.set(names);
+        Ok(())
+    });
+    Ok(Some(build))
 }
 
 fn result(build: &Build) -> io::Result<Option<Arc<Names>>> {
-    build.get().map(|made| made.as_ref().map(Arc::clone).map_err(dashboard_core::duplicate)).transpose()
+    build.ready.result().map(|made| made.map(|()| Arc::clone(build.names.get().expect("completed battle titles")))).transpose()
+}
+
+pub fn ahead(source: &Arc<Source>, branch: u64, load: &LoadContext) -> io::Result<Option<Arc<Names>>> {
+    let retired = |load: &LoadContext| load.content.as_ref().is_some_and(|content|
+        content.presentation.binding().flag().load(Ordering::Acquire));
+    let refreshed;
+    let load = if retired(load) {
+        refreshed = LoadContext { content: source.admit(dashboard_base::source::Work::Recorded) };
+        &refreshed
+    } else { load };
+    let names = start(source, branch, load, false).and_then(|build|
+        build.map_or_else(|| read(source, branch, load, &false.into()).map(Some), |build| result(&build)));
+    if retired(load) { Ok(None) } else { names }
 }
 
 pub fn read(source: &Source, branch: u64, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<Names>> {
@@ -233,6 +254,10 @@ pub struct BattleNames;
 impl Product for BattleNames {
     const KEY: &'static str = "battle-names";
     const CONTENT_DEPENDENT: bool = true;
+    const PREPARE: Option<Prepare<Self::Params>> = Some(|source, params, load| {
+        let branch = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid battle names branch"))?;
+        start(source, branch, load, true)?.map_or(Ok(None), |build| build.ready.pending())
+    });
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, "battles[]"];
     type Params = BattleNamesParams;
     type Reply = BattleNamesReply;
@@ -249,7 +274,7 @@ impl Product for BattleNames {
             let held = state.lock().unwrap_or_else(PoisonError::into_inner);
             (held.0 == content.presentation.binding().generation).then(|| held.1.get(&branch).cloned()).flatten()
         });
-        let Some(names) = build.as_ref().map_or_else(|| read(source, branch, load, cancelled).map(Some), result)? else {
+        let Some(names) = build.as_deref().map_or_else(|| read(source, branch, load, cancelled).map(Some), result)? else {
             return Ok(BattleNamesReply { titles: BTreeMap::new(), loading: Some("Loading battle titles…".into()), warnings: Vec::new() });
         };
         let titles = params.battles.iter().map(|key| {

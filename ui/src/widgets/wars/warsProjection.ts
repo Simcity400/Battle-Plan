@@ -1,5 +1,4 @@
 import { colour, readableColour } from '../../charts/palette.ts';
-import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { flagChoiceArt } from '../../families/art/provider.ts';
 import { unavailableArt } from '../../families/art/types.ts';
 import type { ArtHandle, ArtResult, BoundedReadView } from '../../families/contract.ts';
@@ -10,6 +9,7 @@ import { laneByKey, type TimelineLane, type TimelineProjection, type TimelineSid
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { WarObservation, WarParticipantRun, WarTimeline, WarTimelineReply } from '../../generated/dashboard';
 import { identityName } from '../../families/table/identityCell.ts';
+import { warViewpoint } from './warsData.ts';
 
 export type WarsView = 'gantt' | 'countries';
 
@@ -326,7 +326,8 @@ export const warsDeclaration: TimelineWidgetDeclaration<WarsOptions> = {
   jumpToDate: true,
   keyByBranch: true,
   sources: ctx => ({
-    owner: `wars:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${ctx.countryTag ?? ''}`,
+    owner: `wars:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${warViewpoint(ctx.countryTag, ctx.countryChoice) ?? ''}`,
+    loadingLabel: 'Loading wars…',
     entries: [{
       name: 'main',
       source: ctx.track.source,
@@ -337,7 +338,7 @@ export const warsDeclaration: TimelineWidgetDeclaration<WarsOptions> = {
         coverage: { mode: 'keyed', keys: ctx.countryTag ? [ctx.countryTag] : [] },
         product: 'war-timeline',
         followQuery: null,
-        params: { branchId: ctx.branch.id, viewpoint: ctx.countryTag ? countryFromKey(ctx.countryTag) : null },
+        params: { branchId: ctx.branch.id, viewpoint: warViewpoint(ctx.countryTag, ctx.countryChoice) },
         buildSpanParams: (params, span) => ({ ...params, hour: span.lastHour }),
         provenInterval: warTimelineProof,
         dynamicKeys: ['hour'],

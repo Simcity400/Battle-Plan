@@ -60,18 +60,40 @@ test('heat timelines follow the head and read only closed days with reusable ran
       return refused ? { query: null, refused } : { query: query as FollowQuery | null, refused: null };
     });
     assert.equal(refused, null);
-    assert.deepEqual(subscriptions.map(sub => sub.name), ['now'], declaration.kind);
+    const convoy = declaration === convoyHealthDeclaration;
+    assert.deepEqual(subscriptions.map(sub => sub.name), convoy ? plan.entries.map(entry => entry.name) : ['now'], declaration.kind);
     const entries = unitEntries(plan, true, subscriptions);
     const ask = (hour: number) => askUnits(entries, { following: true, trackOffset: 0, hour, playback, content: 0 });
+    const hour = DAY_TILE_HOURS + 24;
+    if (convoy) {
+      for (const played of [firstHour, hour - 1, hour, hour + 24, hour + 48]) {
+        assert.deepEqual(ask(played), [], 'playback must not ask for a history tile as a new day closes');
+      }
+      const expected = [[firstHour, DAY_TILE_HOURS - 1], [DAY_TILE_HOURS, hour - 1]];
+      const pinned = declaration.sources({ ...ctx, following: false }, { following: false, staticSpan: null });
+      const pinnedUnits = askUnits(unitEntries(pinned, false, []), {
+        following: false, trackOffset: 0, displayHour: hour, content: 0,
+        pinned: { timeMode: 'pin', branch: ctx.branch, window: { firstHour: hour, lastHour: hour }, pinHour: hour, gate },
+      });
+      assert.deepEqual(pinnedUnits.flatMap(unit => {
+        const params = unit.spec?.request.params;
+        return unit.name.startsWith('tile:') && params ? [[params.from, params.to]] : [];
+      }), expected, 'pin');
+      const options = { following: true, timeMode: 'follow' as const, branch: ctx.branch, staticSpan: null, window: null, gate };
+      assert.deepEqual(exactEntries(plan).filter(entry => entry.name.startsWith('tile:')).flatMap(entry => {
+        const params = buildExactRequests(entry, gate.recorded(hour)!, options)?.asks[0]?.request.params;
+        return params ? [[params.from, params.to]] : [];
+      }), expected, 'audit');
+      continue;
+    }
     const firstDay = ask(firstHour);
     assert.ok(firstDay.every(unit => unit.key === null), 'nothing is closed on the first day');
     assert.deepEqual(firstDay[0]?.idle, [-Infinity, 23], 'the first closed day becomes available at midnight');
 
-    const hour = DAY_TILE_HOURS + 24;
     const initial = ask(hour);
     assert.deepEqual(initial.filter(unit => unit.key !== null).map(unit => unit.name), ['tile:0', 'tile:1']);
     const [closed, partial] = initial;
-    const ranges = declaration === convoyHealthDeclaration ? ['from', 'to'] : ['firstHour', 'lastHour'];
+    const ranges = ['firstHour', 'lastHour'];
     const bounds = (unit: typeof closed) => ranges.map(key => (unit.spec!.request.params as Record<string, number>)[key]);
     assert.deepEqual(bounds(closed!), [firstHour, DAY_TILE_HOURS - 1]);
     assert.deepEqual(bounds(partial!), [DAY_TILE_HOURS, hour - 1]);

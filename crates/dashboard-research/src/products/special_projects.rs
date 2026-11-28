@@ -783,6 +783,7 @@ fn program_cells(cells: &[Cell]) -> Assignment {
     Assignment { owner: value(0).and_then(|owner| u32::try_from(owner).ok()), active: value(1).and_then(|local| u32::try_from(local).ok()), scientist: value(2).map(|scientist| scientist as u64) }
 }
 
+#[derive(Clone)]
 struct Piece {
     run: u32,
     first: i32,
@@ -796,6 +797,11 @@ struct Piece {
 impl Piece {
     fn reach(&self) -> i32 {
         self.first.saturating_sub(STAGGER_PERIOD - 1).max(self.held_from).max(self.opened)
+    }
+
+    fn covers(&self, next: &Self) -> bool {
+        (self.run, self.slot, self.id, self.held_from, self.opened) == (next.run, next.slot, next.id, next.held_from, next.opened)
+            && self.first <= next.first && next.last <= self.last
     }
 }
 

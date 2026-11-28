@@ -1,9 +1,8 @@
-import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey } from '../../dashboard/options.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { AuxProductSpec, CountryPolicy, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/plan.ts';
 import type { WarContributionGroup, WarContributionsReply, WarObservation, WarsReply, WarTimeline } from '../../generated/dashboard';
-import { observationAt, validateWarContributions, validateWarsReply, warContributions } from '../wars/warsData.ts';
+import { observationAt, validateWarContributions, validateWarsReply, warContributions, warViewpoint } from '../wars/warsData.ts';
 import { WAR_NOT_STARTED, chosenWar, readHourFor, unobservedAt, warById, warChipStateAt, warEligibilityAt, warNextChangeAt } from './warContributionData.ts';
 
 export type ContributionGroup = WarContributionGroup & { readonly partial?: string };
@@ -26,7 +25,11 @@ export const warCountries: CountryPolicy = { mode: 'single', choose: 'Choose a c
 export const warsAux: AuxProductSpec<WarsReply> = {
   product: 'wars',
   label: 'the wars',
-  params: (track, _options, country) => ({ branchId: track.branch.id, viewpoint: country === null ? null : countryFromKey(country) }),
+  loadingLabel: 'Loading wars…',
+  params: (track, _options, country, _subject, choice) => {
+    const viewpoint = warViewpoint(country, choice);
+    return viewpoint === null ? null : { branchId: track.branch.id, viewpoint };
+  },
   validate: validateWarsReply,
 };
 
@@ -115,8 +118,8 @@ function staticHour(ctx: FamilyPlanContext<WarsReply>): number | null {
 }
 
 export function warContributionSources(ctx: FamilyPlanContext<WarsReply>): SourcePlan {
-  const viewpoint = ctx.countryTag;
-  const params = { branchId: ctx.branch.id, viewpoint: viewpoint === null ? null : countryFromKey(viewpoint) };
+  const viewpoint = warViewpoint(ctx.countryTag, ctx.countryChoice);
+  const params = { branchId: ctx.branch.id, viewpoint };
   const saved = savedWar(ctx.options);
   const owner = `war-contribution:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${viewpoint ?? ''}:${saved ?? ''}`;
   if (!ctx.aux || !ctx.aux.available || !ctx.aux.wars.length) {

@@ -1,10 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { liveKey } from '../../charts/live.ts';
 import { resolveOptions, sectionFields } from '../../dashboard/options.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
+import { deriveMatrixTooltip } from '../../families/heat/matrixModel.ts';
 import { OPTIONS } from './definition.ts';
 import type { CipherPair, DecryptionReply } from '../../generated/dashboard';
 import { activeBonusDays, amountText, percentOf, progressLabel, progressPercent, validateDecryption, weekChangeText, type CipherNumbers } from './decryptionData.ts';
+import { whoReadsWhomProjection } from './whoReadsWhomProjection.ts';
 
 const pair = (owner: string | null, target: string, id: number, thresholdRaw: string | null = '1000000', extra: Partial<CipherPair> = {}): CipherPair => ({
   owner: { id, tag: owner }, target: { id: id + 100, tag: target }, thresholdRaw, thresholdUnknown: thresholdRaw === null ? 'The target RaidIntelInputs row is not recorded' : null,
@@ -57,4 +61,26 @@ test('the endpoint filter is hidden for All while keeping its saved option for a
   assert.deepEqual(sectionFields(OPTIONS, 'countries', options, { kind: 'all' }), []);
   assert.deepEqual(sectionFields(OPTIONS, 'countries', options, { kind: 'tags', tags: ['Mod target'] }).map(field => field.key), ['countrySide']);
   assert.equal(options.countrySide, 'target');
+});
+
+test('the cipher matrix reads tooltip values only for the cell under inspection', () => {
+  const broken = pair('GER', 'ENG', 1, '1000000', { status: 'broken', broken: true, bonusActive: 1, brokenAt: { hour: 120, upperBound: false } });
+  const decrypting = pair('ITA', 'FRA', 2);
+  const unknown = pair('SOV', 'POL', 3, null);
+  const hour = 144;
+  const reads: string[] = [];
+  const view = createBoundedReadView({
+    hour,
+    panels: new Map([['main', { ...reply([broken, decrypting, unknown]), counts: { broken: 1, decrypting: 2, paused: 0, breakUnknown: 0 } }]]),
+    live: new Map([['main', { get: (key: string) => { reads.push(key); return key.endsWith('bonusDays') ? 7 : 500_000; }, missing: () => '' }]]),
+  });
+  const model = whoReadsWhomProjection.project(view, { filter: { passing: null, unrecorded: [], bounds: [] }, filterAll: true, side: 'decryptor' });
+  assert.deepEqual(reads, [liveKey('2:102', 'amount')]);
+  const hover = deriveMatrixTooltip(model, 0, 0);
+  assert.deepEqual(reads.slice(1), [liveKey('1:101', 'amount'), liveKey('1:101', 'bonusDays')]);
+  assert.equal(hover?.hour, hour);
+  assert.equal(hover?.items?.find(item => item.label === 'Active bonus')?.value, '7 bonus days');
+  const missingThreshold = deriveMatrixTooltip(model, 2, 2);
+  assert.deepEqual(reads.slice(3), [liveKey('3:103', 'amount'), liveKey('3:103', 'bonusDays')]);
+  assert.equal(missingThreshold?.items?.find(item => item.label === 'Recorded amount')?.value, '5');
 });

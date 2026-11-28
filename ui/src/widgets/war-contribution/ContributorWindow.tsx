@@ -201,6 +201,6 @@ export default function ContributorWindow({ opened, track, runtime, anchor, onCl
     className="war-history" settled={result !== undefined} onClose={onClose}
     title={<>{opened.tag && <span data-tooltip={title?.reason}>{title?.label ?? opened.tag} · </span>}Contributor history · {opened.warName}</>}>
     {typeof result === 'object' ? <HistoryBody key={`${opened.side}:${opened.tag}:${opened.measure}`} history={result} opened={opened} identities={identities} setInspection={setInspection} />
-      : <p role="status">{result ?? 'Reading contributor history…'}</p>}
+      : <p role="status">{result ?? 'Loading wars…'}</p>}
   </DetailWindowHost>;
 }

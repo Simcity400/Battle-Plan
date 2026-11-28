@@ -1498,6 +1498,13 @@ fn current_special_projects_names_the_unknown_holder_reason_at_the_requested_hou
         let asked = serde_json::json!({"branchId":"1", "country":"GER", "current":current});
         let panel = dated_panel(&fixed, &load, &asked).unwrap();
         let exact = panel.exact().unwrap();
+        (exact.advance)(20, true, &cancelled, None);
+        let (next, reads) = count_reads(|| (exact.advance)(25, false, &cancelled, None));
+        assert!(next.fresh);
+        for table in [TableId::Projects, TableId::ProjectHistory, TableId::SliceReads] {
+            assert_eq!(reads.get(&table).map_or(0, |stats| stats.opened), 0, "current={current}: {table:?} was already read into this window");
+        }
+        assert_eq!(materialized_at(next.value.as_ref().clone().unwrap(), 25), (exact.cold)(25, &cancelled).unwrap());
         for step in dashboard_base::test_fixtures::played(fixed.replay_ref(), exact, 20, 35) {
             let at = step.hour;
             let data = step.value.as_ref().as_ref().unwrap().clone();

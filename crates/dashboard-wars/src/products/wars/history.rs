@@ -59,6 +59,8 @@ pub struct WarHistorySide {
 impl Product for WarContributionHistory {
     const KEY: &'static str = "war-contribution-history";
     const CONTENT_DEPENDENT: bool = true;
+    const PREPARE: Option<dashboard_base::products::read_ahead::Prepare<Self::Params>> = Some(|source, params, context|
+        super::prepare(source, branch(&params.branch_id)?, params.viewpoint.clone(), context));
     const INTERACTIVE: bool = true;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, viewpoint, warId, throughHour: End];
     type Params = WarContributionHistoryParams;
@@ -77,7 +79,7 @@ impl Product for WarContributionHistory {
         let branch = branch(&params.branch_id)?;
         let cat = catalogue_of(source, context)?;
         let factors = participation::factors(cat.as_deref());
-        let wars = walked(source, branch, params.viewpoint.as_ref(), cat, cancelled)?;
+        let wars = walked(source, branch, params.viewpoint.as_ref(), context, cancelled)?;
         let war = wars.wars.iter().find(|war| war.id == params.war_id && war.first_hour <= params.through_hour)
             .ok_or_else(|| dashboard_core::invalid("The recorded wars do not include this war at the requested hour"))?;
         let query = dashboard_base::queries::query(source, branch)?;

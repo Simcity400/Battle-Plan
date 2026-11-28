@@ -654,6 +654,44 @@ impl Drop for SyntheticModFixture {
 }
 
 #[test]
+fn game_windows_share_localisation_for_the_same_language_and_stack() {
+    use content_reader_layers::content::LayerRole;
+
+    let fixture = SyntheticModFixture::create(SYNTHETIC_BUTTON_SHADER);
+    let base = fixture.root_dir.join("base");
+    let mods = fixture.root_dir.join("mod");
+    let dlc = fixture.root_dir.join("dlc");
+    fs::create_dir_all(mods.join("localisation/german")).unwrap();
+    fs::create_dir_all(dlc.join("localisation/english")).unwrap();
+    fs::write(
+        mods.join("localisation/german/mod_l_german.yml"),
+        "\u{feff}l_german:\n MOD_CLOSE:0 \"Schliessen\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dlc.join("localisation/english/dlc_l_english.yml"),
+        "\u{feff}l_english:\n DLC_LABEL:0 \"DLC label\"\n",
+    )
+    .unwrap();
+
+    let layers = ResolvedLayers::from_folders(&[(&base, &[]), (&mods, &[])]).unwrap();
+    let _generation = layers.enter_generation();
+    let without_mod = ResolvedLayers::from_test_layers(layers.layers[..1].to_vec()).unwrap();
+    let mut with_dlc = ResolvedLayers::from_folders(&[(&base, &[]), (&mods, &[]), (&dlc, &[])]).unwrap();
+    with_dlc.layers[2].role = LayerRole::Dlc;
+    let with_dlc = ResolvedLayers::from_test_layers(with_dlc.layers).unwrap();
+
+    let dashboard = localisation::read_shared(&layers, "english", localisation::read).unwrap();
+    let same = SharedInterface::load(&layers, DEFAULT_VIEWPORT, Some("l_english")).unwrap();
+    assert!(Arc::ptr_eq(&dashboard, &same.localisation));
+
+    for (stack, language) in [(&layers, "german"), (&without_mod, "english"), (&with_dlc, "english")] {
+        let changed = SharedInterface::load(stack, DEFAULT_VIEWPORT, Some(language)).unwrap();
+        assert!(!Arc::ptr_eq(&dashboard, &changed.localisation));
+    }
+}
+
+#[test]
 fn service_loads_mod_only_window_and_refuses_missing_blank_or_cancelled() {
     let fixture = SyntheticModFixture::create(SYNTHETIC_BUTTON_SHADER);
     let service = Service::default();

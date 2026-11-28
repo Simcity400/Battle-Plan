@@ -1403,6 +1403,7 @@ impl<'a> ScriptedText<'a> {
         expanded.on_large_stack = true;
         let caller = job_priority::Caller::current();
         let reads = crate::triggers::inputs::handoff();
+        let variable_values = crate::triggers::world::variable_values();
         let discovery = replay_frame::frame::Discovery::current();
         let memory = engine_allocation::labels::current();
         let ((((result, session), noted), carried), requested) = std::thread::scope(|thread_scope| {
@@ -1415,9 +1416,11 @@ impl<'a> ScriptedText<'a> {
                     let _cpu = cpu.enter("scripted localisation");
                     caller.enter();
                     discovery.run(|| reads.run(move || {
-                        crate::catalogue::capture(move || {
-                            let result = expand(&expanded);
-                            (result, expanded.session.into_inner())
+                        crate::triggers::world::with_variable_values(variable_values, move || {
+                            crate::catalogue::capture(move || {
+                                let result = expand(&expanded);
+                                (result, expanded.session.into_inner())
+                            })
                         })
                     }))
                 })
