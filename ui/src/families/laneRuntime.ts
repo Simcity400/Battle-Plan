@@ -801,7 +801,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const playbackOwnsPixels = input.playbackOwnsPixels === true;
       const direct = (shared || keep.workerCanvas) && input.binding.pin === null;
       let animation = playbackOwnsPixels || (direct && playbackEligible(binding, projection)) ? family.playback : undefined;
-      if (animation && !playbackOwnsPixels && !animation.supports(model)) {
+      if (animation && !animation.supports(model)) {
         reportInvalidPlayback(binding);
         animation = undefined;
       }
@@ -995,6 +995,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         const cache: Visual[] = [];
         let artRevision = keep.artRevision;
         const modelAt = (sample: PlaybackPicture): Visual | null => {
+          if (invalidPlayback.has(binding)) return null;
           if (artRevision !== keep.artRevision) {
             cache.length = 0;
             artRevision = keep.artRevision;
@@ -1010,6 +1011,10 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           try {
             while (hour <= sample.hour) {
               const { projected, until } = projectAt({ ...input, pictures: sample.pictures }, hour, binding, projection, base, readersOf(keep), tiles);
+              if (!animation.supports(projected.model)) {
+                reportInvalidPlayback(binding);
+                return null;
+              }
               if (sample.hour < until) {
                 const visual = { parts: snapshotPictures(sample.pictures), dates, start: sample.from, from: hour, until, model: projected.model, projected: projected.view };
                 cache.unshift(visual);
@@ -1025,18 +1030,15 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         };
         const paint: PlaybackPaint = (current, next, position, target, inspect, diagnostic) => {
           const exact = modelAt(current);
+          if (invalidPlayback.has(binding)) return 'release';
           if (!exact) {
             if (diagnostic) diagnostic.reason = 'modelValidity';
             return 'empty';
           }
-          if (!animation.supports(exact.model)) {
-            reportInvalidPlayback(binding);
-            if (diagnostic) diagnostic.reason = 'notEligible';
-            return 'release';
-          }
           const unavailable = animation.unavailable(exact.model);
           const begin = exact.from;
           const to = !unavailable && next && position > begin && position < next.hour && exact.until >= next.hour ? modelAt(next) : null;
+          if (invalidPlayback.has(binding)) return 'release';
           const fraction = to && next ? (position - begin) / (next.hour - begin) : 0;
           exact.layout ??= family.layout(exact.model, binding, surface, theme, keep.ctx, exact.from, { previous: null, now: effectiveNow, speed: 0 });
           const recorded = { ...frame, hour: exact.from, model: exact.model, layout: exact.layout, projected: exact.projected, inspect };
@@ -1044,8 +1046,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           if (diagnostic && next) {
             diagnostic.reason = position <= begin ? 'recordedHour' : !to ? 'modelValidity' : moving === null ? 'incompatible' : 'unchanged';
           }
-          drawCanvas(moving || recorded, target);
-          return moving ? 'interpolated' : 'exact';
+          const shown = moving || recorded;
+          drawCanvas(shown, target);
+          return { kind: moving ? 'interpolated' : 'exact', hit: point => family.hit(shown, point) };
         };
         playback = {
           paint,

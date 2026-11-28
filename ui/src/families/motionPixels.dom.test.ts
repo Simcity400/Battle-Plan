@@ -7,7 +7,7 @@ test('ordered bars settle to the same pixels as a cold draw after worker playbac
     const { results, histories, afterScroll, afterResize, afterTick, afterRefusal } = await page.evaluate<{
       results: { dpr: number; moving: number; paused: number }[];
       histories: { revoked: boolean; history: string; difference: number }[];
-      afterScroll: number; afterResize: boolean; afterTick: number; afterRefusal: number;
+      afterScroll: number; afterResize: number; afterTick: number; afterRefusal: number;
     }>('window.checkSettledPixels()');
     for (const result of results) {
       assert.ok(result.moving > 0, `no movement at DPR ${result.dpr}`);
@@ -15,8 +15,8 @@ test('ordered bars settle to the same pixels as a cold draw after worker playbac
     }
     for (const sample of histories) assert.equal(sample.difference, 0, `${sample.history} with endpoint refusal ${sample.revoked}`);
     assert.equal(afterScroll, 0, 'layout must not copy other pixels into the owned slot');
-    assert.equal(afterResize, false, 'layout must not fill the owned slot after the backing canvas resizes');
-    assert.equal(afterTick, 0, 'the tick restores the owned pixels at the same clock hour');
+    assert.equal(afterResize, 0, 'the worker redraws owned pixels as the resized geometry takes effect');
+    assert.equal(afterTick, 0, 'the next tick at the same clock hour draws identical pixels');
     assert.equal(afterRefusal, 0, 'a proven unavailable hour matches its recorded cold picture');
   });
 });

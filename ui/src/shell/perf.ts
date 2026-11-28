@@ -527,7 +527,7 @@ export class PerfRecorder {
   get laneCount(): number | null { return this.laneCountValue; }
   lanes(count: number): void { this.laneCountValue = count; }
 
-  barPlayback(lane: number, hour: number, repainted: number, ms: number, diagnostics?: MotionDiagnostics): void {
+  barPlayback(lane: number, hour: number, repainted: number, ms: number, diagnostics: MotionDiagnostics): void {
     this.push({ t: 'barPlayback', at: epoch(performance.now()), lane, hour, repainted, ms: round(ms), ...diagnostics });
   }
 

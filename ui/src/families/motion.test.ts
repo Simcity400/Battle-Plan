@@ -204,7 +204,7 @@ function makeRecordingCanvas(width = 960, height = 300) {
 
 const KIND = 'worker-motion-test';
 const BLUE = '#4f86f7';
-type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; segments?: boolean; scale?: number; whole?: boolean; art?: boolean; renames?: readonly number[] };
+type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; segments?: boolean; scale?: number; whole?: boolean; art?: boolean; renames?: readonly number[]; france?: number };
 
 const testProjection = registerFamilyProjection({
   family: 'bars',
@@ -219,24 +219,30 @@ const testProjection = registerFamilyProjection({
     const name = sample?.renames?.filter(at => view.hour >= at).length;
     const numeric = sample?.value == null ? null : sample.value * Number(options ?? 1);
     const value = numeric === null ? notRecorded('Missing') : knownValue(sample?.whole && numeric !== 0 ? BigInt(numeric) : numeric);
+    const rows: BarsModel['rows'][number][] = [{
+      kind: 'data',
+      key: sample?.key ?? 'GER',
+      label: knownValue(name ? `Renamed ${name}` : 'Germany'),
+      value: { value },
+      numeric,
+      color: BLUE,
+      ...(sample?.art ? { media: { kind: 'flag', tag: 'GER',
+        art: readyArt('art://motion-fixture', { frame: defaultArtFrame(20, 13) }) } } : {}),
+      ...(sample?.target ? { target: { numeric: 400, value: knownValue(400) } } : {}),
+      ...(sample?.segments ? { segments: [{ key: 'part', label: 'Part', share: 1, color: BLUE, value }] } : {}),
+    }];
+    if (sample?.france !== undefined) {
+      const france = sample.france;
+      rows.push({ kind: 'data', key: 'FRA', label: knownValue('France'), value: { value: knownValue(france) }, numeric: france, color: BLUE });
+      if (numeric !== null && france > numeric) rows.reverse();
+    }
     return {
       form: sample?.form ?? 'ordered',
       hour: view.hour,
       showAxis: true,
       scaleMax: sample?.scale ?? 400,
       ...(nextRename !== undefined ? { nextChangeAt: nextRename } : {}),
-      rows: [{
-        kind: 'data',
-        key: sample?.key ?? 'GER',
-        label: knownValue(name ? `Renamed ${name}` : 'Germany'),
-        value: { value },
-        numeric,
-        color: BLUE,
-        ...(sample?.art ? { media: { kind: 'flag', tag: 'GER',
-          art: readyArt('art://motion-fixture', { frame: defaultArtFrame(20, 13) }) } } : {}),
-        ...(sample?.target ? { target: { numeric: 400, value: knownValue(400) } } : {}),
-        ...(sample?.segments ? { segments: [{ key: 'part', label: 'Part', share: 1, color: BLUE, value }] } : {}),
-      }],
+      rows,
     };
   },
 }, 'main');
@@ -739,7 +745,7 @@ describe('Ordered bar playback', () => {
       assert.ok(!rowLabels.some(op => op.args[0] === String(Math.round(expected))));
       previous = width;
     }
-    assert.equal(f.served.filter(frame => frame.motion).reduce((count, frame) => count + frame.changed, 0), 8);
+    assert.equal(f.served.filter(frame => frame.motionDiagnostics).reduce((count, frame) => count + frame.changed, 0), 8);
     assert.equal(f.presented.length, presents);
     f.clock(244, 1440, 1, true);
     await f.request(244, 1440);
@@ -748,7 +754,7 @@ describe('Ordered bar playback', () => {
     f.clock(244, 0, 1, true);
     await f.request(244);
     f.tick(1000 / 95);
-    assert.equal(f.served.filter(frame => frame.motion).reduce((count, frame) => count + frame.changed, 0), 8);
+    assert.equal(f.served.filter(frame => frame.motionDiagnostics).reduce((count, frame) => count + frame.changed, 0), 8);
     assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '280'));
   }));
 
@@ -762,7 +768,7 @@ describe('Ordered bar playback', () => {
     f.tick(1000 / 95);
     assert.equal(f.barWidth(), exact);
     assert.ok(f.served.some(frame => frame.motionDiagnostics?.skipped.noBracket));
-    assert.ok(!f.served.some(frame => frame.motion && frame.changed));
+    assert.ok(!f.served.some(frame => frame.motionDiagnostics && frame.changed));
     f.clock(126, 1440);
     await f.request(126, 1440);
     f.tick(0);
@@ -790,7 +796,34 @@ describe('Ordered bar playback', () => {
     f.clock(103.5, 168, 1, true);
     f.tick(0);
     assert.equal(f.barWidth(), start * 4);
-    assert.ok(!f.served.some(frame => frame.motion && frame.changed));
+    assert.ok(!f.served.some(frame => frame.motionDiagnostics && frame.changed));
+  }));
+
+  it('withholds the installed row hit while the canvas shows a newly proven order', async () => withLane(async f => {
+    f.record(100, { value: 100, france: 50 });
+    f.record(101, { value: 100, france: 200 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const first = f.presented.at(-1)!.entries[0]!;
+    await f.request(100, 1, 1, true);
+    const [[, , , , , , top, height]] = first.fields.nav as [string, string, number, number, string, unknown, number, number][];
+    const point: [number, number] = [32, top + height / 2];
+    f.lane.pointer(1, 0, point, first.id);
+    assert.deepEqual(f.hits, ['row:GER']);
+
+    f.clock(101, 1);
+    f.canvas.clearOps();
+    f.tick(0);
+    const labels = f.operations().filter(op => op.op === 'fillText' && ['Germany', 'France'].includes(String(op.args[0])));
+    assert.deepEqual(labels.map(op => op.args[0]), ['France', 'Germany']);
+    f.lane.pointer(1, 0, point, first.id);
+    assert.deepEqual(f.hits, ['row:GER', null]);
+
+    await f.request(101, 1);
+    const second = f.presented.at(-1)!.entries[0]!;
+    await f.request(101, 1, 1, true);
+    f.lane.pointer(1, 0, point, second.id);
+    assert.deepEqual(f.hits, ['row:GER', null, 'row:FRA']);
   }));
 
   it('does not paint or publish newly segmented rows between page requests', async () => withLane(async f => {
@@ -849,6 +882,29 @@ describe('Ordered bar playback', () => {
     f.tick(0);
     assert.equal(f.barWidth(), width);
     assert.deepEqual(f.sampled, []);
+  }));
+
+  it('releases a binding once an adjacent endpoint contradicts its single-value guarantee', async t => withLane(async f => {
+    const errors = t.mock.method(console, 'error', () => {});
+    f.record(100, { value: 100 });
+    f.record(101, { value: 200, segments: true });
+    f.record(102, { value: 300 });
+    f.record(103, { value: 400 });
+    f.clock(100.5, 1);
+    await f.request(100, 1);
+    f.tick(0);
+    assert.equal(errors.mock.callCount(), 1);
+    assert.match(String(errors.mock.calls[0]?.arguments[0]), /single-value guarantee/);
+
+    f.clock(102.5, 1);
+    f.canvas.clearOps();
+    f.tick(0);
+    assert.equal(f.operations().length, 0);
+    await f.request(102, 1, 1, true);
+    assert.equal(f.presented.at(-1)?.entries[0]?.repainted, true);
+    f.tick(0);
+    assert.deepEqual(f.sampled, [1]);
+    assert.equal(errors.mock.callCount(), 1);
   }));
 
   it('retains ordinary pause priority for a target-marked bar', async () => withLane(async f => {
@@ -920,7 +976,7 @@ describe('Ordered bar playback', () => {
     const credit = [...f.released];
     f.tick(0);
     assert.deepEqual(f.released, credit);
-    assert.ok(f.served.some(frame => frame.motion && frame.changed === 1));
+    assert.ok(f.served.some(frame => frame.motionDiagnostics && frame.changed === 1));
     const latest = f.presented.flatMap(reply => reply.entries).at(-1);
     assert.equal(latest, first);
     assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '100'));
@@ -960,7 +1016,7 @@ describe('Ordered bar playback', () => {
       f.clock(103.5, 1);
       f.tick(0);
       assert.equal(f.barWidth(), start * 3);
-      assert.ok(!f.served.some(frame => frame.motion && frame.changed));
+      assert.ok(!f.served.some(frame => frame.motionDiagnostics && frame.changed));
     });
   });
 
@@ -982,7 +1038,7 @@ describe('Ordered bar playback', () => {
     assert.equal(f.barWidth(), single * 3);
   }));
 
-  it('keeps the proven bar on the first resumed tick after a seek', async () => withLane(async f => {
+  it('holds the seek-carried reading through and beyond its proof until fresh facts arrive', async () => withLane(async f => {
     f.record(100, { value: 50 });
     f.record(123);
     f.record(124, { value: 100 });
@@ -1001,6 +1057,11 @@ describe('Ordered bar playback', () => {
     f.canvas.clearOps();
     f.tick(0);
     assert.equal(f.barWidth(), exact);
+    f.clock(124.5, 1, 2, true);
+    f.canvas.clearOps();
+    f.tick(0);
+    assert.equal(f.barWidth(), exact);
+    assert.equal(f.served.at(-1)?.motionDiagnostics?.skipped.unproven, 1);
     f.record(124, { value: 90 }, 2);
     f.clock(122.5, 1, 2, true);
     f.canvas.clearOps();

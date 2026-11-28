@@ -1,22 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { airForceSizeRaceProjection } from '../../widgets/air-force-size/airForceSizeRaceProjection.ts';
-import { armySizeRaceProjection } from '../../widgets/army-size/armySizeRaceProjection.ts';
 import { MEASURES } from '../../widgets/army-size/armySizeMeta.ts';
-import { casualtiesRaceProjection } from '../../widgets/casualties/casualtiesProjection.ts';
-import { equipmentProducedRaceProjection } from '../../widgets/equipment-produced/equipmentProducedRaceProjection.ts';
-import { factionStrengthRaceProjection } from '../../widgets/faction-strength/factionStrengthRaceProjection.ts';
+import type { EquipmentProducedRaceOptions } from '../../widgets/equipment-produced/equipmentProducedRaceProjection.ts';
 import { COUNT_MODES } from '../../widgets/factories/factoriesData.ts';
-import { factoriesProjection } from '../../widgets/factories/factoriesProjection.ts';
 import { SCORE_PARTS } from '../../widgets/game-score/gameScoreData.ts';
-import { gameScoreRaceProjection } from '../../widgets/game-score/gameScoreRaceProjection.ts';
-import { navalLossesRaceProjection } from '../../widgets/naval-losses/navalLossesRaceProjection.ts';
-import { navySizeRaceProjection } from '../../widgets/navy-size/navySizeRaceProjection.ts';
-import { nuclearArsenalRaceProjection } from '../../widgets/nuclear-arsenal/nuclearArsenalRaceProjection.ts';
-import { occupationTrendRaceProjection } from '../../widgets/occupation-trend/occupationTrendRaceProjection.ts';
-import { territoryRaceProjection } from '../../widgets/territory/territoryRaceProjection.ts';
-import { worldTensionRaceProjection } from '../../widgets/world-tension/worldTensionRaceProjection.ts';
+import { BARS_VIEWS } from '../../widgets/manifest/bars.ts';
 import { createBoundedReadView, displayedHour } from '../boundedView.ts';
+import { normalizeView } from '../manifest.ts';
 import type { FactionTotalsRaceOptions } from './factionTotalsRace.ts';
 import { isSingleValueOrdered, type BarsProjection } from './model.ts';
 
@@ -74,56 +64,100 @@ function check<O>(projection: BarsProjection<O>, options: O, expected: boolean, 
   ]) assert.ok(isSingleValueOrdered(projection.project(view, options)), context);
 }
 
-test('splits and multiple measures exclude a binding even when it has no positive segments yet', () => {
-  for (const split of booleans) {
-    for (const { value: mode } of COUNT_MODES) check(factoriesProjection, {
+const cases: Record<string, (projection: BarsProjection<unknown>) => void> = {
+  'factories/race': projection => {
+    for (const split of booleans) for (const { value: mode } of COUNT_MODES) check(projection, {
       ...settings, mode, split, modeLabel: 'Factories', damagedSource: 'damaged7',
       parts: [{ id: 'p', label: 'Part', source: `${mode}1`, color: '#ff8800' }],
     }, !split && mode !== 'built', amount => rank(amount, `${mode}7`, `${mode}1`, 'damaged7'));
-    for (const by of SCORE_PARTS) check(gameScoreRaceProjection, { ...settings, by, split },
+  },
+  'game-score/race': projection => {
+    for (const split of booleans) for (const by of SCORE_PARTS) check(projection, { ...settings, by, split },
       !split || by !== 'total', amount => rank(amount, by));
-    for (const measure of ['planes', 'wings'] as const) for (const ownership of ['roster', 'effective'] as const) {
-      check(airForceSizeRaceProjection, { ...settings, measure, ownership, split }, !split, amount => rank(amount, 'measure'));
+  },
+  'air-force-size/race': projection => {
+    for (const split of booleans) for (const measure of ['planes', 'wings'] as const) for (const ownership of ['roster', 'effective'] as const) {
+      check(projection, { ...settings, measure, ownership, split }, !split, amount => rank(amount, 'measure'));
     }
-    for (const { value: measure } of MEASURES) for (const countFor of ['owner', 'host'] as const) {
-      check(armySizeRaceProjection, { ...settings, measure, countFor, split }, !split || measure !== 'battalions', amount => rank(amount, 'measure'));
+  },
+  'army-size/race': projection => {
+    for (const split of booleans) for (const { value: measure } of MEASURES) for (const countFor of ['owner', 'host'] as const) {
+      check(projection, { ...settings, measure, countFor, split }, !split || measure !== 'battalions', amount => rank(amount, 'measure'));
     }
-    for (const measure of ['ships', 'strength'] as const) for (const ownership of ['roster', 'logical'] as const) for (const grouping of ['class', 'type'] as const) {
-      check(navySizeRaceProjection, { ...settings, measure, ownership, grouping, split }, !split, amount => measure === 'ships' ? rank(amount, 'measure') : forces(amount));
+  },
+  'navy-size/race': projection => {
+    for (const split of booleans) for (const measure of ['ships', 'strength'] as const) for (const ownership of ['roster', 'logical'] as const) for (const grouping of ['class', 'type'] as const) {
+      check(projection, { ...settings, measure, ownership, grouping, split }, !split, amount => measure === 'ships' ? rank(amount, 'measure') : forces(amount));
     }
-    for (const kind of ['ships', 'convoys', 'both'] as const) for (const attribution of ['lost', 'sunkBy'] as const) for (const period of ['month', 'running'] as const) {
-      check(navalLossesRaceProjection, { ...settings, kind, attribution, period, split }, !split, forces);
+  },
+  'naval-losses/race': projection => {
+    for (const split of booleans) for (const kind of ['ships', 'convoys', 'both'] as const) for (const attribution of ['lost', 'sunkBy'] as const) for (const period of ['month', 'running'] as const) {
+      check(projection, { ...settings, kind, attribution, period, split }, !split, forces);
     }
-    check(nuclearArsenalRaceProjection, { ...settings, split }, !split, amount => ({
+  },
+  'nuclear-arsenal/race': projection => {
+    for (const split of booleans) check(projection, { ...settings, split }, !split, amount => ({
       types: [{ ordinal: 0, token: 'type', name: 'Type' }], missing: null, warnings: [],
       countries: [{ tag: 'GER', countryId: 1, slot: null, total: amount, counts: [{ ordinal: 0, value: amount, ready: 0 }] }],
     }));
-  }
-});
+  },
+  'casualties/race': projection => {
+    for (const view of ['race', 'butterfly'] as const) for (const includeUnknown of booleans) for (const group of booleans) {
+      check(projection, { view, includeUnknown, group }, view === 'race', amount => rank(amount, 'taken', 'unknown', 'partial'), 'rank');
+    }
+  },
+  'equipment-produced/race': projection => {
+    for (const count of ['units', 'ic'] as const) for (const measure of ['total', 'day', 'week', 'month'] as const) for (const group of booleans) {
+      const options: EquipmentProducedRaceOptions = { ...settings, count, measure, group, equipmentLabel: 'Equipment', measureLabel: 'Production', noData: null };
+      const reply = {
+        branchId: '1', hour, firstHour: hour, lastHour: hour, count, measure, decimals: count === 'ic' ? 2 : 0, types: ['equipment'],
+        rows: [], readHour: hour, observationHour: 1, missing: null, warnings: [],
+      };
+      check(projection, options, true, amount => ({ ...reply, rows: [{ country: 1, counted: 1, tag: 'GER', value: amount, unknown: null }] }));
+      for (const kind of ['empty', 'unavailable'] as const) {
+        const blocked = { ...options, noData: { kind, message: 'Equipment selection unavailable' } };
+        assert.equal(projection.singleValueBars?.(blocked), true);
+        const model = projection.project(createBoundedReadView({ hour }), blocked);
+        assert.equal(model.emptyKind, kind);
+        assert.ok(isSingleValueOrdered(model));
+      }
+      for (const panel of [reply, { ...reply, readHour: null }, { ...reply, missing: 'Production not recorded' }]) {
+        const view = createBoundedReadView({ hour, panels: new Map([['main', panel]]) });
+        assert.ok(isSingleValueOrdered(projection.project(view, options)));
+      }
+    }
+  },
+  'faction-strength/race': projection => {
+    for (const aggregated of booleans) for (const kind of ['territory', 'country-factories'] as const) {
+      const options = { ...factions, kind, aggregated, measure: kind === 'territory' ? 'controlledStates' : 'free7' };
+      check(projection, options, true, amount => factionReply(amount, options));
+    }
+  },
+  'territory/race': projection => {
+    for (const mode of ['countries', 'factions'] as const) for (const measure of ['states', 'provinces', 'victoryPoints', 'area'] as const) for (const rule of ['controlled', 'owned', 'occupied'] as const) {
+      const wire = rule + measure[0]!.toUpperCase() + measure.slice(1);
+      const options = { ...factions, measure: wire };
+      check(projection, { mode, measure, rule, measureLabel: measure, scaleUnit: measure, group: false, factions: options },
+        true, amount => mode === 'countries' ? rank(amount, wire) : factionReply(amount, options));
+    }
+  },
+  'occupation-trend/race': projection => {
+    for (const rankBy of ['resistance', 'compliance'] as const) for (const digits of [0, 2, 5]) {
+      check(projection, { ...settings, rank: rankBy, digits }, true, amount => rank(amount, rankBy));
+    }
+  },
+  'world-tension/race': projection => { check(projection, settings, true, amount => rank(amount, 'contribution')); },
+};
 
-test('race projections that guarantee a single value preserve their form for recorded and missing facts', () => {
-  for (const view of ['race', 'butterfly'] as const) for (const includeUnknown of booleans) for (const group of booleans) {
-    check(casualtiesRaceProjection, { view, includeUnknown, group }, view === 'race', amount => rank(amount, 'taken', 'unknown', 'partial'), 'rank');
+test('every bars projection declaring single-value playback has fixtures for the options it accepts', async t => {
+  const entries = await Promise.all(BARS_VIEWS.map(entry => entry.loadSpec()));
+  const declaring = entries.filter(entry => entry.projection.singleValueBars);
+  assert.deepEqual(declaring.map(entry => `${entry.kind}/${normalizeView(entry.view)}`).sort(), Object.keys(cases).sort());
+  for (const { kind, view, projection } of declaring) {
+    const key = `${kind}/${normalizeView(view)}`;
+    await t.test(key, () => {
+      assert.equal(projection.family, 'bars');
+      cases[key]!(projection as BarsProjection<unknown>);
+    });
   }
-  for (const count of ['units', 'ic'] as const) for (const measure of ['total', 'day', 'week', 'month'] as const) {
-    check(equipmentProducedRaceProjection, { ...settings, count, measure, equipmentLabel: 'Equipment', measureLabel: 'Production', noData: null }, true, amount => ({
-      branchId: '1', hour, firstHour: hour, lastHour: hour, count, measure, decimals: 0, types: ['equipment'],
-      rows: [{ country: 1, counted: 1, tag: 'GER', value: amount, unknown: null }], readHour: hour,
-      observationHour: 1, missing: null, warnings: [],
-    }));
-  }
-  for (const aggregated of booleans) for (const kind of ['territory', 'country-factories'] as const) {
-    const options = { ...factions, kind, aggregated, measure: kind === 'territory' ? 'controlledStates' : 'free7' };
-    check(factionStrengthRaceProjection, options, true, amount => factionReply(amount, options));
-  }
-  for (const mode of ['countries', 'factions'] as const) for (const measure of ['states', 'provinces', 'victoryPoints', 'area'] as const) for (const rule of ['controlled', 'owned', 'occupied'] as const) {
-    const wire = rule + measure[0]!.toUpperCase() + measure.slice(1);
-    const options = { ...factions, measure: wire };
-    check(territoryRaceProjection, { mode, measure, rule, measureLabel: measure, scaleUnit: measure, group: false, factions: options },
-      true, amount => mode === 'countries' ? rank(amount, wire) : factionReply(amount, options));
-  }
-  for (const rankBy of ['resistance', 'compliance'] as const) for (const digits of [0, 2, 5]) {
-    check(occupationTrendRaceProjection, { ...settings, rank: rankBy, digits }, true, amount => rank(amount, rankBy));
-  }
-  check(worldTensionRaceProjection, settings, true, amount => rank(amount, 'contribution'));
 });

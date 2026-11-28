@@ -36,9 +36,9 @@ function rig(kind: string, dpr: number) {
     family: 'bars', kind, view: 'main', options: {}, sources: { main: 1 }, scrollTop: 0, width: 481, height: 235, theme,
   } satisfies FamilyBarsBinding);
   lane.bind(1, { generation: 1, pin: null, offset: 0, surfaces: [{ width: 481, height: 235, dpr }] });
-  const layout = (width = 490, scrollLeft = 0) => lane.setLaneSlots({
+  const layout = (width = 490, scrollLeft = 0, slotX = 3) => lane.setLaneSlots({
     width, height: 250, dpr, scrollLeft, scrollTop: 0, clipPathFallback: false, surfaceColor: theme.surface, cornerRadius: 9,
-    slots: [{ widget: 1, x: 3, y: 4, w: 481, h: 235, bx: 3, by: 2, bw: 481, bh: 238, visible: true }],
+    slots: [{ widget: 1, x: slotX, y: 4, w: 481, h: 235, bx: slotX, by: 2, bw: 481, bh: 238, visible: true }],
   });
   layout();
   lane.receive('panels', datedPanel(1, 100, 30));
@@ -145,14 +145,20 @@ async function checkSettledPixels() {
   geometry.clock(true);
   await geometry.request(100, 1);
   geometry.step(500);
-  const region = () => geometry.pixels(3, 2, 481, 238);
+  const region = (x = 3) => geometry.pixels(x, 2, 481, 238);
   const moving = region();
   geometry.layout(490, 12);
   const afterScroll = changedBytes(moving, region());
-  geometry.layout(525, 12);
-  const afterResize = region().some(value => value !== 0);
+  const positioned = rig(kind, 1);
+  positioned.layout(525, 12, 14);
+  positioned.clock(true);
+  await positioned.request(100, 1);
+  positioned.step(500);
+  const expected = positioned.pixels(14, 2, 481, 238);
+  geometry.layout(525, 12, 14);
+  const afterResize = changedBytes(expected, region(14));
   geometry.step(0);
-  const afterTick = changedBytes(moving, region());
+  const afterTick = changedBytes(expected, region(14));
   const refused = rig(kind, 1.25);
   refused.clock(true);
   await refused.request(100, 1);

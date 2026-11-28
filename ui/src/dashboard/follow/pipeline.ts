@@ -671,9 +671,8 @@ export class Pipeline {
           }
         }
       }
-      if (message.motion) {
-        if (message.motionDiagnostics) perfLog?.barPlayback(lane, message.target, message.changed, message.ms, message.motionDiagnostics);
-        else perfLog?.barPlayback(lane, message.target, message.changed, message.ms);
+      if (message.motionDiagnostics) {
+        perfLog?.barPlayback(lane, message.target, message.changed, message.ms, message.motionDiagnostics);
         return;
       }
       if (auditing()) recordPicture({ t: 'workerFrame', at: performance.timeOrigin + performance.now(), lane, lanes: this.lanes, seek: message.seek, head: message.target,
