@@ -2716,11 +2716,34 @@ impl<T> Drop for Retired<T> {
     }
 }
 
+fn instance_defaults() -> wgpu::InstanceDescriptor {
+    let backends = if cfg!(windows) {
+        wgpu::Backends::DX12 | wgpu::Backends::VULKAN
+    } else {
+        wgpu::Backends::default()
+    };
+    wgpu::InstanceDescriptor {
+        backends,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    }
+}
+
 pub fn instance() -> wgpu::Instance {
     static INSTANCE: OnceLock<wgpu::Instance> = OnceLock::new();
     INSTANCE
-        .get_or_init(|| wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()))
+        .get_or_init(|| wgpu::Instance::new(instance_defaults().with_env()))
         .clone()
+}
+
+#[cfg(all(test, windows))]
+mod instance_tests {
+    #[test]
+    fn windows_defaults_request_directx_and_vulkan() {
+        assert_eq!(
+            super::instance_defaults().backends,
+            wgpu::Backends::DX12 | wgpu::Backends::VULKAN,
+        );
+    }
 }
 
 pub(crate) fn null_texture(device: &wgpu::Device, kind: super::TextureKind) -> wgpu::TextureView {
