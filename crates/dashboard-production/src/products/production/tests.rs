@@ -667,6 +667,48 @@ fn the_live_table_lists_the_countrys_lines_in_queue_order_and_says_when_they_are
     assert!(unread["missing"].as_str().is_some_and(|why| why.contains("not recorded")), "unread lines are missing, never none");
 }
 
+#[test]
+fn production_lines_hold_through_spending_and_live_values_and_keep_sort_order() {
+    use dashboard_base::{products::at_hour::exact_panel, test_fixtures::{played, streamed}};
+
+    let source = from_frames((FIRST..=FIRST + 6).map(|hour| {
+        let mut frame = frame(hour);
+        if let TableView::Complete(TableRows::ProductionLines(rows)) = &mut *frame.tables[TableId::ProductionLines.index()] {
+            rows.insert(1, line(2, 9001, 200, 1, 2));
+            rows[0].efficiency_raw += i64::from(hour - FIRST);
+            if hour >= FIRST + 3 { rows[0].active_factories = 0; }
+            if hour >= FIRST + 4 { rows[0].speed_raw = 100_000; }
+        }
+        if let TableView::Complete(TableRows::ProductionLineOutput(rows)) = &mut *frame.tables[TableId::ProductionLineOutput.index()] {
+            rows[0].units += i64::from(hour - FIRST);
+            rows[0].spent_raw = Recorded::Value(Some(100_000 * i64::from(hour - FIRST)));
+            rows.insert(1, output(2, 9001, 200, 0, false));
+        }
+        frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(Vec::new())).into();
+        if hour >= FIRST + 5 {
+            frame.tables[TableId::VariantDefinitions.index()] = TableView::Unavailable { reason: "definitions unavailable in the fixture".into() }.into();
+        }
+        frame
+    }).collect());
+    for order in ["game", "factories", "output"] {
+        let panel = exact_panel::<ProductionLinesAt>(&source, &load(), &json!({"branchId":"1", "country":"GER", "order":order})).unwrap();
+        let exact = panel.exact().unwrap();
+        let reads = played(source.replay_ref(), exact, FIRST, FIRST + 6);
+        assert_eq!(reads.len(), 7);
+        for read in reads {
+            assert!(!read.pending && read.value.is_ok(), "{order} at {}", read.hour);
+            if (FIRST + 1..=FIRST + 4).contains(&read.hour) {
+                let sort_changed = matches!((read.hour - FIRST, order), (3, "factories") | (4, "output"));
+                assert_eq!(read.product_calls, u64::from(sort_changed), "{order} at {}", read.hour);
+                if !sort_changed { assert_eq!(read.rows, 0, "{order} at {}", read.hour); }
+            }
+            let cold = (exact.cold)(read.hour, &false.into());
+            assert_eq!(streamed(&read.value, read.fresh), streamed(&cold, read.fresh), "{order} at {}", read.hour);
+            assert_eq!((exact.advance)(read.hour, true, &false.into(), None).value.as_ref(), &cold, "{order} live cells at {}", read.hour);
+        }
+    }
+}
+
 fn compare_panel<P: dashboard_base::products::at_hour::AtHour>(source: &Source, params: Value) {
     let mut as_panel = params.clone();
     as_panel["panel"] = json!(P::KEY);

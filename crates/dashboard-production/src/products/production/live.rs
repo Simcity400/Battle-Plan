@@ -4,7 +4,7 @@ use dashboard_base::products::Country;
 use super::{
     DECIMALS, LineKind,
 };
-use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt}}};
+use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt, field_columns, warnings_through}}};
 use crate::products::production::ProductionIndex;
 use dashboard_follow::live::Source as Cell;
 use dashboard_text::metadata::link_slot;
@@ -173,8 +173,19 @@ impl AtHour for ProductionLinesAt {
 
 
 
-    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+    fn projection(params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         let fields: &[&str] = match table {
+            TableId::ProductionLines => {
+                let mut columns = field_columns(table, &["country", "kind", "variant", "mio", "max_factories", "priority"]);
+                let sort = match params.order.unwrap_or_default() {
+                    LineOrder::Game => None,
+                    LineOrder::Factories => Some("active_factories"),
+                    LineOrder::Output => Some("speed_raw"),
+                };
+                if let Some(sort) = sort { columns.extend(field_columns(table, &[sort])); }
+                return Some(columns);
+            }
+            TableId::ProductionLineOutput => &["variant", "mio", "since_hour", "observed_since_creation", "ended", "exact", "purpose"],
             TableId::Countries => &["canonical_slot", "tag"],
             TableId::CountryAppearance => &["cosmetic_tag", "name_tag", "graphical_culture", "graphical_culture_2d", "original_tag", "original_tag_reference"],
             TableId::ReservedCountryNaming => &["original_tag", "original_tag_reference", "dynamic_tag_boundary"],
@@ -184,7 +195,7 @@ impl AtHour for ProductionLinesAt {
             TableId::Factions => &[],
             _ => return None,
         };
-        Some(dashboard_base::products::at_hour::field_columns(table, fields))
+        Some(field_columns(table, fields))
     }
 
     fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits, _held: &DecodedFrame, _at: &dashboard_base::products::at_hour::ReadsAt<'_, Self::Context>) -> bool {
@@ -199,25 +210,12 @@ impl AtHour for ProductionLinesAt {
         }
     }
 
-    fn advance(_frame: &DecodedFrame, params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, _data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
-        if !edits.replaced.is_empty() { return Ok(false); }
-        for (&table, rows) in &edits.tables {
-            let mask = match table {
-                TableId::ProductionLines => {
-                    let mut fields = vec!["active_factories", "requested_factories", "efficiency_raw", "speed_raw", "cost_raw"];
-                    match params.order.unwrap_or_default() {
-                        LineOrder::Game => {}
-                        LineOrder::Factories => fields.retain(|&s| s != "active_factories"),
-                        LineOrder::Output => fields.retain(|&s| s != "speed_raw"),
-                    }
-                    dashboard_base::products::at_hour::field_mask(table, &fields)
-                }
-                TableId::ProductionLineOutput => dashboard_base::products::at_hour::field_mask(table, &["units"]),
-                _ => return Ok(false),
-            };
-            if rows.values().any(|fields| fields & !mask != 0) { return Ok(false); }
-        }
-        Ok(true)
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply, partial: bool) -> i32 {
+        if partial { return frame.hour; }
+        warnings_through(frame.hour, reply.warnings.iter().chain(&reply.missing).chain(&reply.output_missing)
+            .map(String::as_str)
+            .chain(reply.variants.iter().flat_map(|name| [name.name_unknown.as_deref(), name.icon_unknown.as_deref()]).flatten())
+            .chain(reply.organisations.iter().flat_map(|name| [name.name_unknown.as_deref(), name.icon_unknown.as_deref()]).flatten()))
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
