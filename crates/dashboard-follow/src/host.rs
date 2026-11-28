@@ -1193,7 +1193,8 @@ fn check_parked_panel(release: &str) {
     let playing = Arc::new(AtomicBool::new(false));
     let clock = now.clone();
     let live = playing.clone();
-    job.run(PanelRead::CatchUp { through: head + 1, quantum: 1, parked: false }, product, work.clone(), move || Some((clock.load(Ordering::Acquire), head, live.load(Ordering::Acquire))));
+    let through = if release == "play" { head + 4 } else { head + 1 };
+    job.run(PanelRead::CatchUp { through, quantum: 1, parked: false }, product, work.clone(), move || Some((clock.load(Ordering::Acquire), head, live.load(Ordering::Acquire))));
     assert_eq!(*sampled.lock().unwrap(), [head]);
     let (_, bytes, ..) = push.try_take().expect("the head answer fits while future replies hold credit");
     assert_eq!(panel::dated::records(&bytes).unwrap()[0].hour, head);
@@ -1222,7 +1223,7 @@ fn check_parked_panel(release: &str) {
     tasks.pop().unwrap()();
     let product = work.take().expect("the worker returned the product");
     if release == "play" {
-        assert_eq!(*sampled.lock().unwrap(), [head], "Play leaves the next reading to the live step");
+        assert_eq!(*sampled.lock().unwrap(), [head, through], "the resumed worker reads the boundary once and skips the backlog");
         assert!(push.try_take().is_none(), "Play does not send replies from the parked catch-up");
         assert_eq!(product.last, Some((epoch, seek, head)), "the handoff does not claim a newer reading");
         assert!(!product.joined, "the first live step still owes its panel confirmation");
