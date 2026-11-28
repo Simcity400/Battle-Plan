@@ -49,7 +49,7 @@ fn layer(side: &MapSide) -> &Icons {
 }
 
 fn side(name: &str) -> MapSide {
-    let entry = open(units(record(HOURS, campaign), name), quick()).unwrap();
+    let entry = open(units(record(HOURS, campaign), name), playhead::Settings { speed: 1.0, ..quick() }).unwrap();
     let icons = Icons::new(Arc::new(Count), Pace::Ready);
     let mut side = MapSide::new(entry, vec![Box::new(icons)], operatives()).unwrap();
     side.set_branch(RECORDING.branch);
@@ -69,7 +69,7 @@ fn at(side: &mut MapSide, hour: replay_data::Hour, what: &str, mut done: impl Fn
         if !side.composing() && done(side) {
             return;
         }
-        assert!(Instant::now() < until, "{what}: never; {}", state(side));
+        assert!(Instant::now() < until, "{what}: never; {}", if side.composing() { side.waiting_state(hour) } else { state(side) });
         std::thread::yield_now();
     }
 }

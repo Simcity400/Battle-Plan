@@ -9,7 +9,7 @@ pub struct ShownVision {
     making: Option<(VisionKey, Instant, u64)>,
     forgotten: u64,
     maker: Option<(std::sync::mpsc::Sender<crate::vision::SeenCopy>, landed::Receiver<Arc<Vision>>)>,
-    views: Option<super::views::Views>,
+    progress: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -21,8 +21,8 @@ struct VisionKey {
 }
 
 impl ShownVision {
-    pub(super) fn with_views(views: super::views::Views) -> Self {
-        Self { views: Some(views), ..Self::default() }
+    pub(super) fn with_progress(progress: Arc<dyn Fn() + Send + Sync>) -> Self {
+        Self { progress: Some(progress), ..Self::default() }
     }
 
     pub fn shown(&mut self, layer: Option<&crate::vision::Vision>, applied: Option<Hour>, parts_home: bool, exact: bool) -> Result<Landed<Arc<Vision>>, String> {
@@ -56,7 +56,7 @@ impl ShownVision {
         if self.maker.is_none() {
             let (jobs, receive) = std::sync::mpsc::channel::<crate::vision::SeenCopy>();
             let (send, made) = landed::channel();
-            let views = self.views.clone();
+            let progress = self.progress.clone();
             let started = std::thread::Builder::new().name("shown vision".into()).spawn(move || {
                 viewer_runtime::worker_priority::background_priority();
                 let mut before = None;
@@ -66,8 +66,8 @@ impl ShownVision {
                     if send.send(Arc::new(seen)).is_err() {
                         return;
                     }
-                    if let Some(views) = &views {
-                        views.notify_progress();
+                    if let Some(progress) = &progress {
+                        progress();
                     }
                 }
             });

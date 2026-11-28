@@ -34,6 +34,8 @@ pub type Seen = (Choice, Option<Arc<Vision>>);
 pub trait Build: Send + Sync + 'static {
     type Product: Send + Sync + 'static;
     fn exact_columns(&self) -> &[TableId] { &[] }
+    fn row_tables(&self, _view: &crate::layers::View) -> Vec<TableId> { Vec::new() }
+    fn hold_picture(&self) -> bool { false }
     fn tables(&self) -> Option<Tables>;
     fn build(&self, frame: &DecodedFrame, seen: &Seen) -> io::Result<Self::Product>;
     fn anew(&self, frame: &DecodedFrame, seen: &Seen) -> io::Result<Self::Product> {
@@ -304,6 +306,27 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
             drop(state);
             self.shared.wake.notify_all();
         }
+    }
+
+    fn declare_rows(&self, tables: Vec<TableId>) {
+        if tables.is_empty() {
+            return;
+        }
+        let mut state = self.shared.lock();
+        if state.refused.is_some() {
+            return;
+        }
+        let additional: Vec<_> = tables.into_iter().filter(|table| {
+            !state.tables.contains(table)
+                && state.source.as_ref().is_some_and(|(entry, _)| crate::playhead_host::details::held_at_all(entry, *table))
+        }).collect();
+        state.tables.extend(additional);
+        state.tables.sort_unstable_by_key(|table| table.index());
+        state.tables.dedup();
+        if let Some(reader) = row_reader(&mut state, &self.shared.built) {
+            reader.declare_only(&state.tables);
+        }
+        self.shared.wake.notify_all();
     }
 
     pub fn applied(&self, hour: Hour) {
@@ -751,7 +774,9 @@ impl<B: Build> crate::layers::Layer for Whole<B> {
 
     fn inputs(&mut self, view: &crate::layers::View, inputs: &mut crate::layers::Inputs<'_>) -> io::Result<()> {
         self.open = (self.drawn)(&self.build, view);
-        self.rebuilt.set_open(self.open);
+        if self.open {
+            self.rebuilt.declare_rows(self.build.row_tables(view));
+        }
         let mut renewed = None;
         if let Some(window) = &mut self.window
             && window.perspective.as_ref() != Some(&view.perspective)
@@ -765,13 +790,15 @@ impl<B: Build> crate::layers::Layer for Whole<B> {
         }
         if let Some(generation) = renewed {
             self.since = generation;
-            if let Some(old) = self.held.take() {
+            if let Some(window) = self.window.as_mut().filter(|_| self.open) {
+                window.owed += 1;
+                window.install = !self.build.hold_picture();
+            }
+            if !self.build.hold_picture() && let Some(old) = self.held.take() {
                 self.rebuilt.retire(old);
             }
-            if let Some(window) = self.window.as_mut().filter(|_| self.open) {
-                (window.install, window.owed) = (true, window.owed + 1);
-            }
         }
+        self.rebuilt.set_open(self.open);
         if !self.open {
             if let Some(old) = self.held.take() {
                 self.rebuilt.retire(old);
@@ -787,7 +814,7 @@ impl<B: Build> crate::layers::Layer for Whole<B> {
     fn compose(&mut self, _mirrors: &crate::playhead_host::mirror::Mirrors) -> io::Result<()> {
         self.since = self.rebuilt.renew();
         self.behind = false;
-        let dropped = self.held.take().map(|old| self.rebuilt.retire(old)).is_some();
+        let dropped = !self.build.hold_picture() && self.held.take().map(|old| self.rebuilt.retire(old)).is_some();
         if let Some(window) = &mut self.window {
             window.owed += 1;
             window.install |= dropped;
@@ -823,7 +850,7 @@ impl<B: Build> crate::layers::Layer for Whole<B> {
         {
             let waiting = match () {
                 () if self.behind => Duration::ZERO,
-                () if self.exact && self.held.is_some() => WHOLE,
+                () if self.exact && self.held.as_ref().is_some_and(|built| built.generation >= self.since) => WHOLE,
                 () => settling.waiting(WHOLE),
             };
             if !waiting.is_zero()
@@ -890,6 +917,10 @@ impl<B: Build> crate::layers::Layer for Whole<B> {
 
     fn uploaded(&self) -> bool {
         self.window.as_ref().is_none_or(|window| !window.install)
+    }
+
+    fn mode_ready(&self) -> bool {
+        !self.build.hold_picture() || !self.open || self.held.as_ref().is_some_and(|built| built.generation >= self.since)
     }
 
     fn carried(&self) -> crate::layers::Carried {

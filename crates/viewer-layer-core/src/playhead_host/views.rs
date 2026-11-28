@@ -793,6 +793,7 @@ struct Shared {
     demand: AtomicU64,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     on_publish: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+    whole_progress: Arc<std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     chosen: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
@@ -839,6 +840,9 @@ impl Shared {
 
     fn note_demand(&self) {
         self.demand.fetch_add(1, Ordering::Release);
+        if let Some(wake) = self.whole_progress.get() {
+            wake();
+        }
         let wake = lock(&self.wake).clone();
         if let Some(wake) = wake {
             wake();
@@ -846,6 +850,9 @@ impl Shared {
     }
 
     fn notify_progress(&self) {
+        if let Some(wake) = self.whole_progress.get() {
+            wake();
+        }
         let wake = lock(&self.on_publish).clone();
         if let Some(wake) = wake {
             wake();
@@ -911,6 +918,7 @@ impl Store {
             demand: AtomicU64::new(0),
             wake: Mutex::default(),
             on_publish: Arc::default(),
+            whole_progress: Arc::default(),
             #[cfg(test)]
             chosen: Mutex::default(),
             #[cfg(test)]
@@ -921,6 +929,10 @@ impl Store {
 
     pub fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         *lock(&self.shared.wake) = Some(wake);
+    }
+
+    pub(super) fn set_whole_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        let _ = self.shared.whole_progress.set(wake);
     }
 
     pub fn use_columns(&self, table: TableId) {
@@ -1255,14 +1267,18 @@ impl Views {
         self.shared.notify_progress();
     }
 
-    pub(super) fn progress_notifier(&self) -> impl Fn() + use<> {
+    pub fn progress_notifier(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let progress = Arc::clone(&self.shared.whole_progress);
         let on_publish = Arc::clone(&self.shared.on_publish);
-        move || {
+        Arc::new(move || {
+            if let Some(wake) = progress.get() {
+                wake();
+            }
             let wake = lock(&on_publish).clone();
             if let Some(wake) = wake {
                 wake();
             }
-        }
+        })
     }
 
     pub fn demand(&self) -> u64 {
@@ -1755,10 +1771,7 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
     shared.made.notify_all();
     if published {
         shared.entry.playhead().wake_waiters();
-        let on_publish = lock(&shared.on_publish).clone();
-        if let Some(wake) = on_publish {
-            wake();
-        }
+        shared.notify_progress();
     }
 }
 

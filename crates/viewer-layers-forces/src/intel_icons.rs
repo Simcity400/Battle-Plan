@@ -85,6 +85,7 @@ impl Open {
         let reader = views.reader_at(NAME, &tables.iter().copied().map(Need::every).collect::<Vec<Need>>(), pace);
         let (jobs, receive) = mpsc::channel::<Work>();
         let (send, done) = viewer_runtime::landed::channel();
+        let progress = views.progress_notifier();
         let evaluate = Arc::clone(evaluate);
         std::thread::Builder::new().name("intel icons".into()).spawn(move || {
             viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
@@ -115,6 +116,7 @@ impl Open {
                 if send.send(Done { icons, failures, missed, hour, frame, ns: started.elapsed().as_nanos() as u64, epoch: job.epoch }).is_err() {
                     return;
                 }
+                progress();
             }
         })?;
         Ok(Self { reader, jobs, done, busy: false, seen: None, handed: false })

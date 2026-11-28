@@ -302,6 +302,10 @@ pub trait Layer: Send {
         true
     }
 
+    fn mode_ready(&self) -> bool {
+        true
+    }
+
     fn any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
     }

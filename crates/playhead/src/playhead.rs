@@ -1087,6 +1087,10 @@ impl Consumer {
         try_lock(&self.shared.ring).map(|ring| ring.reaches(self.id, head))
     }
 
+    pub fn next_hour(&self) -> Option<Hour> {
+        lock(&self.shared.ring).next_hour(self.id)
+    }
+
     pub fn land(&mut self) {
         let id = self.id;
         self.shared.nudge(|control| {

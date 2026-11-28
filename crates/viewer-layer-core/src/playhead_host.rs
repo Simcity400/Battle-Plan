@@ -415,7 +415,7 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(notify_progress: impl Fn() + Send + 'static) -> io::Result<Self> {
+    fn new(notify_progress: Arc<dyn Fn() + Send + Sync>) -> io::Result<Self> {
         let (jobs, receive) = mpsc::channel::<Job>();
         let (send, done) = viewer_runtime::landed::channel();
         std::thread::Builder::new().name("playhead host worker".into()).spawn(move || {
@@ -743,6 +743,7 @@ pub struct MapSide<P: PlaybackProducts = NoProducts> {
     layers: Vec<Box<dyn Layer>>,
     worker: Worker,
     progress: Option<(Receiver<()>, playhead::Watcher)>,
+    retired: Arc<AtomicBool>,
     #[cfg(test)]
     pub(crate) before_whole_wait: Option<Box<dyn FnOnce() + Send>>,
     composing: bool,
@@ -826,8 +827,16 @@ impl MapSide<NoProducts> {
 impl<P: PlaybackProducts> MapSide<P> {
     pub fn lay_overlay_again(&mut self) -> Result<viewer_runtime::landed::Landed<P::OverlayMade>, String> {
         let until = Instant::now() + HANDS_BACK;
+        let epoch = self.epoch;
         loop {
             let _ = self.whole_progress().try_recv();
+            self.continuing().map_err(|error| error.to_string())?;
+            if self.entry.playhead.epoch() != epoch {
+                return Err("The overlay request was superseded by a seek".into());
+            }
+            if let Some(error) = self.entry.playhead.error() {
+                return Err(format!("The playhead stopped: {error}"));
+            }
             self.step_makers(false).map_err(|error| error.to_string())?;
             if self.applied.is_some_and(|hour| !self.head_products_reached(hour)) {
                 self.settle_makers().map_err(|error| error.to_string())?;
@@ -838,7 +847,8 @@ impl<P: PlaybackProducts> MapSide<P> {
             if asked && ready(self) && self.join_overlay(Settling::Whole) && ready(self) {
                 break;
             }
-            if Instant::now() >= until || !self.wait_whole_progress(until) {
+            let local = self.applied.is_some_and(|hour| self.makers_can_step(hour));
+            if Instant::now() >= until || (!local && !self.wait_whole_progress(until).map_err(|error| error.to_string())?) {
                 let loading = self.overlay.as_deref().map(Overlaying::loading).unwrap_or_default().join("; ");
                 return Err(format!(
                     "the overlay's maker was not asked for hour {:?}: composing {}, superseded {}, branch {:?}, an overlay {}{}",
@@ -887,8 +897,9 @@ impl<P: PlaybackProducts> MapSide<P> {
         let (tables, projections) = to_declared(&declared);
         let reader = entry.playhead.declare_projected(tables, Some(mirror::rebuild(Arc::clone(&entry.pages))), projections)?;
         let consumer = entry.playhead.consumer(reader);
-        let worker = Worker::new(views.handle().progress_notifier())?;
-        let vision = shown_vision::ShownVision::with_views(views.handle());
+        let progress = views.handle().progress_notifier();
+        let worker = Worker::new(Arc::clone(&progress))?;
+        let vision = shown_vision::ShownVision::with_progress(progress);
         let reads_len = reads.len();
         let timed = layers.iter().any(|layer| layer.timed());
         if timed {
@@ -921,6 +932,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             layers,
             worker,
             progress: None,
+            retired: Arc::default(),
             #[cfg(test)]
             before_whole_wait: None,
             composing: false,
@@ -1659,7 +1671,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             if matches!(layer.published(), Published::Cadence(_)) {
                 continue;
             }
-            self.mode_settled[at] |= layer.uploaded() && layer.carried().entities == 0 && !matches!(layer.published(), Published::Nothing);
+            self.mode_settled[at] |= layer.mode_ready() && layer.uploaded() && layer.carried().entities == 0 && !matches!(layer.published(), Published::Nothing);
             mode_settled &= self.mode_settled[at];
             fresh &= self.fresh[at];
             drawn += 1;
@@ -1761,8 +1773,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         let (ready, _) = self.progress.get_or_insert_with(|| {
             let (send, ready) = mpsc::sync_channel(1);
             let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || { let _ = send.try_send(()); });
-            self.views.set_wake(Arc::clone(&wake));
-            self.views.handle().set_on_publish(Arc::clone(&wake));
+            self.views.set_whole_wake(Arc::clone(&wake));
             (ready, self.entry.playhead.watch(wake))
         });
         ready
@@ -1775,12 +1786,31 @@ impl<P: PlaybackProducts> MapSide<P> {
         result
     }
 
-    fn wait_whole_progress(&mut self, until: Instant) -> bool {
+    fn wait_whole_progress(&mut self, until: Instant) -> io::Result<bool> {
         #[cfg(test)]
         if let Some(before_wait) = self.before_whole_wait.take() {
             before_wait();
         }
-        self.whole_progress().recv_timeout(until.saturating_duration_since(Instant::now())).is_ok()
+        self.continuing()?;
+        let woke = self.whole_progress().recv_timeout(until.saturating_duration_since(Instant::now())).is_ok();
+        self.continuing()?;
+        Ok(woke)
+    }
+
+    fn continuing(&self) -> io::Result<()> {
+        if self.retired.load(Ordering::Acquire) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "The map side is retiring"));
+        }
+        Ok(())
+    }
+
+    fn next_step(&self) -> Option<Hour> {
+        let epoch = self.entry.playhead.epoch();
+        self.pending.iter().find(|step| step.epoch() == epoch).map(|step| step.last()).or_else(|| self.consumer.next_hour())
+    }
+
+    fn makers_can_step(&self, hour: Hour) -> bool {
+        !self.composing && !self.makers_home() && self.next_step().is_some_and(|next| next <= hour)
     }
 
     pub fn catch_up(&mut self, head: Hour) -> io::Result<()> {
@@ -1789,9 +1819,8 @@ impl<P: PlaybackProducts> MapSide<P> {
         let until = Instant::now() + CATCHING_UP;
         loop {
             let _ = self.whole_progress().try_recv();
-            let newest = self.entry.playhead.newest().unwrap_or(head);
-            let target = head.min(newest.max(self.applied.unwrap_or(newest)));
-            let frame = self.frame_whole_step(target, false)?;
+            self.continuing()?;
+            let frame = self.frame_whole_step(head, false)?;
             if !self.composing && !self.superseded && self.applied == Some(head) && self.makers_home() && self.ready.iter().zip(&self.reads).all(|(&ready, reads)| ready || reads.is_err()) {
                 if self.settle_makers()? && self.overlay_whole(head)? {
                     self.combat_whole = self.combat_whole();
@@ -1804,8 +1833,8 @@ impl<P: PlaybackProducts> MapSide<P> {
             if let Some(error) = self.entry.playhead.error() {
                 return Err(io::Error::other(format!("The playhead stopped: {error}")));
             }
-            let local = !self.composing && (frame.steps > 0 || frame.swapped.is_some() || self.pending.front().is_some_and(|step| step.last() <= target));
-            if Instant::now() < until && (local || self.wait_whole_progress(until)) {
+            let local = !self.composing && (frame.steps > 0 || frame.swapped.is_some() || frame.exact || self.next_step().is_some_and(|next| next <= head));
+            if Instant::now() < until && (local || self.wait_whole_progress(until)?) {
                 continue;
             }
             return Err(io::Error::new(io::ErrorKind::TimedOut, self.waiting_state(head)));
@@ -1953,8 +1982,12 @@ impl<P: PlaybackProducts> MapSide<P> {
     pub fn settle_all(&mut self) -> io::Result<()> {
         let until = Instant::now() + CATCHING_UP;
         let epoch = self.epoch;
-        while epoch == self.entry.playhead.epoch() {
+        loop {
             let _ = self.whole_progress().try_recv();
+            self.continuing()?;
+            if epoch != self.entry.playhead.epoch() {
+                return Ok(());
+            }
             if self.settle_makers()? || epoch != self.entry.playhead.epoch() {
                 return Ok(());
             }
@@ -1962,11 +1995,10 @@ impl<P: PlaybackProducts> MapSide<P> {
                 return Err(io::Error::other(format!("The playhead stopped: {error}")));
             }
             let Some(hour) = self.applied else { return Ok(()) };
-            if !self.wait_whole_progress(until) {
+            if Instant::now() >= until || (!self.makers_can_step(hour) && !self.wait_whole_progress(until)?) {
                 return Err(io::Error::new(io::ErrorKind::TimedOut, self.waiting_state(hour)));
             }
         }
-        Ok(())
     }
 
     fn settle_makers(&mut self) -> io::Result<bool> {
@@ -2269,7 +2301,10 @@ impl<P: PlaybackProducts> MapSide<P> {
     }
 
     pub fn layer_retirements(&self) -> Vec<crate::layers::Retirement> {
-        self.layers.iter().filter_map(|layer| layer.retirement()).collect()
+        let retired = Arc::clone(&self.retired);
+        let progress = self.views.handle().progress_notifier();
+        let wake: crate::layers::Retirement = Box::new(move || { retired.store(true, Ordering::Release); progress(); });
+        self.layers.iter().filter_map(|layer| layer.retirement()).chain([wake]).collect()
     }
 
     #[cfg(any(test, feature = "test-support"))]

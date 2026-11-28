@@ -147,6 +147,7 @@ impl Open {
         let reader = views.reader_at(NAME, needs, Pace::Ready);
         let (jobs, receive) = mpsc::channel::<Work>();
         let (send, done) = landed::channel();
+        let progress = views.progress_notifier();
         std::thread::Builder::new().name(NAME.into()).spawn(move || {
             viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
             let mut evaluating = Evaluating::default();
@@ -180,6 +181,7 @@ impl Open {
                 if send.send(Done { product, missed, ns, epoch }).is_err() {
                     return;
                 }
+                progress();
             }
         })?;
         Ok(Self { reader, jobs, done, busy: false, seen: None, handed: false, handed_whole: false, evaluating: None })
