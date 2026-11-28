@@ -306,6 +306,15 @@ fn the_battle_log_shows_only_observed_losses_and_keeps_final_results_and_gaps() 
         .into_timelines(&Default::default()).unwrap();
     let cancel = AtomicBool::new(false);
     let source = Source::from_replay(SourceKey { source_id: "battles".into(), revision: "1".into() }, "fixture.battleplan".into(), Arc::new(replay), &cancel).unwrap();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let (places, reads) = replay_recording::cells::count_reads(|| tail::battles(&source, &query, &cancel).unwrap());
+    let first = places.iter().find(|battle| battle.combat == 19).unwrap();
+    assert_eq!((first.start, first.observed, first.province), (101, 101, Some(3)));
+    assert!(places.iter().any(|battle| (battle.combat, battle.written, battle.province) == (31, Some(104), Some(4))));
+    for table in [TableId::LandCombatProgress, TableId::LandCombatSides, TableId::VariantStats, TableId::Provinces] {
+        assert_eq!(reads.get(&table).map_or(0, |read| read.opened), 0, "title opened {table:?}");
+    }
+    assert_eq!(reads[&TableId::LandCombats].opened, 2);
     let ask = |hour, countries: Option<Vec<u32>>| {
         let params = serde_json::from_value(serde_json::json!({ "branchId": "1", "limit": 64, "hour": hour, "countries": countries })).unwrap();
         LandBattlesTail::load(&source, &params, &LoadContext { content: None }, &cancel).unwrap()

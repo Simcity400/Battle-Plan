@@ -1,4 +1,4 @@
-use super::{Columns, Combats, Key, at, combats, ended_battles, live_battles};
+use super::{Columns, Combats, Key, at, combats, decode_ended_rows, ended_battles, ending_history, live_battles};
 use dashboard_base::{
     Source,
     products::{
@@ -490,11 +490,52 @@ pub struct Battle {
 }
 
 pub fn battles(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Vec<Battle>> {
-    let index = index(source, query, cancelled)?;
-    Ok((0..index.len() as u32).map(|i| {
-        let entry = index.get(i);
-        Battle { combat: (entry.id >> 64) as u64, start: entry.date, written: entry.payload.written,
-            observed: entry.observed, province: entry.payload.place.first().and_then(|(_, (province, _))| *province) }
+    if let Some(index) = source.state::<Branches>().try_lock().ok().and_then(|held| held.0.get(&query.timeline.id).cloned()) {
+        return Ok((0..index.len() as u32).map(|i| {
+            let entry = index.get(i);
+            Battle { combat: (entry.id >> 64) as u64, start: entry.date, written: entry.payload.written,
+                observed: entry.observed, province: entry.payload.place.first().and_then(|(_, (province, _))| *province) }
+        }).collect());
+    }
+    let recording = query.replay.recording();
+    let columns = Columns::new()?;
+    let mut places = BTreeMap::<Key, (i32, Steps<Option<u32>>)>::new();
+    for &span in &query.timeline.stretches {
+        check_cancel(cancelled)?;
+        let mut found = BTreeMap::new();
+        if recording.withheld_reason(TableId::LandBattles.index()).is_none() {
+            live_battles(query, &columns, span.run, span.first, span.last, None, &mut found)?;
+        }
+        if recording.withheld_reason(TableId::LandBattleEnds.index()).is_none() {
+            let ended = ending_history(query, &columns, span.run, span.first, span.last, None)?;
+            decode_ended_rows(&ended, &mut found);
+        }
+        let keys: Vec<_> = found.iter().filter(|(_, battle)| !battle.live.is_empty()).map(|(key, _)| u128::from(key.0)).collect();
+        let province = if keys.is_empty() { lanes::History::default() } else {
+            lanes::history(recording, span.run, TableId::LandCombats, &[columns.combat[0]], Keys::These(&keys), span.first, span.last)?
+        };
+        for (key, battle) in found {
+            let observed = battle.live.first().map(|&(hour, _)| hour).into_iter().chain(battle.end.as_ref().map(|end| end.written)).min();
+            let Some(observed) = observed else { continue };
+            let changes: Vec<_> = province.keys.binary_search_by_key(&u128::from(key.0), |(id, _)| *id).ok().into_iter()
+                .flat_map(|i| &province.keys[i].1).map(|step| {
+                    let value = match step.cells.as_deref() { Some([Cell::Number(value)]) => u32::try_from(*value).ok(), _ => None };
+                    (step.hour, value)
+                }).collect();
+            let mut local = Vec::new();
+            for (first, last) in battle.live {
+                for (hour, _, read) in during(&changes, first, last) {
+                    push(&mut local, hour, read.copied().flatten());
+                }
+            }
+            if let Some(end) = battle.end && end.province.is_some() {
+                push(&mut local, end.written, end.province);
+            }
+            extend(&mut places.entry(key).or_insert_with(|| (observed, Vec::new())).1, local);
+        }
+    }
+    Ok(places.into_iter().map(|((combat, start, written), (observed, steps))| Battle {
+        combat, start, written, observed, province: steps.first().and_then(|&(_, province)| province),
     }).collect())
 }
 
