@@ -11,23 +11,15 @@ mod tests;
 const RETAINED_BYTES: usize = 8 * 1024 * 1024;
 const RUN_BYTES: usize = 1024;
 
-struct Spec { table: TableId, fields: u64, shift: Option<u8> }
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DateSelection { pub table: TableId, pub fields: u64, pub shift: Option<u8> }
 
-const SPECS: &[Spec] = &[
-    Spec { table: TableId::ActiveIdeas, fields: 1, shift: Some(32) },
-    Spec { table: TableId::ScriptVariables, fields: 1, shift: Some(0) },
-    Spec { table: TableId::HiredAdvisors, fields: 2, shift: Some(32) },
-    Spec { table: TableId::CountryCharacters, fields: 1, shift: None },
-    Spec { table: TableId::AdvisorTokens, fields: 1, shift: None },
-    Spec { table: TableId::CountryAppearance, fields: 240, shift: None },
-    Spec { table: TableId::FactionAdvisors, fields: 1, shift: None },
-    Spec { table: TableId::CountryRetiredCharacters, fields: 1, shift: None },
-    Spec { table: TableId::ReservedCountryNaming, fields: 255, shift: None },
-];
+type PreparedKey = (u32, &'static [DateSelection]);
+type PreparedEntry = (Arc<Preparation>, Option<Arc<RunDates>>);
 
 #[derive(Default)]
-pub(super) struct IdeaDates {
-    runs: BTreeMap<u32, (Arc<Preparation>, Option<Arc<RunDates>>)>,
+pub(super) struct PreparedDates {
+    runs: BTreeMap<PreparedKey, PreparedEntry>,
     bytes: usize,
     building: bool,
 }
@@ -45,45 +37,47 @@ struct TableDates {
     changes: Box<[(u128, i32)]>,
 }
 
-impl IdeaDates {
-    pub(super) fn prepare(source: &Source, run: u32) -> io::Result<Option<Arc<Preparation>>> {
+impl PreparedDates {
+    pub(super) fn prepare(source: &Source, run: u32, specs: &'static [DateSelection]) -> io::Result<Option<Arc<Preparation>>> {
         let replay = source.replay();
         let variables = source.state::<VariableDates>();
         let variable_build = VariableDates::prepare(&variables, Arc::clone(&replay), run)?;
-        let state = source.state::<IdeaDates>();
+        let state = source.state::<Self>();
         let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((ready, _)) = held.runs.get(&run) { return ready.pending(); }
-        if held.bytes + RUN_BYTES > RETAINED_BYTES { return Ok(variable_build); }
+        let key = (run, specs);
+        if let Some((ready, _)) = held.runs.get(&key) { return ready.pending(); }
+        let reserved = RUN_BYTES.saturating_add(specs.len().saturating_mul(size_of::<TableDates>()));
+        if reserved > RETAINED_BYTES - held.bytes { return Ok(variable_build); }
         let ready = Arc::<Preparation>::default();
         if !held.building {
             let state = Arc::clone(&state);
-            if read_ahead::spawn("idea proof dates", move || Self::build(&state, &replay, &variables)).is_err() {
+            if read_ahead::spawn("selected proof dates", move || Self::build(&state, &replay, &variables)).is_err() {
                 return Ok(variable_build);
             }
             held.building = true;
         }
-        held.bytes += RUN_BYTES;
-        held.runs.insert(run, (Arc::clone(&ready), None));
+        held.bytes += reserved;
+        held.runs.insert(key, (Arc::clone(&ready), None));
         ready.pending()
     }
 
     fn build(state: &Mutex<Self>, replay: &Arc<Replay>, variables: &Arc<Mutex<VariableDates>>) {
         job_priority::background_thread();
         loop {
-            let (run, ready, budget) = {
+            let ((run, specs), ready, budget) = {
                 let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
-                let Some((&run, (ready, _))) = held.runs.iter().find(|(_, (ready, _))| ready.result().is_none()) else {
+                let Some((&key, (ready, _))) = held.runs.iter().find(|(_, (ready, _))| ready.result().is_none()) else {
                     held.building = false;
                     return;
                 };
-                (run, Arc::clone(ready), RETAINED_BYTES - held.bytes)
+                (key, Arc::clone(ready), RETAINED_BYTES - held.bytes)
             };
             ready.run(|| {
                 let run_info = replay.recording().run(run)?;
                 let span = (run_info.first_hour, run_info.last_hour());
-                let mut dates = RunDates { span, tables: Vec::with_capacity(SPECS.len()) };
+                let mut dates = RunDates { span, tables: Vec::with_capacity(specs.len()) };
                 let mut bytes = 0;
-                for spec in SPECS {
+                for spec in specs {
                     if let Some(table) = spec.load(replay, run, span, budget - bytes) {
                         bytes += table.bytes();
                         dates.tables.push(table);
@@ -92,7 +86,7 @@ impl IdeaDates {
                 let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
                 if bytes <= RETAINED_BYTES - held.bytes {
                     held.bytes += bytes;
-                    held.runs.get_mut(&run).expect("admitted idea run").1 = Some(Arc::new(dates));
+                    held.runs.get_mut(&(run, specs)).expect("admitted date selection").1 = Some(Arc::new(dates));
                 }
                 drop(held);
                 if let Some(variable_build) = VariableDates::prepare(variables, Arc::clone(replay), run)? {
@@ -103,18 +97,19 @@ impl IdeaDates {
         }
     }
 
-    pub(super) fn get(&self, run: u32, span: (i32, i32)) -> Option<Arc<RunDates>> {
-        self.runs.get(&run)?.1.as_ref().filter(|dates| dates.span == span).cloned()
+    pub(super) fn get(&self, run: u32, span: (i32, i32), specs: &'static [DateSelection]) -> Option<Arc<RunDates>> {
+        self.runs.get(&(run, specs))?.1.as_ref().filter(|dates| dates.span == span).cloned()
     }
 }
 
-impl Spec {
+impl DateSelection {
     fn load(&self, replay: &Replay, run: u32, (first, last): (i32, i32), budget: usize) -> Option<TableDates> {
         let recording = replay.recording();
         let index = self.table.index();
         let columns: Vec<_> = (0..64).filter(|&column| self.fields & (1 << column) != 0).collect();
         let available = recording.read_columns(index);
-        if !matches!(recording.table_coverage(index, run), TableCoverage::Valid)
+        if self.shift.is_some_and(|shift| shift >= 128)
+            || !matches!(recording.table_coverage(index, run), TableCoverage::Valid)
             || columns.iter().any(|column| !available.contains(column))
             || self.shift.is_some() && dashboard_declare::summaries().ok()?.iter()
                 .any(|(table, shape)| *table == index && !matches!(shape, Shape::Log(_)))

@@ -1,7 +1,11 @@
 use super::*;
 use crate::test_fixtures::{CAMPAIGN, records, source};
-use replay_data::rows::{ActiveIdeaRow, TableRows};
+use replay_data::rows::{ActiveIdeaRow, TableRows, mask};
 use replay_frame::frame::TableView;
+
+const ACTIVE_IDEAS: DateSelection = DateSelection {
+    table: TableId::ActiveIdeas, fields: mask::<ActiveIdeaRow>(&["token"]), shift: Some(32),
+};
 
 fn ideas_recording(last: i32, rows: impl Fn(i32) -> Vec<ActiveIdeaRow>) -> Replay {
     let table = TableId::ActiveIdeas;
@@ -20,7 +24,7 @@ fn prepared_idea_dates_keep_exact_owner_selections_without_restoring() {
     let replay = ideas_recording(110, |hour| [(1, 103), (2, 105)].into_iter().map(|(country, changed)| ActiveIdeaRow {
         country, ordinal: 0, token: if hour < changed { b"first".to_vec() } else { b"after".to_vec() },
     }).collect());
-    let spec = SPECS.iter().find(|spec| spec.table == table).unwrap();
+    let spec = ACTIVE_IDEAS;
     let dates = spec.load(&replay, 0, (100, 110), RETAINED_BYTES).unwrap();
     for (country, changed) in [(1_u128, 103), (2, 105), (3, 110)] {
         let start = country << 32;
@@ -57,7 +61,7 @@ fn a_damaged_anchor_refuses_dates_even_when_another_owner_spans_it() {
     let damaged = Replay::open(bytes).unwrap();
     let range = (1_u128 << 32, (1_u128 << 32) | u128::from(u32::MAX));
     let scoped = Selection { fields: 1, rows: Some(vec![range]), ends: false };
-    let spec = SPECS.iter().find(|spec| spec.table == table).unwrap();
+    let spec = ACTIVE_IDEAS;
     assert!(scoped.dates(&full, 0, table, 100, last).is_ok());
     assert!(scoped.dates(&damaged, 0, table, 100, last).is_err());
     assert!(Selection { rows: None, ..scoped }.dates(&damaged, 0, table, 100, last).is_ok());

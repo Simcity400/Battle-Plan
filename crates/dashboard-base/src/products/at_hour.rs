@@ -31,7 +31,7 @@ pub use placed::with_strip_pool;
 pub use placed::interactive_pool_snapshot;
 mod validity;
 pub(crate) use validity::reading_dates;
-pub use validity::{ReadDates, ScriptedInputs, reads_through, row_change_hours};
+pub use validity::{DateSelection, ReadDates, ScriptedInputs, reads_through, row_change_hours};
 pub use incremental::{DatedStep, Edits, Held};
 
 pub use replay_frame::frame::Keys;
