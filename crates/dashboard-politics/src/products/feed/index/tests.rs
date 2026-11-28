@@ -239,3 +239,57 @@ fn decision_cost_sort_keeps_unrecorded_after_recorded_in_both_directions() {
         assert_eq!(index.get(answer.rows[3].at).sort_keys[2].at(110), None);
     }
 }
+
+#[test]
+fn followed_folds_match_fresh_pages_through_late_rows_retirement_and_gap_changes() {
+    use dashboard_query::{identity::Holders, log::occurrence::{Ask, DatedRows, Direction, Order}};
+    use crate::products::feed::fold::{self, Pages, Window};
+    let first = 24 * 2_000;
+    let at = |id, date, observed| Occurrence {
+        id, date, observed, kind: kind_code(EventFeedKind::ScriptEventFired), roles: Box::new([]),
+        subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(),
+        payload: Item::Log { head: Locator { run: 1, hour: observed, key: id }, edges: Box::new([]), valid_clock: true },
+    };
+    let mut entries: Vec<_> = (0..2_000).map(|day| at(day as u128, day * 24, day * 24)).collect();
+    for offset in [1, 2, 3, 4, 5, 7, 8, 9, 10, 11] {
+        entries.push(at((3_000 + offset) as u128, first + offset, first + offset));
+    }
+    entries.push(at(3_099, first, first + 14));
+    let gap = MissingSpan { first_hour: first + 6, last_hour: first + 6, reason: "unread".into() };
+    let index = Arc::new(Index::new(entries, vec![gap], &LIVE).unwrap().with_retirements(HashMap::from([(3011, first + 15)])));
+    let fold_meta: Vec<_> = (0..index.len()).map(|at| Some(FoldMeta { day: index.get(at as u32).date.div_euclid(24), country: 0, group: 0 })).collect();
+    let feed = Feed { index, notices: Vec::new(), warnings: Vec::new(), unattributed: Vec::new(), unrecorded: Vec::new(), countries: vec!["GER".into()], fold_meta, unsettled: false };
+    let holders = Holders::default();
+    let expanded = [fold::key_of(FoldMeta { day: first.div_euclid(24), country: 0, group: 0 }, "GER", 3007)];
+    for direction in [Direction::Ascending, Direction::Descending] {
+        for offset in [0, 5, 1999, 2003] {
+            let mut ask = Ask { hour: first + 11, from: None, to: None, gap_end: None, selection: None, subject: None, kinds: None, states: None, search: None,
+                order: Order::Date(direction), live_first: false, offset, limit: 8, chips: &[] };
+            let window = Window { direction, offset, limit: 8, expanded: Some(&expanded), full: Some(&expanded) };
+            let mut cursor = feed.index.dated_cursor(&holders, &ask).unwrap();
+            let mut pages = Pages::new(&feed);
+            for (hour, has_gap) in [(first + 5, false), (first + 6, true), (first + 11, true), (first + 12, false), (first + 13, true), (first + 14, true), (first + 15, true), (first + 11, true)] {
+                ask.hour = hour;
+                let mut update = cursor.advance(hour);
+                if hour == first + 5 { assert_eq!(update.until, Some(first + 6)); }
+                if hour == first + 6 {
+                    assert!(update.changed.is_empty());
+                    assert_eq!(update.gaps.len(), 1);
+                }
+                if !has_gap {
+                    update.gaps.clear();
+                }
+                let page = pages.advance(&feed, &update, &window);
+                feed.index.with_dated(&holders, &ask, |full| {
+                    assert_eq!((update.live, update.unattributed, update.until), (full.live, full.unattributed, full.until));
+                    if hour == first + 14 { assert_eq!(full.rows.len(), 2011); }
+                    let full = if has_gap { full } else { DatedRows { gaps: &[], ..full } };
+                    assert_eq!(page, fold::page(&feed, full, direction, offset, 8, Some(&expanded), Some(&expanded)), "hour {hour}, {direction:?}, offset {offset}");
+                }).unwrap();
+                if hour == first + 14 {
+                    assert!(pages.visited <= 11, "only the affected day is visited, there are {} entries", feed.index.len());
+                }
+            }
+        }
+    }
+}
