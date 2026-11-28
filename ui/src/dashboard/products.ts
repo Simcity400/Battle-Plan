@@ -96,7 +96,7 @@ async function loadPage<T>(client: DashboardClient, request: ProductRequest, sig
   const holder = !replies.holds(key) && other.holds(key) ? other : replies;
   if (holder.holds(key)) {
     perfLog?.cached(request, 'joined');
-    askedByPage(client, request);
+    queueMicrotask(() => { if (!signal.aborted) askedByPage(client, request); });
   }
   const accepted = (reply: ProductReply<unknown>) => { try { told(reply.data); return true; } catch { return false; } };
   const gate = preparing(client) ? prepareGate(client) : null;
