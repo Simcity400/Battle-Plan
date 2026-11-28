@@ -258,6 +258,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             self.world().tables(),
             RECORD,
         )?;
+        let mut previous_owner = None;
         for record in active.iter().chain(retired.iter()) {
             let record = record.map_err(|why| {
                 super::refusal::input_error(replay_data::rows::TableId::CountryCharacters, why)
@@ -265,13 +266,17 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             let Some(id) = record.character else {
                 continue;
             };
-            let owner = self
-                .world()
-                .slot(record.country)
-                .ok_or_else(|| -> Failure {
-                    self.world()
-                        .unlinked("country characters/country retired characters", record.country)
+            let owner = if let Some((raw, owner)) = previous_owner
+                && raw == record.country
+            {
+                owner
+            } else {
+                let owner = self.world().slot(record.country).ok_or_else(|| {
+                    self.world().unlinked("country characters/country retired characters", record.country)
                 })?;
+                previous_owner = Some((record.country, owner));
+                owner
+            };
             if owner != country {
                 continue;
             }

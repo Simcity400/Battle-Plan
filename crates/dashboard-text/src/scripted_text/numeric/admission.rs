@@ -196,6 +196,14 @@ mod tests {
     fn live_character_grammar_uses_country_rosters_before_temps() {
         script_game::enter();
         let (catalogue, _folder, mut frame) = fixture();
+        *frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![
+            CharacterRow { id: 6, country: 100, name_token_id: -1, ..CharacterRow::default() },
+            CharacterRow { id: 7, country: 100, name_token_id: 500, ..CharacterRow::default() },
+        ]));
+        *frame.tables[TableId::CountryCharacters.index()] = TableView::Complete(TableRows::CountryCharacters(vec![
+            CountryCharacterRow { country: 100, ordinal: 0, character: Some(6) },
+            CountryCharacterRow { country: 100, ordinal: 1, character: Some(7) },
+        ]));
         let event = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
         {
             let text = ScriptedText::new(
