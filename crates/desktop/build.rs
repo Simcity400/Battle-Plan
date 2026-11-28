@@ -11,5 +11,8 @@ fn main() {
     config["productName"] = format!("BattlePlan ({})", label::channel_label(&version)).into();
     // SAFETY: the build script runs no other threads, and tauri_build reads the variable after this.
     unsafe { std::env::set_var("TAURI_CONFIG", config.to_string()) };
-    tauri_build::build();
+    let windows = tauri_build::WindowsAttributes::new()
+        .app_manifest(include_str!("../engine-heap/segment-heap.manifest"));
+    let attributes = tauri_build::Attributes::new().windows_attributes(windows);
+    tauri_build::try_build(attributes).expect("build desktop resources");
 }

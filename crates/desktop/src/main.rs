@@ -28,7 +28,7 @@ use tauri::http::HeaderValue;
 use tauri::{Manager, State, WebviewWindow};
 
 #[global_allocator]
-static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
+static ALLOCATOR: engine_heap::SegmentHeap = engine_heap::SegmentHeap;
 
 fn serve_artwork(request: tauri::http::Request<Vec<u8>>, responder: tauri::UriSchemeResponder, page_origin: HeaderValue) {
     use tauri::http::{Response, StatusCode, header};
