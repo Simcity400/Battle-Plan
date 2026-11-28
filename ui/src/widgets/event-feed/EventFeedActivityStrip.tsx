@@ -1,4 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { panelReply } from '../../dashboard/follow/panel.ts';
+import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
+import { PreparingPage } from '../../dashboard/preparing.ts';
+import { installedModel, installedPanel, useFollowedSub, useFollowedWidget, useInstalled, usePipeline } from '../../dashboard/follow/useFollowed.ts';
 import { formatDay } from '../../dashboard/calendar.ts';
 import { validateProductReply } from '../../dashboard/client.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
@@ -49,7 +53,60 @@ function stripDateLabel(hour: number): string {
   return parts.length >= 2 ? `${parts[0]} ${parts[1]}` : full;
 }
 
-export default function EventFeedActivityStrip({
+export default function EventFeedActivityStrip(props: EventFeedActivityStripProps) {
+  if (props.widget.time.mode === 'follow' && props.pinnedHour == null && props.frozenHour == null) {
+    return <FollowedActivityStrip {...props} />;
+  }
+  return <AskedActivityStrip {...props} />;
+}
+
+const activityReply = (data: unknown) => data as EventFeedActivityReply;
+
+function FollowedActivityStrip({ widget, track, runtime, active, categories, excludedKinds, context, refusal }: EventFeedActivityStripProps) {
+  const gate = useGate(runtime, widget);
+  const preparing = useContext(PreparingPage);
+  const selection = context ? occurrenceSelection(context) : null;
+  const asked = CATEGORIES.filter(cat => categories.includes(cat.value)).map(cat => cat.value);
+  const checked = active && !preparing && track && !refusal && selection !== null && asked.length && selection?.countries?.length !== 0
+    ? gate.checkFollow({
+      panel: 'event-feed-activity', branchId: track.branch.id, binHours: 24, categories: asked,
+      ...(excludedKinds?.length ? { exclude: excludedKinds } : {}),
+      ...selection,
+    }) : null;
+  const pipeline = usePipeline(runtime.clock, runtime.client);
+  const widgetKey = useWidgetKey();
+  const bounds = track ? [track.branch.firstHour, track.branch.lastHour] as const : null;
+  const placement = useFollowedWidget(pipeline, checked?.query && track ? `${widgetKey}|event-feed-activity|${track.axisOffset}` : null,
+    { offset: track?.axisOffset ?? 0, bounds, pin: null, widget: widgetKey, kind: 'event-feed:activity' });
+  const follow = track ? { source: track.source, branch: track.branch.id, offset: track.axisOffset } : null;
+  const sub = useFollowedSub(pipeline, placement, follow, checked?.query ?? null, 'panel', 'event-feed-activity');
+  const view = useInstalled(pipeline, placement);
+  const panel = !view?.dim && view?.mode === 'picture' ? installedPanel(installedModel(view, sub)) : undefined;
+  const { data, error } = panelReply(panel, activityReply);
+  const subscribeHour = useCallback((changed: () => void) => {
+    if (!pipeline || placement === null) return () => {};
+    const stopInstall = pipeline.onInstall(placement, changed);
+    const stopDate = pipeline.onDate(placement, changed);
+    return () => { stopInstall(); stopDate(); };
+  }, [pipeline, placement]);
+  const readHour = useCallback(() => {
+    const shown = pipeline && placement !== null ? pipeline.view(placement) : null;
+    return shown?.mode === 'picture' && !shown.dim ? shown.through ?? null : null;
+  }, [pipeline, placement]);
+  const hour = useSyncExternalStore(subscribeHour, readHour, readHour);
+  const first = track?.branch.firstHour;
+  const strip = useMemo(() => {
+    if (!data || hour === null || first === undefined) return null;
+    const from = activityStripStart(first, null, hour);
+    return buildFullActivityStrip(data, activityRequestPlan(null, '', from, hour, data.binHours));
+  }, [data, hour, first]);
+  const unavailable = refusal ?? checked?.refused ?? error?.message
+    ?? (view?.mode === 'refused' || view?.mode === 'failed' ? view.reason : null);
+  if (unavailable) return <div className="efs-strip is-unavailable" role="status" aria-label="Event activity strip">{unavailable}</div>;
+  return strip ? <ActivityPicture strip={strip} groupGaps={context?.countries.unobserved} /> : null;
+}
+
+function AskedActivityStrip({
   widget,
   track,
   runtime,
@@ -211,7 +268,13 @@ export default function EventFeedActivityStrip({
     );
   }
   if (!canDisplayStrip(strip, target, failed?.key ?? null)) return null;
+  return <ActivityPicture strip={strip} groupGaps={groupGaps} />;
+}
 
+const ActivityPicture = memo(function ActivityPicture({ strip, groupGaps }: {
+  readonly strip: StripState;
+  readonly groupGaps?: FamilyPlanContext['countries']['unobserved'];
+}) {
   const totals = new Array<number>(strip.binCount).fill(0);
   for (const s of strip.series) {
     for (let i = 0; i < strip.binCount; i++) totals[i]! += s.counts[i] ?? 0;
@@ -273,4 +336,4 @@ export default function EventFeedActivityStrip({
       </div>
     </div>
   );
-}
+});

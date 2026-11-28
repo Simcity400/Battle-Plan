@@ -1532,7 +1532,7 @@ fn activity_bins_and_table_rows_count_the_same_resolved_countries_after_renames_
     }).collect();
     let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
         .unwrap().into_timelines(&Default::default()).unwrap();
-    let held = dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "activity-selection".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let held = Arc::new(dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "activity-selection".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap());
     let context = LoadContext { content: None };
     let cancel = AtomicBool::new(false);
     let mut cases = vec![
@@ -1551,11 +1551,31 @@ fn activity_bins_and_table_rows_count_the_same_resolved_countries_after_renames_
             countries: countries.clone(), group: group.clone(), search: None, row: None, sort: None, offset: None, limit: 64,
             categories: vec![EventFeedCategory::Politics], exclude: None, expanded: None, full: None, place_names: None }, &context, &cancel).unwrap();
         let strip = EventFeedActivity::load(&held, &EventFeedActivityParams { branch_id: "1".into(), hour: 143, from: 100, bin_hours: 12,
-            categories: vec![EventFeedCategory::Politics], exclude: None, countries, group }, &context, &cancel).unwrap();
+            categories: vec![EventFeedCategory::Politics], exclude: None, countries: countries.clone(), group: group.clone() }, &context, &cancel).unwrap();
         let total: u64 = strip.lines.iter().flat_map(|line| &line.bins).map(|&(_, count)| count).sum();
         assert_eq!(total, table.total.parse::<u64>().unwrap(), "{label}: the same population");
         assert_eq!(total, expected, "{label}: nonempty before and after the identity or membership change");
         assert!(strip.missing.is_empty(), "{label}: recorded selection");
+        let request = serde_json::json!({
+            "panel": "event-feed-activity",
+            "branchId": "1",
+            "binHours": 12,
+            "categories": ["politics"],
+            "countries": countries,
+            "group": group,
+        });
+        let panel = super::event_feed_activity_panel(&held, &context, &request).unwrap();
+        let exact = panel.exact().unwrap();
+        for hour in [100, 113, 133, 143, 114] {
+            let mut asked = request.clone();
+            let fields = asked.as_object_mut().unwrap();
+            fields.remove("panel");
+            fields.insert("hour".into(), hour.into());
+            fields.insert("from".into(), 100.into());
+            let expected = crate::registrations::FEED_EVENTFEEDACTIVITY.answer(&held, asked, &context, &cancel).unwrap();
+            let streamed = (exact.advance)(hour, false, &cancel, None);
+            assert_eq!(streamed.value.as_ref().as_ref().unwrap(), &expected, "{label} at hour {hour}");
+        }
     }
 }
 

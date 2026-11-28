@@ -6491,6 +6491,7 @@ export const PANEL_KEYS = [
   "equipment-losses",
   "espionage-log-tail",
   "event-choices-tail",
+  "event-feed-activity",
   "event-feed-tail",
   "faction-details",
   "faction-pools",
