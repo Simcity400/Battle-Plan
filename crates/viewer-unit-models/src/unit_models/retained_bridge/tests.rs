@@ -197,7 +197,7 @@ fn assets() -> UnitModelAssets {
         ships: ships::ShipAssets::test_formation(),
         registered: names.into_iter().map(str::to_owned).collect(),
         roster: Arc::new(mesh::Roster {
-            descriptors,
+            descriptors: descriptors.into(),
             ..Default::default()
         }),
         bounds: Arc::new(

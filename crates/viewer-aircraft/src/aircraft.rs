@@ -524,7 +524,7 @@ fn plane_library(
         .cloned()
         .collect();
     if !from_recording.is_empty() {
-        let baked = ModelLibrary::load_recorded(layers, decode, &from_recording, |entity| {
+        let baked = ModelLibrary::load_recorded(layers, decode, recorded_job.as_ref(), &from_recording, |entity| {
             unusable.get(entity).cloned().unwrap_or_default()
         })?;
         library.merge(baked);

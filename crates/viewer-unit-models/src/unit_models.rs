@@ -1106,6 +1106,7 @@ impl UnitModelAssets {
                 ModelLibrary::load_recorded_profiled(
                     &self.layers,
                     decode,
+                    None,
                     &recorded,
                     |name| entity_refusal(&self.roster, name).unwrap_or_default(),
                     spans,

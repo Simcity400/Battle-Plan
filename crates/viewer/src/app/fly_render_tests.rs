@@ -23,11 +23,9 @@ fn the_chosen_aircraft_is_drawn_while_the_frame_holds_the_document() -> std::io:
     let assets = Arc::clone(&document.aircraft);
     let name = assets
         .roster()
-        .descriptors
-        .entities
-        .keys()
+        .entity_names()
         .find(|name| assets.player(name).is_ok())
-        .cloned()
+        .map(str::to_owned)
         .ok_or_else(|| invalid("the content registers no entity that can be flown"))?;
     let mut viewer = Viewer::create(
         Config::default(),

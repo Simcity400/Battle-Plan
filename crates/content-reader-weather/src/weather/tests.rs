@@ -284,7 +284,7 @@ fn weather_uses_registered_clone_snapshots_versions_and_held_radius_reads() {
     assert_eq!(pairs[2].parents[0].as_ref().unwrap().radius, 8.);
     assert_eq!(pairs[3].parents[0].as_ref().unwrap().radius, 2.5);
     assert!(
-        entity_particles("dropped", &before.descriptors, &Catalog::default())
+        entity_particles("dropped", before.descriptor_job().view(), &Catalog::default())
             .unwrap_err()
             .to_string()
             .contains("dropped")
@@ -317,9 +317,7 @@ fn weather_refuses_a_requested_name_from_an_unreadable_later_descriptor() {
         layers
             .descriptor_roster()
             .unwrap()
-            .descriptors
-            .entities
-            .contains_key("uncertain")
+            .has_entity("uncertain")
     );
     let effects = effects(&layers, &Catalog::default()).unwrap();
     let [uncertain, plain] = &effects[&(0, false)][..] else {

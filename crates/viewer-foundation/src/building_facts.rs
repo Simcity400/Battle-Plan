@@ -569,13 +569,14 @@ mod tests {
     use super::*;
     #[test]
     fn a_bucket_needs_a_registered_entity_of_its_own_name() {
-        let mut roster = Roster::default();
-        for name in ["building_one", "building_many_2"] {
-            roster
-                .descriptors
-                .entities
-                .insert(name.into(), Default::default());
-        }
+        let roster = Roster {
+            descriptors: content_reader_mesh::mesh::Descriptors {
+                entities: ["building_one", "building_many_2"]
+                    .into_iter().map(|name| (name.into(), Default::default())).collect(),
+                ..Default::default()
+            }.into(),
+            ..Default::default()
+        };
         let spawn = |name: &str, max, meshes| SpawnPoint {
             name: name.into(),
             max,

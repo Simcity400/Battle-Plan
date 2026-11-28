@@ -391,7 +391,7 @@ fn every_registered_entity_and_bare_mesh_is_listed_with_its_layer_precedence() {
     assert_eq!(entry(&catalogue, "fighter_mesh").kind, Kind::Mesh);
     let roster = stack.descriptor_roster().unwrap();
     assert_eq!(
-        roster.descriptors.entities["fighter_equipment_0_entity"]
+        roster.descriptor_job().view().entity("fighter_equipment_0_entity").unwrap()
             .mesh
             .as_deref(),
         Some("pool_mesh")
