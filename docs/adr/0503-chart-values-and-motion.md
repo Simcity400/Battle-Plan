@@ -12,6 +12,6 @@ During playback, bars interpolate their widths between successive proven reading
 
 Ordered bars interpolate the painted geometry of each endpoint, including fills that shrink below their normal minimum width on the way to zero. The Fuel by branch bars also interpolate requested targets and the dashed shortfall between compatible readings. Readouts and shortfalls keep their recorded amounts. A wider plot opens at the recorded hour when its readout needs less room. A target appearing or disappearing cuts to the recorded picture at its hour.
 
-Ordered segmented bars interpolate the cold painted segment widths, including the cap on segments that sum to more than the total. Adding, removing, reordering or restyling a segment cuts to the recorded picture. Missing or partial totals or segments, and transitions between negative and nonnegative totals, also cut. A view can produce an ordinary fill when no breakdown is present at either endpoint. Its total follows the ordinary ordered rules.
+Ordered segmented bars interpolate the cold painted segment widths, including the cap on segments that sum to more than the total. Adding, removing, reordering or restyling a segment cuts to the recorded picture. Missing or partial totals or segments, and transitions between negative and nonnegative totals, also cut. When both endpoints display a plain fill, the segmented projection still checks the sign and completeness of the readings.
 
 [Axis values](../../ui/src/charts/valueAxis.ts)

@@ -112,10 +112,9 @@ function buildPartSegments(
   const tooltipItems: TooltipListItem[] = [];
   if (!options.split) {
     const damaged = options.damagedSource ? partValue(index, options.damagedSource, wireName) : null;
-    if (damaged === null) return { tooltipItems, segmentsIncomplete: true };
-    const amount = numericOf(damaged);
+    const amount = damaged === null ? null : numericOf(damaged);
     if (amount === null) {
-      if (total > 0) tooltipItems.push({ label: 'Damaged', missingReason: reasonOf(damaged) });
+      tooltipItems.push({ label: 'Damaged', missingReason: damaged === null ? PART_NOT_READ : reasonOf(damaged) });
       return { tooltipItems, segmentsIncomplete: true };
     }
     if (total <= 0) return { tooltipItems };
@@ -144,16 +143,19 @@ function buildPartSegments(
     }
     const damagedValue = spec.damagedSource ? partValue(index, spec.damagedSource, wireName) : null;
     const damaged = damagedValue === null ? null : numericOf(damagedValue);
-    damageUnknown ||= spec.damagedSource !== undefined && damaged === null;
+    const damageMissing = spec.damagedSource !== undefined && damaged === null;
+    if (total > 0 || damageMissing) {
+      tooltipItems.push({ label: spec.label, swatch: spec.color, value: countText(amount) });
+    }
+    const damagedLabel = damagedGroupLabel({ label: spec.label });
+    if (damageMissing) {
+      damageUnknown = true;
+      tooltipItems.push({ label: damagedLabel, swatch: spec.color, missingReason: damagedValue === null ? PART_NOT_READ : reasonOf(damagedValue) });
+    }
     if (total <= 0) continue;
     const whole = Math.max(0, amount);
-    known += whole;
-    tooltipItems.push({ label: spec.label, swatch: spec.color, value: countText(whole) });
     if (whole <= 0) continue;
-    const damagedLabel = damagedGroupLabel({ label: spec.label });
-    if (damagedValue !== null && damaged === null) {
-      tooltipItems.push({ label: damagedLabel, swatch: spec.color, missingReason: reasonOf(damagedValue) });
-    }
+    known += whole;
     const hurt = damaged === null ? 0 : Math.min(whole, Math.max(0, damaged));
     if (whole > hurt) segments.push(segment(spec.id, spec.label, whole - hurt, total, spec.color));
     if (hurt > 0) segments.push(segment(`damaged:${spec.id}`, damagedLabel, hurt, total, spec.color, true));

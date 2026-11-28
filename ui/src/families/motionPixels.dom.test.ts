@@ -60,6 +60,17 @@ test('a moving target clears the recorded readout until the plot widens at the n
   });
 });
 
+test('an ordered split confines a subpixel hatched tail to its painted edge', async () => {
+  await withNativePage('ordered-segment-hatch-edge', '/ui/src/families/motionPixels.dom.fixture.ts', async page => {
+    const samples = await page.evaluate<{ dpr: number; moving: boolean; inside: number; outside: number }[]>('window.checkSubpixelHatchTail()');
+    for (const { dpr, moving, inside, outside } of samples) {
+      const at = `${moving ? 'moving' : 'cold'} split at DPR ${dpr}`;
+      assert.ok(inside > 0, `the hatch is visible inside the ${at}`);
+      assert.equal(outside, 0, `background just beyond the ${at}`);
+    }
+  });
+});
+
 test('the shared host shows a proven refusal and reveals the held recorded bar after it expires', async () => {
   await withNativePage('ordered-bars-host-refusal', '/ui/src/families/motionHost.dom.fixture.tsx', async page => {
     const cdp = await motionBrowser(page.page);

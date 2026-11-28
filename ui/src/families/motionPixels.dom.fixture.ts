@@ -1,6 +1,7 @@
 import { readableColour } from '../charts/palette.ts';
 import { datedPanel, datedRecord } from '../dashboard/follow/messages.fixture.ts';
 import type { Refusal } from '../dashboard/follow/page.ts';
+import { drawSplitBar } from '../draw/kit.ts';
 import { Lane, type Presented } from '../draw/lane.ts';
 import { parseColor } from '../shell/appearance/color.ts';
 import { DEFAULT_SEEDS, deriveColors } from '../shell/appearance/themes.ts';
@@ -70,6 +71,24 @@ function changedBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
   let changed = 0;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) changed++;
   return changed;
+}
+
+function checkSubpixelHatchTail() {
+  return [1, 1.25, 1.5, 2].flatMap(dpr => [false, true].map(moving => {
+    const canvas = new OffscreenCanvas(16 * dpr, 16 * dpr);
+    const ctx = canvas.getContext('2d')!;
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(0, 0, 16, 16);
+    const firstOutside = 12 * dpr;
+    const column = (x: number) => ctx.getImageData(x, 0, 1, canvas.height).data;
+    const background = column(firstOutside);
+    drawSplitBar(ctx, 4, 2, 8, 12, [
+      { fraction: 31 / 32, fill: theme.surface },
+      { fraction: 1 / 32, fill: theme.surface, hatched: true },
+    ], { ...theme, hatch: '#fff', hatchEdge: '#fff' }, moving ? { widths: [7.75, 0.25] } : undefined);
+    return { dpr, moving, inside: changedBytes(background, column(firstOutside - 1)), outside: changedBytes(background, column(firstOutside)) };
+  }));
 }
 
 async function checkReadoutClearance() {
@@ -267,3 +286,4 @@ async function checkSettledPixels(form: true | 'target-markers' | 'ordered-segme
 
 (window as unknown as { checkSettledPixels: typeof checkSettledPixels }).checkSettledPixels = checkSettledPixels;
 (window as unknown as { checkReadoutClearance: typeof checkReadoutClearance }).checkReadoutClearance = checkReadoutClearance;
+(window as unknown as { checkSubpixelHatchTail: typeof checkSubpixelHatchTail }).checkSubpixelHatchTail = checkSubpixelHatchTail;
