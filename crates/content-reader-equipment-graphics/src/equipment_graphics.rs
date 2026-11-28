@@ -1142,19 +1142,24 @@ mod tests {
         for (layer, model) in [("base", "first"), ("mod", "second")] {
             machine.write(
                 &format!("{layer}/gfx/interface/equipmentdesigner/graphic_db/pools.txt"),
-                format!("default = {{ tank = {{ pool = {{ models = {{ {model} }} }} }} }}").as_bytes(),
+                format!("default = {{ tank = {{ pool = {{ models = {{ {model} }} }} }} }}\nGER = {{ tank = {{ pool = {{ models = {{ country }} }} }} }}").as_bytes(),
             );
         }
         let base = machine.recorded(&["base"]);
         let modded = machine.recorded(&["base", "mod"]);
         let first = Content::load(&base, &names()).unwrap();
-        let repeated = Content::load(&base, &names()).unwrap();
+        let repeated = Content::load(&machine.recorded(&["base"]), &names()).unwrap();
         let second = Content::load(&modded, &names()).unwrap();
+        let mut without_ger = names();
+        without_ger.countries.remove("GER");
+        let without_country_pool = Content::load(&base, &without_ger).unwrap();
         let pool = |content: &Content| content.models().next().unwrap().model.as_ptr();
         assert_eq!(first.models().next().unwrap().model, "first");
         assert_eq!(second.models().next().unwrap().model, "second");
         assert_eq!(pool(&first), pool(&repeated));
         assert_ne!(pool(&first), pool(&second));
+        assert_eq!(first.models().count(), 2);
+        assert_eq!(without_country_pool.models().count(), 1);
     }
 
     fn content(text: &[u8]) -> io::Result<Content> {

@@ -176,7 +176,10 @@ fn a_mods_interface_file_with_refusals_reads_the_recordings_file() {
         &never(),
     )
     .unwrap();
-    let files = crate::gui::native::sprites::read_layers(layers.presentation()).unwrap();
+    let (files, first_fallbacks) = content_reader_layers::content::observe_overlay_refusals(|| {
+        crate::gui::native::sprites::read_layers(layers.presentation()).unwrap()
+    });
+    assert_eq!(first_fallbacks.len(), 1);
     let file = |name: &str| {
         &files
             .iter()
@@ -190,7 +193,10 @@ fn a_mods_interface_file_with_refusals_reads_the_recordings_file() {
     use crate::gui::native::{resources::Registry, sprites::read_object_layers};
     let presentation = layers.presentation();
     let window = Registry::load(presentation).unwrap();
-    let map = Registry::from_files(read_object_layers(presentation).unwrap());
+    let (map, map_fallbacks) = content_reader_layers::content::observe_overlay_refusals(|| {
+        Registry::from_files(read_object_layers(presentation).unwrap())
+    });
+    assert_eq!(map_fallbacks, first_fallbacks);
     let file_names = |registry: &Registry| registry.files.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
     assert_eq!(file_names(&window), ["interface/a.gfx", "interface/b.gfx", "interface/z.gfx"]);
     assert_eq!(file_names(&map), ["interface/a.gfx", "interface/b.gfx", "interface/z.gfx", "gfx/map.gfx"]);
