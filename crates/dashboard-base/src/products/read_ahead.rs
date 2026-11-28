@@ -1,15 +1,64 @@
 use dashboard_effects::ScriptedEffects;
 use job_priority::SpawnCarried as _;
-use super::{ContentOptions, politics_content};
+use super::{ContentOptions, LoadContext, politics_content};
 use crate::{
     catalogue::{self, Catalogue},
     source::Source,
 };
-use std::sync::{Arc, PoisonError, Weak, atomic::Ordering};
+use std::{io, sync::{Arc, Mutex, OnceLock, PoisonError, Weak, atomic::Ordering}};
 
 pub fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
     std::thread::Builder::new().name(name.into()).spawn_carried(move || job_priority::confined(work)).map(drop)
 }
+
+pub type Resume = Box<dyn FnOnce(io::Result<()>) + Send>;
+
+#[derive(Default)]
+pub struct Preparation {
+    result: OnceLock<io::Result<()>>,
+    waiting: Mutex<Vec<Resume>>,
+}
+
+impl Preparation {
+    pub fn start(self: &Arc<Self>, name: &str, build: impl FnOnce() -> io::Result<()> + Send + 'static) {
+        let pending = Arc::clone(self);
+        if let Err(error) = spawn(name, move || {
+            job_priority::background_thread();
+            pending.run(build);
+        }) {
+            self.publish(Err(error));
+        }
+    }
+    pub fn run(&self, build: impl FnOnce() -> io::Result<()>) {
+        self.publish(std::panic::catch_unwind(std::panic::AssertUnwindSafe(build))
+            .unwrap_or_else(|_| Err(io::Error::other("Background preparation failed"))));
+    }
+    pub fn publish(&self, result: io::Result<()>) {
+        if self.result.set(result).is_err() { return; }
+        let waiting = std::mem::take(&mut *self.waiting.lock().unwrap_or_else(PoisonError::into_inner));
+        for resume in waiting { resume(self.wait()); }
+    }
+    pub fn result(&self) -> Option<io::Result<()>> {
+        self.result.get().map(|result| result.as_ref().copied().map_err(dashboard_core::duplicate))
+    }
+    pub fn pending(self: &Arc<Self>) -> io::Result<Option<Arc<Self>>> {
+        self.result().map_or_else(|| Ok(Some(Arc::clone(self))), |result| result.map(|()| None))
+    }
+    pub fn wait(&self) -> io::Result<()> {
+        self.result.wait().as_ref().copied().map_err(dashboard_core::duplicate)
+    }
+    pub fn on_ready(&self, resume: Resume) {
+        let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(result) = self.result() {
+            drop(waiting);
+            resume(result);
+        } else {
+            waiting.push(resume);
+        }
+    }
+}
+
+pub type Prepare<P> = fn(&Arc<Source>, &P, &LoadContext) -> io::Result<Option<Arc<Preparation>>>;
 
 #[derive(Default)]
 struct ReadAhead(bool);

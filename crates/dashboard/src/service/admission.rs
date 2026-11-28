@@ -1,32 +1,28 @@
 use super::{Inner, MAX_CANCELLED, MAX_PENDING};
 use dashboard_core::{QueryError, transport::bounded_text};
-use dashboard_base::Source;
+use dashboard_base::{Source, products::read_ahead::{Preparation, Resume}};
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
-        Arc,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
 };
 
 pub(super) struct Request {
     pub(super) id: String,
-    pub(super) cancelled: AtomicBool,
+    pub(super) cancelled: Arc<AtomicBool>,
     pub(super) timing: Option<super::perf::RequestTiming>,
-}
-
-impl dashboard_base::presentation::Cancel for Request {
-    fn flag(&self) -> &AtomicBool {
-        &self.cancelled
-    }
+    parked: Mutex<Option<Resume>>,
 }
 
 impl Request {
     pub(super) fn new(id: String) -> Arc<Self> {
         Arc::new(Self {
             id,
-            cancelled: AtomicBool::new(false),
+            cancelled: Arc::new(AtomicBool::new(false)),
             timing: super::perf::RequestTiming::new(),
+            parked: Mutex::new(None),
         })
     }
 
@@ -36,6 +32,21 @@ impl Request {
 
     pub(super) fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
+        self.parked.lock().unwrap_or_else(PoisonError::into_inner).take();
+    }
+    pub(super) fn park(self: &Arc<Self>, preparation: &Preparation, resume: Resume) {
+        let mut parked = self.parked.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.cancelled() { return; }
+        *parked = Some(resume);
+        drop(parked);
+        let request = Arc::downgrade(self);
+        preparation.on_ready(Box::new(move |result| {
+            if let Some(request) = request.upgrade() { request.resume(result); }
+        }));
+    }
+    pub(super) fn resume(&self, result: std::io::Result<()>) {
+        let resume = self.parked.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(resume) = resume && !self.cancelled() { resume(result); }
     }
 }
 
@@ -238,5 +249,60 @@ impl Inner {
             source.bind(None, Default::default());
         }
         self.signal.notify();
+    }
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+
+    #[test]
+    fn parked_exact_requests_resume_once_for_the_preparation_they_asked_for() {
+        let (first, second) = (Preparation::default(), Preparation::default());
+        let mut pending = Pending::default();
+        let request = pending.begin("first".into()).unwrap();
+        let other = pending.begin("second".into()).unwrap();
+        let replies = Arc::new(Mutex::new(Vec::new()));
+        for (request, preparation, key) in [(&request, &first, "GER"), (&other, &second, "AFG")] {
+            let replies = replies.clone();
+            request.park(preparation, Box::new(move |result| {
+                result.unwrap();
+                replies.lock().unwrap().push(key);
+            }));
+        }
+        second.publish(Ok(()));
+        assert_eq!(*replies.lock().unwrap(), ["AFG"]);
+        first.publish(Ok(()));
+        request.resume(Ok(()));
+        assert_eq!(*replies.lock().unwrap(), ["AFG", "GER"]);
+    }
+
+    #[test]
+    fn cancelling_an_exact_request_drops_its_parked_work_before_the_build_finishes() {
+        for id in ["closed widget", "superseded seek"] {
+            let mut pending = Pending::default();
+            let request = pending.begin(id.into()).unwrap();
+            let preparation = Preparation::default();
+            let payload = Arc::new(());
+            let dropped = Arc::downgrade(&payload);
+            request.park(&preparation, Box::new(move |_| {
+                drop(payload);
+                panic!("cancelled work must not resume");
+            }));
+            pending.cancel(id);
+            assert!(dropped.upgrade().is_none() && !pending.current(&request));
+            preparation.publish(Ok(()));
+        }
+    }
+
+    #[test]
+    fn a_failed_preparation_resumes_the_request_with_its_reason() {
+        let preparation = Preparation::default();
+        let request = Request::new("failed".into());
+        let (send, received) = std::sync::mpsc::channel();
+        request.park(&preparation, Box::new(move |result| send.send(result.unwrap_err().to_string()).unwrap()));
+        preparation.publish(Err(std::io::Error::other("Recorded operands could not be read")));
+        assert_eq!(received.try_recv().unwrap(), "Recorded operands could not be read");
+        assert!(received.try_recv().is_err());
     }
 }

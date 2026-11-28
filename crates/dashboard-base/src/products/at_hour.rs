@@ -400,11 +400,12 @@ pub fn interval_panel(
     executable: Option<engine_executable::executable_tables::Tables>,
     read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, RangeInclusive<i32>, u64)> + Send + Sync + 'static,
 ) -> Box<dyn Panel> {
-    dated_interval(executable, move |hour, cancelled, _| read(hour, cancelled), |_, _| {})
+    dated_interval(executable, false, move |hour, cancelled, _| read(hour, cancelled), |_, _| {})
 }
 
 fn dated_interval(
     executable: Option<engine_executable::executable_tables::Tables>,
+    seed_pending: bool,
     read: impl Fn(i32, &AtomicBool, Option<DatedStep<'_>>) -> io::Result<(Value, RangeInclusive<i32>, u64)> + Send + Sync + 'static,
     date: impl Fn(&mut Arc<PanelData>, i32) + Send + Sync + 'static,
 ) -> Box<dyn Panel> {
@@ -432,7 +433,7 @@ fn dated_interval(
                 *held = holds.then(|| (from..=*proven.end(), value.clone(), rows));
                 (value, rows, from)
             }
-            Err(error) if step.is_some() && error.kind() == io::ErrorKind::WouldBlock => return ProductRead {
+            Err(error) if (seed_pending || step.is_some()) && error.kind() == io::ErrorKind::WouldBlock => return ProductRead {
                 value: Arc::new(Ok(Value::Null)), rows: 0, fresh: false, pending: true, live: None, lanes: frame.lanes(), from: hour,
             },
             Err(error) => {
@@ -532,16 +533,38 @@ pub fn dated_product<P: super::Product>(
     let source = Arc::clone(source);
     let load = LoadContext { content: load.content.clone() };
     let finish = Finish::new(&source, &load, P::CONTENT_DEPENDENT);
-    Ok(dated_interval(source.tables(), move |hour, cancelled, step| {
+    let waiting = Mutex::new(None::<(i32, Arc<super::read_ahead::Preparation>, bool)>);
+    Ok(dated_interval(source.tables(), P::PREPARE.is_some(), move |hour, cancelled, step| {
         let mut request = params.clone();
         date(&mut request, hour);
         let params = dashboard_query::named::named::<P::Params>(&request)?;
         P::validate(&params).map_err(dashboard_core::invalid)?;
         #[cfg(any(test, feature = "test-support"))]
         crate::test_fixtures::product_called();
-        let (reply, rows) = counted(|| finish.reply(|| match step {
-            Some(step) => load_step(&source, &params, &load, cancelled, step),
-            None => P::load(&source, &params, &load, cancelled),
+        let (reply, rows) = counted(|| finish.reply(|| {
+            let Some(step) = step else { return P::load(&source, &params, &load, cancelled) };
+            if let Some(prepare) = P::PREPARE {
+                let mut waiting = waiting.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if waiting.as_ref().is_none_or(|(asked, ..)| *asked != hour) {
+                    let previous = waiting.take();
+                    *waiting = prepare(&source, &params, &load)?.map(|build| {
+                        let subscribed = previous.is_some_and(|(_, old, subscribed)| subscribed && Arc::ptr_eq(&old, &build));
+                        (hour, build, subscribed)
+                    });
+                }
+                if let Some((_, build, subscribed)) = waiting.as_mut() {
+                    let Some(result) = build.result() else {
+                        if !*subscribed && let Some(wake) = step.step.and_then(|step| step.wake).cloned() {
+                            build.on_ready(Box::new(move |_| wake()));
+                            *subscribed = true;
+                        }
+                        return Err(io::ErrorKind::WouldBlock.into());
+                    };
+                    *waiting = None;
+                    result?;
+                }
+            }
+            load_step(&source, &params, &load, cancelled, step)
         }));
         let reply = reply?;
         let through = valid_through(&params, &reply);
@@ -551,7 +574,11 @@ pub fn dated_product<P: super::Product>(
 
 pub fn product_panel(advance: dashboard_follow::panel::ProductReader, cold: dashboard_follow::panel::ExactReader) -> Box<dyn Panel> {
     let current = advance.clone();
-    let read = Arc::new(move |hour, cancelled: &AtomicBool| current(hour, true, cancelled, None).value.as_ref().clone());
+    let fallback = cold.clone();
+    let read = Arc::new(move |hour, cancelled: &AtomicBool| {
+        let result = current(hour, true, cancelled, None);
+        if result.pending { fallback(hour, cancelled) } else { result.value.as_ref().clone() }
+    });
     Box::new(dashboard_follow::panel::AtHour { read, cold, advance })
 }
 
@@ -643,6 +670,7 @@ where P::Params: Sync, P::Context: Sync {
 pub const fn entry<P: AtHour>() -> Registered {
     Registered {
         panel: None,
+        prepare: None,
         key: P::KEY,
         content_dependent: P::CONTENT_DEPENDENT,
         interactive: P::INTERACTIVE,

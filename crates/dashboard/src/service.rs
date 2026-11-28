@@ -454,6 +454,7 @@ impl Service {
                     lease_id: body.source_id.clone(),
                     source,
                     body,
+                    resumed: None,
                 };
                 self.inner.submit(request, job);
             }

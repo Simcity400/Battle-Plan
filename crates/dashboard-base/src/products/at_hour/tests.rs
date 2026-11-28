@@ -37,6 +37,48 @@ crate::reply_warnings!(PowerReply);
 
 use crate::test_fixtures::streamed;
 
+#[test]
+fn an_interval_seed_can_join_preparation_before_it_has_a_wake() {
+    use crate::products::{Product, read_ahead::{Preparation, Prepare}};
+    struct Prepared;
+    impl Product for Prepared {
+        const KEY: &'static str = "test-prepared";
+        const CONTENT_DEPENDENT: bool = false;
+        const FIELDS: crate::products::Fields = crate::fields![branchId, country];
+        const PREPARE: Option<Prepare<Self::Params>> = Some(|source, params, _| {
+            if params.country.tag() == Some("ONE") {
+                source.state::<Arc<Preparation>>().lock().unwrap().pending()
+            } else {
+                Ok(None)
+            }
+        });
+        type Params = PowerParams;
+        type Reply = PowerReply;
+
+        fn load(_: &Source, _: &PowerParams, _: &LoadContext, _: &AtomicBool) -> io::Result<PowerReply> {
+            Ok(PowerReply { slot: 7, rows: Vec::new(), warnings: Vec::new() })
+        }
+    }
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![source(1, 100, Some(1))])])
+        .unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Arc::new(Source::from_replay(crate::SourceKey { source_id: "prepared".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap());
+    let load = LoadContext { content: None };
+    let panel = product_interval_panel::<Prepared>(&source, &load, &json!({"branchId":"1","country":"ONE"}),
+        |params, hour| { if hour == 101 { params["country"] = json!("TWO"); } }, |_| 100).unwrap();
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    let pending = (exact.advance)(100, true, &cancelled, None);
+    assert!(pending.pending && !pending.fresh);
+    let sought = (exact.advance)(101, true, &cancelled, None);
+    assert!(!sought.pending && sought.fresh);
+    assert!((exact.advance)(100, true, &cancelled, None).pending);
+    source.state::<Arc<Preparation>>().lock().unwrap().publish(Ok(()));
+    let ready = (exact.advance)(100, true, &cancelled, None);
+    assert!(!ready.pending && ready.fresh);
+    assert_eq!(ready.value.as_ref().as_ref().unwrap()["slot"], 7);
+}
+
 fn column(table: TableId, name: &str) -> usize {
     dashboard_declare::field(table, name).unwrap()
 }
@@ -132,7 +174,7 @@ fn a_dated_panel_projects_the_same_changed_rows_from_the_step_and_the_recording(
     let (source, _) = recording();
     let source = Arc::new(source);
     let replay = source.replay();
-    let panel = dated_interval(source.tables(), move |hour, _, step| {
+    let panel = dated_interval(source.tables(), false, move |hour, _, step| {
         let query = crate::queries::query(&source, 1)?;
         let reads = [Read::all(TableId::Countries)];
         let mut step = step;

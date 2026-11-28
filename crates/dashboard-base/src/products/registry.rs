@@ -60,6 +60,7 @@ pub struct PanelReader {
 #[derive(Clone, Copy)]
 pub struct Registered {
     pub panel: Option<PanelReader>,
+    pub prepare: Option<super::read_ahead::Prepare<serde_json::Value>>,
     pub key: &'static str,
     pub content_dependent: bool,
     pub interactive: bool,
@@ -82,6 +83,7 @@ pub struct Registered {
 pub const fn register<P: Product>() -> Registered {
     Registered {
         panel: None,
+        prepare: if P::PREPARE.is_some() { Some(prepare::<P>) } else { None },
         key: P::KEY,
         content_dependent: P::CONTENT_DEPENDENT,
         interactive: P::INTERACTIVE,
@@ -94,6 +96,13 @@ pub const fn register<P: Product>() -> Registered {
         #[cfg(any(test, feature = "export-types"))]
         params: dashboard_query::fields::walk::<P::Params>,
     }
+}
+
+fn prepare<P: Product>(source: &std::sync::Arc<Source>, request: &serde_json::Value, context: &LoadContext) -> std::io::Result<Option<std::sync::Arc<super::read_ahead::Preparation>>> {
+    let params = dashboard_query::named::named::<P::Params>(request)
+        .map_err(|error| dashboard_core::invalid(format!("Invalid {} request: {error}", P::KEY)))?;
+    P::validate(&params).map_err(dashboard_core::invalid)?;
+    P::PREPARE.expect("registered preparation")(source, &params, context)
 }
 
 impl Registered {
