@@ -12,6 +12,7 @@ import { pipelineFor, prepareLanes, restartPipeline, type LaneWorker } from './p
 import { PlaybackController } from '../playback.ts';
 import { configuredStripPage } from '../strip/driver.ts';
 import { charge } from './split.ts';
+import { measureWith, type PerfRecorder } from '../../shell/perf.ts';
 
 const surface = (): PageSurface<ImageBitmap> & { cleared: number } => ({ cleared: 0, install() {}, clear() { this.cleared++; } });
 const acknowledgingLane = (): LaneWorker => ({
@@ -1619,6 +1620,30 @@ test('#1071: a lane failing after starting isolates siblings on the same route, 
     assert.equal(p2.widgetError(r0), undefined, 'no retired lane error remains after restart');
     assert.equal(p2.widgetError(r1), undefined);
   } finally {
+    env.close();
+  }
+});
+
+
+test('worker bar playback reports its own repaints without changing installed picture accounting', () => {
+  const env = inProcess();
+  const repaints: unknown[][] = [];
+  let installed = 4;
+  let expired = ['late widget'];
+  measureWith({
+    barPlayback: (...args: unknown[]) => repaints.push(args),
+    pictures: (changed: number, names: string[]) => { installed += changed; expired = names; },
+  } as unknown as PerfRecorder);
+  try {
+    env.pipeline.page.playing = true;
+    env.workers[0]!.onmessage!({
+      data: { type: 'served', seek: 1, target: 12, exact: false, changed: 2, ms: 1, motion: true },
+    } as MessageEvent<FromLane>);
+    assert.deepEqual(repaints, [[0, 12, 2, 1]]);
+    assert.equal(installed, 4);
+    assert.deepEqual(expired, ['late widget']);
+  } finally {
+    measureWith(null);
     env.close();
   }
 });

@@ -1,3 +1,4 @@
+import type { MotionClock } from '../../families/motion.ts';
 import { flushSync } from 'react-dom';
 import { engine } from '../../engine/frame.ts';
 import type { DashboardClient, DashboardSource, FollowOpen } from '../client';
@@ -8,7 +9,6 @@ import type { Channel } from './facts';
 import type { Binding, Dated, Supply } from '../../draw/lane';
 import { PayloadSender } from './payloads.ts';
 import type { FromLane, LaneSlotsPayload, ProjectionKey, ToLane } from '../../draw/laneMessages';
-import type { MotionClock } from '../../families/motion';
 import { auditing, noteFrame, recordPicture } from '../pulled.ts';
 import { perfLog } from '../../shell/perf.ts';
 import type { AuditRow } from '../../draw/notifications';
@@ -69,7 +69,7 @@ interface RouteAnchor {
 }
 
 interface WidgetState {
-  id: number; lane: number; kind?: string; cost: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null; lastBranch?: string;
+  id: number; lane: number; kind?: string; cost: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
   stripReset?: () => void;
   installListeners: Set<() => void>; dateListeners: Set<() => void>; binding: Binding; surfaces: readonly PageSurface<ImageBitmap>[];
   held: Map<string, unknown>; error?: Failure; wire?: unknown; stamp: number | undefined; payloads: { own: ReadonlySet<number>; statics: ReadonlySet<number>; identity: ReadonlySet<number> };
@@ -187,11 +187,8 @@ export class Pipeline {
   private prepareAsk = 0;
   private preparedAt: number[];
   private readonly laneErrors: (Failure | undefined)[];
+  private motionClock: MotionClock | null = null;
   private readonly preparedWaiters = new Set<() => void>();
-  private lastClockSig = '';
-  private lastClockPlaying = false;
-  private branchSeq = 1;
-  private currentMotionClock: MotionClock | null = null;
 
   constructor(clock: PlaybackController, client: DashboardClient, host: PipelineHost, generation = 0) {
     this.clock = clock; this.client = client; this.host = host; this.rate = host.rate(); this.generation = generation;
@@ -241,9 +238,7 @@ export class Pipeline {
     if (this.lastPrepare) {
       lane.postMessage({ type: 'prepare', ask: this.lastPrepare.ask, families: this.lastPrepare.families, projections: this.lastPrepare.projections });
     }
-    if (this.currentMotionClock) {
-      lane.postMessage({ type: 'clock', clock: this.currentMotionClock });
-    }
+    if (this.motionClock) lane.postMessage({ type: 'clock', clock: this.motionClock });
   }
 
   private ensureLane(lane: number): LaneWorker | null {
@@ -262,28 +257,18 @@ export class Pipeline {
 
   get createdLanes() { return this.activeLaneCount; }
 
-  private sendMotionClock(next: PlaybackSnapshot, previous?: PlaybackSnapshot) {
-    const sig = `${next.playing}|${next.hoursPerSecond}|${next.seekSequence}|${this.branchSeq}|${next.playing ? 'run' : next.hour}`;
-    if (sig === this.lastClockSig) return;
-    const wasPlaying = previous ? previous.playing : this.lastClockPlaying;
-    const seekChanged = previous ? next.seekSequence !== previous.seekSequence : false;
-    const nowWall = performance.timeOrigin + (next.composedAt ?? performance.now());
-    const settleDurationMs = wasPlaying && !next.playing && !seekChanged ? 120 : 0;
+  private sendMotionClock(next: PlaybackSnapshot) {
+    const speed = next.playing ? next.hoursPerSecond : 0;
+    const previous = this.motionClock;
+    if (previous && speed === previous.speed && next.seekSequence === previous.seek
+      && next.bounds?.lastHour === previous.lastHour && (next.playing || next.hour === previous.exactHour)) return;
     const clock: MotionClock = {
-      playing: next.playing,
+      playing: next.playing, speed, seek: next.seekSequence, exactHour: next.hour,
       anchorPosition: next.position,
-      anchorTimeMs: nowWall,
-      speed: next.playing ? next.hoursPerSecond : 0,
-      seek: next.seekSequence,
-      exactHour: next.hour,
-      branch: this.branchSeq,
-      settleStartMs: settleDurationMs > 0 ? nowWall : 0,
-      settleDurationMs,
+      anchorTimeMs: performance.timeOrigin + (next.composedAt ?? performance.now()),
       ...(next.bounds ? { lastHour: next.bounds.lastHour } : {}),
     };
-    this.lastClockSig = sig;
-    this.lastClockPlaying = next.playing;
-    this.currentMotionClock = clock;
+    this.motionClock = clock;
     for (let lane = 0; lane < this.workers.length; lane++) this.postLane(lane, { type: 'clock', clock });
   }
 
@@ -292,9 +277,6 @@ export class Pipeline {
     const widget = this.widgets.get(id);
     if (!widget) return;
     this.postLane(widget.lane, { type: 'canvas', widget: id, canvas, opaque }, [canvas]);
-    if (this.currentMotionClock) {
-      this.postLane(widget.lane, { type: 'clock', clock: this.currentMotionClock });
-    }
   }
 
   clearCanvas(id: number) {
@@ -322,9 +304,6 @@ export class Pipeline {
     if (this.closed || lane < 0 || lane >= this.workers.length) return;
     this.ensureLane(lane);
     this.postLane(lane, { type: 'lane-surface', canvas, opaque }, [canvas]);
-    if (this.currentMotionClock) {
-      this.postLane(lane, { type: 'clock', clock: this.currentMotionClock });
-    }
   }
 
   sendLaneSlots(lane: number, payload: LaneSlotsPayload) {
@@ -437,7 +416,7 @@ export class Pipeline {
       this.rate = rate;
       for (let lane = 0; lane < this.workers.length; lane++) this.postLane(lane, { type: 'options', rate });
     }
-    this.sendMotionClock(next, previous);
+    this.sendMotionClock(next);
     const fps = Math.max(1, this.host.frameRate());
     const nominal = Math.max(1, Math.ceil(next.hoursPerSecond / fps * 1.5));
     const rawStep = next.playing && previous.playing && next.seekSequence === previous.seekSequence ? Math.max(0, next.hour - previous.hour) : this.page.step;
@@ -691,8 +670,9 @@ export class Pipeline {
           }
         }
       }
-      if (perfLog && message.motion && !message.exact && this.page.playing && message.changed > 0) {
-        perfLog.pictures(message.changed, []);
+      if (message.motion) {
+        perfLog?.barPlayback(lane, message.target, message.changed, message.ms);
+        return;
       }
       if (auditing()) recordPicture({ t: 'workerFrame', at: performance.timeOrigin + performance.now(), lane, lanes: this.lanes, seek: message.seek, head: message.target,
         playing: !message.exact && this.page.playing, changed: message.changed, workMs: message.ms, ...message.cancelled ? { cancelled: true } : {} });
@@ -895,13 +875,7 @@ export class Pipeline {
     const was = widget.subs.get(token);
     widget.subs.set(token, sub.id);
     if (was !== undefined) this.release(was, widgetId);
-    const prevBranch = widget.lastBranch ?? widget.route?.branch;
     widget.route = route;
-    widget.lastBranch = route.branch;
-    if (prevBranch !== undefined && prevBranch !== route.branch) {
-      this.branchSeq++;
-      this.sendMotionClock(this.clock.getSnapshot());
-    }
     this.remount(widget);
     return sub.id;
   }
@@ -966,7 +940,7 @@ export class Pipeline {
     const owner = shown?.owner;
     const kept = was.owner === undefined || owner === undefined || was.owner === owner;
     if (!kept) widget.stamp = undefined;
-    return { ...own, ...kept && was.dated ? { dated: was.dated } : {}, ...(widget.route ? { branch: `${widget.route.source.id}:${widget.route.branch}` } : {}), generation: shown?.binding ?? 1, ...(shown?.owner !== undefined ? { owner: shown.owner } : {}), offset: shown?.offset ?? 0, pin: shown?.pin ?? null };
+    return { ...own, ...kept && was.dated ? { dated: was.dated } : {}, generation: shown?.binding ?? 1, ...(shown?.owner !== undefined ? { owner: shown.owner } : {}), offset: shown?.offset ?? 0, pin: shown?.pin ?? null };
   }
 
   bind(id: number, surfaces: readonly PageSurface<ImageBitmap>[], binding: Omit<Binding, 'generation' | 'offset' | 'pin'>, change: RebindChange = {}, model?: unknown) {

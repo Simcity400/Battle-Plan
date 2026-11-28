@@ -1,7 +1,7 @@
 import type { Fact } from '../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../dashboard/follow/message';
 import { sameRevision, type Revisions } from '../dashboard/follow/payloads.ts';
-import type { LaneView, Painted, PaintInput, Scene, Surface, Value as LaneValue } from '../draw/lane.ts';
+import type { PlaybackPaint, PlaybackPicture, LaneView, Painted, PaintInput, Scene, Surface, Value as LaneValue } from '../draw/lane.ts';
 import { markCanvasPainted } from '../draw/laneDispatch.ts';
 import { setContextSlot, snapCanvasText } from '../draw/kit.ts';
 import { LaneArtCache, LaneArtPool, type LaneArtFetcher } from './art/laneCache.ts';
@@ -12,7 +12,6 @@ import type { FamilyTooltipEntry, FamilyTooltipField } from './host/tooltips.ts'
 import { IdentityIndex } from './identity/index.ts';
 import { createSnapshotIdentityProvider } from './identity/provider.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
-import { MotionField, type MotionStep } from './motion.ts';
 import type { FamilyId } from './plan.ts';
 import { ensureBoundProjection, familyProjectionFailure, forgetProjectionWaiter, retryFamilyProjection, unknownProjectionReason } from './registry.ts';
 import { projectScene, samePictures, sceneReadView, snapshotPictures, type SceneProjection, type SceneReaders, type SceneSources } from './scene.ts';
@@ -72,13 +71,6 @@ export interface LaneDrawn<TBinding extends LaneBinding, TModel, TLayout> {
   readonly hour: number;
 }
 
-export interface LaneMotionContext<TModel> {
-  readonly field: MotionField;
-  readonly step: MotionStep;
-  readonly nextModel: TModel | null;
-  readonly nextHour: number | null;
-}
-
 export interface LaneFrame<TBinding extends LaneBinding, TModel, TLayout> {
   readonly binding: TBinding;
   readonly theme: FamilyTheme;
@@ -98,7 +90,7 @@ export interface LaneFrame<TBinding extends LaneBinding, TModel, TLayout> {
   readonly changedAt: number;
   readonly continuity: number;
   readonly fullRepaint?: boolean;
-  readonly motion?: LaneMotionContext<TModel>;
+  readonly exactPlayback?: boolean;
   readNow(): BoundedReadView;
 }
 
@@ -114,6 +106,10 @@ export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   redraw(model: TModel, hour: number): number;
   status(model: TModel): LaneStatus;
   readonly view: readonly (keyof TBinding & string)[];
+  readonly playback?: {
+    supports(model: TModel, binding: TBinding): boolean;
+    frame(frame: LaneFrame<TBinding, TModel, TLayout>, current: TModel, next: TModel | null, fraction: number): LaneFrame<TBinding, TModel, TLayout> | null;
+  };
   layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number, step: LaneStep<TModel, TLayout>): TLayout;
   keepsCanvas?(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean;
   onSpeed?(layout: TLayout, speed: number, continuity: number): void;
@@ -162,19 +158,8 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   workerCanvas: OffscreenCanvas | null;
   sharedPainted: boolean;
   lastTarget: 'bitmap' | 'worker' | 'shared' | null;
-  lastNextHour: number | null;
   opaque: boolean;
   surfaceColor: string;
-  readonly motionField: MotionField;
-  nextProjected: SceneProjection<TModel> | null;
-  nextParts: readonly (readonly Fact<LaneValue>[])[];
-  nextHour: number | null;
-  nextKind: string;
-  nextViewName: string | undefined;
-  nextOwner: string | undefined;
-  nextInputs: Revisions | undefined;
-  nextWindowKey: string;
-  nextArtRevision: number;
   readonly art: LaneArtCache;
   wake: () => void;
   artRevision: number;
@@ -462,6 +447,20 @@ export function lazyLaneView(family: string, load: LaneFamilyLoad, wake: (widget
   };
 }
 
+function sceneSources(binding: LaneBinding, validateTail: SceneSources['validateTail']): SceneSources {
+  return {
+    sources: binding.sources,
+    ...(binding.staticPanels ? { staticPanels: binding.staticPanels } : {}),
+    ...(binding.staticShifts ? { staticShifts: binding.staticShifts } : {}),
+    ...(binding.staticAnswers ? { staticAnswers: binding.staticAnswers } : {}),
+    ...(binding.hovers ? { hovers: binding.hovers } : {}),
+    kind: binding.kind,
+    ...(binding.pagedRows ? { pagedRows: binding.pagedRows } : {}),
+    ...(binding.window ? { window: binding.window } : {}),
+    ...(validateTail ? { validateTail } : {}),
+  };
+}
+
 export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
   family: LaneFamily<TBinding, TModel, TLayout>,
   wake: (widget: number) => void,
@@ -547,19 +546,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       workerCanvas: workerCanvas ? workerCanvas.canvas : null,
       sharedPainted: false,
       lastTarget: null,
-      lastNextHour: null,
       opaque,
       surfaceColor: '',
-      motionField: new MotionField(),
-      nextProjected: null,
-      nextParts: [],
-      nextHour: null,
-      nextKind: '',
-      nextViewName: undefined,
-      nextOwner: undefined,
-      nextInputs: undefined,
-      nextWindowKey: '',
-      nextArtRevision: 0,
       art,
       wake: wakerOf(widget),
       artRevision: 0,
@@ -728,20 +716,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const timed = binding.audit === true;
       const t0 = timed ? performance.now() : 0;
       const current = painting(input, binding);
-      const prevPainting = keep.painting;
-      const continuity = follows(prevPainting, current);
-      const motionPlacementCut = prevPainting !== null && (
-        prevPainting.seek !== current.seek
-        || prevPainting.pin !== current.pin
-        || prevPainting.owner !== current.owner
-        || prevPainting.kind !== current.kind
-        || prevPainting.view !== current.view
-        || (prevPainting.revisions !== undefined && current.revisions !== undefined && (
-          !sameRevision(prevPainting.revisions.options, current.revisions.options)
-          || !sameRevision(prevPainting.revisions.sources, current.revisions.sources)
-        ))
-        || current.hour < prevPainting.hour
-      );
+      const continuity = follows(keep.painting, current);
       keep.painting = current;
       if (continuity === 'cut') {
         const hadEphemeral = keep.motion || Number.isFinite(keep.expiry);
@@ -758,17 +733,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       }
       if (reuse && !samePictures(keep.parts, input.pictures, true)) keep.parts = snapshotPictures(input.pictures);
       if (!reuse) {
-        const base: SceneSources = {
-          sources: binding.sources,
-          ...(binding.staticPanels ? { staticPanels: binding.staticPanels } : {}),
-          ...(binding.staticShifts ? { staticShifts: binding.staticShifts } : {}),
-          ...(binding.staticAnswers ? { staticAnswers: binding.staticAnswers } : {}),
-          ...(binding.hovers ? { hovers: binding.hovers } : {}),
-          kind: binding.kind,
-          ...(binding.pagedRows ? { pagedRows: binding.pagedRows } : {}),
-          ...(binding.window ? { window: binding.window } : {}),
-          ...(projection.validateTail ? { validateTail: projection.validateTail } : {}),
-        };
+        const base = sceneSources(binding, projection.validateTail);
         const series = keep.tiles.series(input, base, binding, hour);
         const projected = projectScene(input, series ? { ...base, series } : base, hour, readers, view => projection.project(view, binding.options));
         let seriesUntil = Infinity;
@@ -825,88 +790,18 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         return { ...EMPTY, mode: 'refused', reason: status.refused, ...nextChangeAt };
       }
 
-      let nextModel: TModel | null = null;
-      let nextHour: number | null = null;
-      const reducedMotion = (binding as { readonly reducedMotion?: boolean }).reducedMotion === true;
-      const isMotionFamily = !reducedMotion && family.family === 'bars';
-      const allowNextProject = isMotionFamily
-        && !input.semanticsOnly
-        && input.motionClock?.playing === true
-        && input.motionClock.speed < 120;
-      if (allowNextProject && input.nextPictures && input.nextHour !== undefined && input.nextHour > drawn) {
-        const nextWindowKey = windowKeyOf(binding);
-        const reuseNext = keep.nextProjected !== null
-          && keep.nextHour === input.nextHour
-          && keep.nextKind === binding.kind
-          && keep.nextViewName === binding.view
-          && keep.nextOwner === input.owner
-          && keep.nextWindowKey === nextWindowKey
-          && sameInputRevisions(keep.nextInputs, binding.revisions)
-          && !readersChanged
-          && keep.nextArtRevision === keep.artRevision
-          && samePictures(keep.nextParts, input.nextPictures);
-        if (!reuseNext) {
-          const nextBase: SceneSources = {
-            sources: binding.sources,
-            ...(binding.staticPanels ? { staticPanels: binding.staticPanels } : {}),
-            ...(binding.staticShifts ? { staticShifts: binding.staticShifts } : {}),
-            ...(binding.staticAnswers ? { staticAnswers: binding.staticAnswers } : {}),
-            ...(binding.hovers ? { hovers: binding.hovers } : {}),
-            kind: binding.kind,
-            ...(binding.pagedRows ? { pagedRows: binding.pagedRows } : {}),
-            ...(binding.window ? { window: binding.window } : {}),
-            ...(projection.validateTail ? { validateTail: projection.validateTail } : {}),
-          };
-          const nextScene: Scene = { widget: input.widget, subs: input.subs, pictures: input.nextPictures, model: input.model, ...(input.owner !== undefined ? { owner: input.owner } : {}) };
-          try {
-            keep.nextProjected = projectScene(nextScene, nextBase, input.nextHour, readers, view => projection.project(view, binding.options));
-            keep.nextParts = snapshotPictures(input.nextPictures);
-            keep.nextHour = input.nextHour;
-            keep.nextKind = binding.kind;
-            keep.nextViewName = binding.view;
-            keep.nextOwner = input.owner;
-            keep.nextInputs = binding.revisions;
-            keep.nextWindowKey = nextWindowKey;
-            keep.nextArtRevision = keep.artRevision;
-          } catch {
-            keep.nextProjected = null;
-            keep.nextHour = null;
-          }
-        }
-        if (keep.nextProjected) {
-          nextModel = keep.nextProjected.model;
-          nextHour = keep.nextHour;
-        }
-      } else if (!input.semanticsOnly) {
-        keep.nextProjected = null;
-        keep.nextHour = null;
-      }
-
-      const shared = input.sharedSurface;
-      if (reducedMotion && keep.motionField.active) keep.motionField.reset();
-      const motionStep = !input.semanticsOnly && input.motionClock && isMotionFamily
-        ? keep.motionField.beginFrame(
-          input.motionClock,
-          performance.timeOrigin + input.now,
-          input.bracketStart ?? drawn,
-          input.bracketEnd ?? nextHour,
-          motionPlacementCut || input.motionGap === true,
-          input.binding.offset,
-          input.continuousHour,
-        )
-        : undefined;
-
       const layoutKey = [model, drawn, surface.width, surface.height, ...viewKey(binding, ['theme', ...family.view])];
-      const layoutDirty = !keep.layout || !sameKey(keep.layoutKey, layoutKey);
-      if (layoutDirty) {
+      if (!keep.layout || !sameKey(keep.layoutKey, layoutKey)) {
         const previous = continuity === 'continues' ? keep.drawn : null;
         keep.layout = family.layout(model, binding, surface, theme, keep.ctx, drawn, { previous, now: effectiveNow, speed: effectiveSpeed });
         keep.layoutKey = layoutKey;
       }
-      const layout = keep.layout!;
+      const layout = keep.layout;
       const tLayout = timed ? performance.now() : 0;
       let readNow: BoundedReadView | null = null;
+      const shared = input.sharedSurface;
       const slotDirty = canvasSwitched || (shared ? (shared.dirty || !keep.sharedPainted) : Boolean(input.workerCanvas?.dirty));
+      const animation = (shared || keep.workerCanvas) && input.binding.pin === null && family.playback?.supports(model, binding) ? family.playback : undefined;
       const frame: LaneFrame<TBinding, TModel, TLayout> = {
         binding, theme, model, layout, surface,
         hour: drawn,
@@ -922,7 +817,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         changedAt: keep.changedAt,
         continuity: keep.continuity,
         ...(slotDirty ? { fullRepaint: true } : {}),
-        ...(motionStep ? { motion: { field: keep.motionField, step: motionStep, nextModel, nextHour } } : {}),
+        ...(animation ? { exactPlayback: true } : {}),
         readNow: () => readNow ??= sceneReadView(projected.scene, projection.validateTail ? { ...binding, validateTail: projection.validateTail } : binding, drawn, readers),
       };
 
@@ -940,18 +835,94 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (speedChanged) family.onSpeed?.(layout, effectiveSpeed, keep.continuity);
       const speedRedraw = speedChanged && keep.content !== '' && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame) === false;
       keep.speed = effectiveSpeed;
-      const nextHourChanged = !input.semanticsOnly && nextHour !== keep.lastNextHour;
-      if (!input.semanticsOnly) keep.lastNextHour = nextHour;
-      const motionNeedsPaint = motionStep !== undefined && (
-        motionStep.cut
-        || motionStep.justSettled
-        || motionStep.mode === 'settling'
-        || keep.motionField.active
-        || nextHourChanged
-        || !reuse
-        || layoutDirty
-      );
-      const shouldPaint = !input.semanticsOnly && (slotDirty || !reuse || layoutDirty || keep.motion || effectiveNow >= keep.expiry || speedRedraw || motionNeedsPaint || !sameKey(keep.drawKey, drawKey));
+      const shouldPaint = input.restorePlayback || slotDirty || keep.motion || effectiveNow >= keep.expiry || speedRedraw || !sameKey(keep.drawKey, drawKey);
+      const drawCanvas = (shown = frame, sharedTarget = shared) => {
+        if (sharedTarget) {
+          const { lane: sharedLane, slot } = sharedTarget;
+          const sctx = sharedLane.ctx;
+          const sdpr = sharedLane.dpr > 0 ? sharedLane.dpr : dpr;
+          sharedLane.activeSlot.ox = Math.round(slot.x * sdpr);
+          sharedLane.activeSlot.oy = Math.round(slot.y * sdpr);
+          sharedLane.activeSlot.w = slot.w;
+          sharedLane.activeSlot.h = slot.h;
+          sharedLane.activeSlot.dpr = sdpr;
+          sharedLane.activeSlot.surfaceColor = theme.surface;
+          sharedLane.activeSlot.widgetKey = keep.widgetKey;
+          setContextSlot(sctx, {
+            widgetKey: keep.widgetKey,
+            slotBw: Math.max(1, Math.round(slot.w * sdpr)),
+            slotBh: Math.max(1, Math.round(slot.h * sdpr)),
+          });
+          sctx.save();
+          try {
+            if (animation) {
+              const left = Math.round((slot.bx ?? slot.x) * sdpr);
+              const top = Math.round((slot.by ?? slot.y) * sdpr);
+              const right = Math.round(((slot.bx ?? slot.x) + (slot.bw ?? slot.w)) * sdpr);
+              const bottom = Math.round(((slot.by ?? slot.y) + (slot.bh ?? slot.h)) * sdpr);
+              sharedLane.rawSetTransform(1, 0, 0, 1, 0, 0);
+              sharedLane.rawClearRect(left, top, right - left, bottom - top);
+              sctx.beginPath();
+              sctx.rect(left, top, right - left, bottom - top);
+              sctx.clip();
+            }
+            sctx.setTransform(sdpr, 0, 0, sdpr, 0, 0);
+            const bx = (slot.bx ?? slot.x) - slot.x;
+            const by = (slot.by ?? slot.y) - slot.y;
+            const bw = slot.bw ?? slot.w;
+            const bh = slot.bh ?? slot.h;
+            const cr = Math.min(sharedLane.cornerRadius ?? 0, bw / 2, bh / 2);
+            if (cr > 0) {
+              sctx.beginPath();
+              sctx.moveTo(bx, by);
+              sctx.lineTo(bx + bw, by);
+              sctx.lineTo(bx + bw, by + bh - cr);
+              sctx.arcTo(bx + bw, by + bh, bx + bw - cr, by + bh, cr);
+              sctx.lineTo(bx + cr, by + bh);
+              sctx.arcTo(bx, by + bh, bx, by + bh - cr, cr);
+              sctx.closePath();
+              sctx.clip();
+            } else {
+              sctx.beginPath();
+              sctx.rect(bx, by, bw, bh);
+              sctx.clip();
+            }
+            const paintW = Math.min(surface.width, slot.w);
+            const paintH = Math.min(surface.height, slot.h);
+            if (sharedLane.opaque) {
+              sctx.fillStyle = theme.surface;
+              if (family.family !== 'table') {
+                sctx.fillRect(bx, by, bw, bh);
+              } else {
+                if (bx < 0) sctx.fillRect(bx, by, -bx, bh);
+                if (bx + bw > paintW) sctx.fillRect(paintW, by, bx + bw - paintW, bh);
+                if (by < 0) sctx.fillRect(bx, by, bw, -by);
+                if (by + bh > paintH) sctx.fillRect(bx, paintH, bw, by + bh - paintH);
+              }
+            }
+            sctx.beginPath();
+            sctx.rect(0, 0, paintW, paintH);
+            sctx.clip();
+            const result = family.paint(sctx, shown);
+            keep.sharedPainted = true;
+            return result;
+          } finally {
+            sctx.restore();
+          }
+        }
+        keep.ctx.save();
+        try {
+          keep.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          if (animation) keep.ctx.clearRect(0, 0, surface.width, surface.height);
+          if (keep.opaque && family.family !== 'table') {
+            keep.ctx.fillStyle = theme.surface;
+            keep.ctx.fillRect(0, 0, surface.width, surface.height);
+          }
+          return family.paint(keep.ctx, shown);
+        } finally {
+          keep.ctx.restore();
+        }
+      };
       let repainted = false;
       if (shouldPaint) {
         const shown = [...family.visibleArt(frame)];
@@ -970,103 +941,11 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           keep.artShown = shownKey;
           keep.art.requestVisible(shown, keep.artUrls ?? projected.artUrls);
         }
-        const drawCanvas = () => {
-          if (shared) {
-            const { lane: sharedLane, slot } = shared;
-            const sctx = sharedLane.ctx;
-            const sdpr = sharedLane.dpr > 0 ? sharedLane.dpr : dpr;
-            sharedLane.activeSlot.ox = Math.round(slot.x * sdpr);
-            sharedLane.activeSlot.oy = Math.round(slot.y * sdpr);
-            sharedLane.activeSlot.w = slot.w;
-            sharedLane.activeSlot.h = slot.h;
-            sharedLane.activeSlot.dpr = sdpr;
-            sharedLane.activeSlot.surfaceColor = theme.surface;
-            sharedLane.activeSlot.widgetKey = keep.widgetKey;
-            setContextSlot(sctx, {
-              widgetKey: keep.widgetKey,
-              slotBw: Math.max(1, Math.round(slot.w * sdpr)),
-              slotBh: Math.max(1, Math.round(slot.h * sdpr)),
-            });
-            sctx.save();
-            try {
-              sctx.setTransform(sdpr, 0, 0, sdpr, 0, 0);
-              const bx = (slot.bx ?? slot.x) - slot.x;
-              const by = (slot.by ?? slot.y) - slot.y;
-              const bw = slot.bw ?? slot.w;
-              const bh = slot.bh ?? slot.h;
-              const cr = Math.min(sharedLane.cornerRadius ?? 0, bw / 2, bh / 2);
-              if (cr > 0) {
-                if (family.family !== 'table' || slotDirty) {
-                  const rawBx = slot.bx ?? slot.x;
-                  const rawBy = slot.by ?? slot.y;
-                  const bLeft = Math.round(rawBx * sdpr);
-                  const bTop = Math.round(rawBy * sdpr);
-                  const bRight = Math.round((rawBx + bw) * sdpr);
-                  const bBottom = Math.round((rawBy + bh) * sdpr);
-                  const crDev = Math.ceil(cr * sdpr) + 1;
-                  const cw = Math.min(crDev, Math.max(0, bRight - bLeft));
-                  const ch = Math.min(crDev, Math.max(0, bBottom - bTop));
-                  if (cw > 0 && ch > 0) {
-                    sharedLane.rawSetTransform(1, 0, 0, 1, 0, 0);
-                    sharedLane.rawClearRect(bLeft, bBottom - ch, cw, ch);
-                    sharedLane.rawClearRect(bRight - cw, bBottom - ch, cw, ch);
-                    sctx.setTransform(sdpr, 0, 0, sdpr, 0, 0);
-                  }
-                }
-                sctx.beginPath();
-                sctx.moveTo(bx, by);
-                sctx.lineTo(bx + bw, by);
-                sctx.lineTo(bx + bw, by + bh - cr);
-                sctx.arcTo(bx + bw, by + bh, bx + bw - cr, by + bh, cr);
-                sctx.lineTo(bx + cr, by + bh);
-                sctx.arcTo(bx, by + bh, bx, by + bh - cr, cr);
-                sctx.closePath();
-                sctx.clip();
-              } else {
-                sctx.beginPath();
-                sctx.rect(bx, by, bw, bh);
-                sctx.clip();
-              }
-              const paintW = Math.min(surface.width, slot.w);
-              const paintH = Math.min(surface.height, slot.h);
-              if (sharedLane.opaque) {
-                sctx.fillStyle = theme.surface;
-                if (family.family !== 'table') {
-                  sctx.fillRect(bx, by, bw, bh);
-                } else {
-                  if (bx < 0) sctx.fillRect(bx, by, -bx, bh);
-                  if (bx + bw > paintW) sctx.fillRect(paintW, by, bx + bw - paintW, bh);
-                  if (by < 0) sctx.fillRect(bx, by, bw, -by);
-                  if (by + bh > paintH) sctx.fillRect(bx, paintH, bw, by + bh - paintH);
-                }
-              }
-              sctx.beginPath();
-              sctx.rect(0, 0, paintW, paintH);
-              sctx.clip();
-              const result = family.paint(sctx, frame);
-              keep.sharedPainted = true;
-              return result;
-            } finally {
-              sctx.restore();
-            }
-          }
-          keep.ctx.save();
-          try {
-            keep.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-            if (keep.opaque && family.family !== 'table') {
-              keep.ctx.fillStyle = theme.surface;
-              keep.ctx.fillRect(0, 0, surface.width, surface.height);
-            }
-            return family.paint(keep.ctx, frame);
-          } finally {
-            keep.ctx.restore();
-          }
-        };
-        const canKeep = !slotDirty && !motionNeedsPaint && keep.content && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame);
+        const canKeep = !input.restorePlayback && !slotDirty && keep.content && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame);
         const painted = canKeep ? { drew: false, next: false } : drawCanvas();
         const incremental = typeof painted === 'object';
         repainted = !incremental || painted.drew;
-        if (!incremental && !keep.workerCanvas && !shared) markCanvasPainted(keep.canvas, drawCanvas);
+        if (!incremental && !keep.workerCanvas && !shared) markCanvasPainted(keep.canvas, () => drawCanvas());
         const next = incremental ? painted.next : painted;
         keep.motion = next === true;
         keep.expiry = typeof next === 'number' ? next : Infinity;
@@ -1077,32 +956,50 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       }
       keep.lastTarget = activeTarget;
 
-      if (!input.semanticsOnly && (keep.workerCanvas || shared) && input.motionClock?.playing && (!motionStep || motionStep.mode !== 'exact')) {
-        return {
-          ...(status === 'picture' ? { mode: 'picture' as const } : {}),
-          ...nextChangeAt,
-          viewport: { width: surface.width, height: surface.height, dpr, scrollLeft: binding.scrollLeft ?? 0, scrollTop: binding.scrollTop },
-          surfaces: [],
-          fields: {},
-          motion: motionStep ? keep.motionField.active : keep.motion,
-          repainted,
-          settling: false,
-          justSettled: false,
-          hit: keep.hit,
+      let playback: PlaybackPaint | undefined;
+      if (animation) {
+        const parts = keep.parts;
+        const validFrom = keep.validFrom;
+        const validUntil = keep.validUntil;
+        const base = sceneSources(binding, projection.validateTail);
+        let cache: { parts: ReturnType<typeof snapshotPictures>; from: number; until: number; model: TModel }[] = [];
+        const modelAt = (sample: PlaybackPicture): TModel | null => {
+          if (sample.hour >= validFrom && sample.hour < validUntil && samePictures(parts, sample.pictures, true)) return model;
+          const found = cache.find(item => sample.hour >= item.from && sample.hour < item.until && samePictures(item.parts, sample.pictures, true));
+          if (found) return found.model;
+          try {
+            const result = projectScene({ ...input, pictures: sample.pictures }, base, sample.hour, readers, read => projection.project(read, binding.options));
+            const until = Math.min(
+              projection.nextChange?.(result.view, binding.options) ?? Infinity,
+              family.boundary(result.model, sample.hour), result.boundary,
+            );
+            if (family.status(result.model) !== 'picture') return null;
+            cache = [
+              { parts: snapshotPictures(sample.pictures), from: sample.hour, until: Math.max(sample.hour + 1, until), model: result.model },
+              ...cache.slice(0, 1),
+            ];
+            return result.model;
+          } catch {
+            return null;
+          }
         };
-      }
-      if (!input.semanticsOnly && (keep.workerCanvas || shared) && motionStep && motionStep.mode === 'settling') {
-        return {
-          ...(status === 'picture' ? { mode: 'picture' as const } : {}),
-          ...nextChangeAt,
-          viewport: { width: surface.width, height: surface.height, dpr, scrollLeft: binding.scrollLeft ?? 0, scrollTop: binding.scrollTop },
-          surfaces: [],
-          fields: {},
-          motion: true,
-          repainted,
-          settling: true,
-          justSettled: false,
-          hit: keep.hit,
+        let lastModel = model;
+        let lastNext: TModel | null = null;
+        let lastFraction = 0;
+        playback = (current, next, fraction, target) => {
+          const proven = current && modelAt(current);
+          const from = proven ?? model;
+          const end = proven && next && fraction > 0 ? modelAt(next) : null;
+          const to = from === end ? null : end;
+          if (lastModel === from && lastNext === to && lastFraction === (to ? fraction : 0)) return false;
+          const shown = animation.frame(frame, from, to, fraction);
+          const visualModel = shown?.model ?? model;
+          if (visualModel === lastModel && (!lastNext || lastFraction === 0)) return false;
+          drawCanvas(shown ?? frame, target);
+          lastModel = shown ? from : model;
+          lastNext = shown && visualModel !== from ? to : null;
+          lastFraction = lastNext ? fraction : 0;
+          return true;
         };
       }
 
@@ -1208,10 +1105,10 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         surfaces: keep.workerCanvas || shared ? [] : [{ source: keep.canvas, content: keep.content }],
         ...(keep.workerCanvas || shared ? { surfaceContent: keep.content } : {}),
         fields,
-        motion: input.semanticsOnly ? false : keep.motion,
+        motion: keep.motion,
+        ...(playback ? { playback } : {}),
         repainted,
-        ...(!input.semanticsOnly && (keep.motion || Number.isFinite(keep.expiry)) ? { ephemeral: true } : {}),
-        ...(motionStep?.justSettled ? { settling: false, justSettled: true } : {}),
+        ...(keep.motion || Number.isFinite(keep.expiry) ? { ephemeral: true } : {}),
         hit: keep.hit,
       };
     },

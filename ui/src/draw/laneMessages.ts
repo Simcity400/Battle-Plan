@@ -1,7 +1,7 @@
+import type { MotionClock } from '../families/motion.ts';
 import type { Channel } from '../dashboard/follow/facts';
 import type { FrameRequest } from '../dashboard/follow/page';
 import type { PayloadsMessage } from '../dashboard/follow/payloads';
-import type { MotionClock } from '../families/motion';
 import type { Binding, Presented, ScrubSample, Supply } from './lane';
 import type { StripFrame } from '../dashboard/strip/scrub.ts';
 import type { StripReceipt, StripUpdate } from '../dashboard/strip/store.ts';

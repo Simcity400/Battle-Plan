@@ -526,6 +526,10 @@ export class PerfRecorder {
   get laneCount(): number | null { return this.laneCountValue; }
   lanes(count: number): void { this.laneCountValue = count; }
 
+  barPlayback(lane: number, hour: number, repainted: number, ms: number): void {
+    this.push({ t: 'barPlayback', at: epoch(performance.now()), lane, hour, repainted, ms: round(ms) });
+  }
+
   pictures(installed: number, expired: readonly string[]): void {
     this.framePictures += installed;
     this.frameExpired = expired;

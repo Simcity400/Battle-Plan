@@ -89,55 +89,6 @@ export class Facts<V> {
     return !!sub && sub.channel === 'panel' && sub.stepped && sub.open && sub.facts.length > 0;
   }
 
-  confirmedHour(id: number): number {
-    const sub = this.subs.get(id);
-    if (!sub) return -Infinity;
-    this.materializePanel(sub);
-    const last = sub.facts.at(-1);
-    if (!last) return -Infinity;
-    let confirmed = last.c;
-    for (let i = 0; i < last.cells.length; i++) {
-      const cellId = last.cells[i]!;
-      const groupLast = this.groups.get(cellId)?.facts.at(-1);
-      const seed = last.seeds.get(cellId);
-      const cellC = Math.max(groupLast ? groupLast.c : -Infinity, seed ? seed.c : -Infinity);
-      if (cellC < confirmed) confirmed = cellC;
-    }
-    return confirmed;
-  }
-
-  hasInterruptionBetween(id: number, fromHour: number, toHour: number, isBad: (value: V) => boolean): boolean {
-    if (toHour <= fromHour) return false;
-    const sub = this.subs.get(id);
-    if (!sub) return true;
-    this.materializePanel(sub);
-    const checkOwner = (facts: readonly Fact<V>[]): boolean => {
-      let covered = fromHour;
-      for (let i = 0; i < facts.length; i++) {
-        const fact = facts[i]!;
-        if (fact.c <= fromHour) continue;
-        if (fact.h > toHour) break;
-        if (fact.h > covered + 1) return true;
-        if (fact.refused !== null || isBad(fact.value)) return true;
-        if (fact.c > covered) covered = fact.c;
-        if (covered >= toHour) return false;
-      }
-      return covered < toHour;
-    };
-    if (checkOwner(sub.facts)) return true;
-    for (const groupId of sub.uses) {
-      const group = this.groups.get(groupId);
-      if (!group) continue;
-      for (let i = 0; i < group.facts.length; i++) {
-        const fact = group.facts[i]!;
-        if (fact.c <= fromHour) continue;
-        if (fact.h > toHour) break;
-        if (fact.refused !== null || isBad(fact.value)) return true;
-      }
-    }
-    return false;
-  }
-
   fail(id: number) {
     const sub = this.subs.get(id);
     if (!sub) return;
