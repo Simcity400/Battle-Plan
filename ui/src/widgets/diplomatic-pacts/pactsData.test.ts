@@ -2,9 +2,10 @@ import { PENDING_ART } from '../../families/art/types.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { compileFollowPlan } from '../../families/broker.ts';
+import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import { occupationReserveBreakdownDeclaration } from '../occupation-reserve-manpower/occupationReserveBreakdownProjection.ts';
 import { transfersDeclaration } from '../territory-transfers/transfersProjection.ts';
-import { diplomaticPactsDeclaration } from './diplomaticPactsProjection.ts';
+import { diplomaticPactsDeclaration, diplomaticPactsProjection } from './diplomaticPactsProjection.ts';
 import { agreementKinds, agreementLanes, agreementsOf, pactSince, pactState, validatePacts } from './pactsData.ts';
 import type { DiplomacyPactsReply, DiplomacyPact as Pact } from '../../generated/dashboard';
 
@@ -65,6 +66,24 @@ test('an agreements reply holds nothing after its hour', () => {
   assert.throws(() => validatePacts({ ...reply, pacts: [{ ...reply.pacts[0], lastSeen: 21 }] }), /malformed/, 'a pact seen after the hour asked is refused');
   assert.throws(() => validatePacts({ ...reply, pacts: [{ ...reply.pacts[0], firstSeen: 'soon' }] }), /malformed/);
   assert.throws(() => validatePacts({ pacts: [] }), /malformed/);
+});
+
+test('a retained agreements reply projects the exact active and unread edges', () => {
+  const reply: DiplomacyPactsReply = {
+    hour: 20, nextChange: 35, kinds: [], warnings: [],
+    pacts: [pact('closed', 'guarantee', 1, 8, { goneBy: 9 }), pact('open', 'guarantee', 10, 20, { held: true })],
+    unobserved: [{ firstHour: 5, lastHour: 7 }, { firstHour: 19, lastHour: 20 }],
+  };
+  const now = {
+    ...reply, hour: 30,
+    pacts: [reply.pacts[0]!, { ...reply.pacts[1]!, lastSeen: 30 }],
+    unobserved: [reply.unobserved[0]!, { firstHour: 19, lastHour: 30 }],
+  };
+  const project = (value: DiplomacyPactsReply) => diplomaticPactsProjection.project(
+    createBoundedReadView({ hour: displayedHour(30), panels: new Map([['main', value]]) }),
+    { countryTag: 'A', kinds: null, showEnded: true, firstHour: 1, surface: '#161616' },
+  );
+  assert.deepEqual(project(reply), project(now));
 });
 
 test('dated agreements, transfers and reserve history compile onto the panel channel', () => {

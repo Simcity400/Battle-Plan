@@ -31,11 +31,15 @@ export const diplomaticPactsProjection: TimelineProjection<DiplomaticPactsOption
     const base = { hour, firstHour: opt.firstHour, labelWidth: 220 };
     if (!reply || !opt.countryTag) return timelineModel(base);
     const nextChangeAt = reply.nextChange ?? Infinity;
+    const through = Math.min(hour, nextChangeAt - 1);
     const warnings = reply.warnings.filter(warning => !aboutElsewhere(warning));
     const own = countryLook(readView, opt.countryTag, hour);
     const kindOrder = new Map(agreementKinds(reply.kinds).map((item, index) => [item.kind, index]));
     const kindNames = new Map(agreementKinds(reply.kinds).map(item => [item.kind, item.name]));
-    const agreements = agreementsOf(reply.pacts, opt.countryTag, opt.kinds ? new Set(opt.kinds) : null);
+    const pacts = through > reply.hour
+      ? reply.pacts.map(pact => pact.held ? { ...pact, lastSeen: through } : pact)
+      : reply.pacts;
+    const agreements = agreementsOf(pacts, opt.countryTag, opt.kinds ? new Set(opt.kinds) : null);
     const lanes = agreementLanes(agreements, opt.showEnded, hour, {
       name: own.name,
       country: (tag, at) => countryLook(readView, tag, at),
@@ -45,7 +49,11 @@ export const diplomaticPactsProjection: TimelineProjection<DiplomaticPactsOption
     if (!lanes.length) {
       return timelineModel({ ...base, empty: agreements.length ? 'No agreements in force' : 'No agreements recorded yet', warnings, nextChangeAt });
     }
-    return timelineModel({ ...base, lanes, unobserved: reply.unobserved, warnings, nextChangeAt });
+    const gap = reply.unobserved.at(-1);
+    const unobserved = gap?.lastHour === reply.hour && through > reply.hour
+      ? [...reply.unobserved.slice(0, -1), { ...gap, lastHour: through }]
+      : reply.unobserved;
+    return timelineModel({ ...base, lanes, unobserved, warnings, nextChangeAt });
   },
 
   tooltip(model, hit) {

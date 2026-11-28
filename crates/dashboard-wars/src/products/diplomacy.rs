@@ -785,21 +785,7 @@ impl Product for DiplomaticPacts {
 
 pub(crate) fn dated_pacts(source: &Arc<Source>, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
     use dashboard_base::products::at_hour;
-    at_hour::dated_product::<DiplomaticPacts>(source, load, asked, at_hour::at_hour, |_, reply| reply.held_through,
-        |data, hour| {
-            if data.as_ref().as_ref().is_ok_and(|value| value["hour"].as_i64() == Some(i64::from(hour))) { return; }
-            let Ok(value) = Arc::make_mut(data) else { return };
-            let old = value["hour"].as_i64();
-            value["hour"] = hour.into();
-            for pact in value["pacts"].as_array_mut().into_iter().flatten() {
-                if pact["held"].as_bool() == Some(true) { pact["lastSeen"] = hour.into(); }
-            }
-            if let Some(gap) = value["unobserved"].as_array_mut().and_then(|gaps| gaps.last_mut())
-                && gap["lastHour"].as_i64() == old
-            {
-                gap["lastHour"] = hour.into();
-            }
-        }, |source, params, load, cancelled, _| DiplomaticPacts::load(source, params, load, cancelled))
+    at_hour::product_interval_panel::<DiplomaticPacts>(source, load, asked, at_hour::at_hour, |reply| reply.held_through)
 }
 
 #[cfg(test)]
