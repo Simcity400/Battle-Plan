@@ -1386,9 +1386,10 @@ impl Playhead {
         lock_clock(&self.shared.clock).frame(now)
     }
 
-    pub fn clock_state_at(&self, now: Instant) -> (u64, Hour, bool) {
+    pub fn clock_state_at(&self, now: Instant) -> (u64, Hour, Option<f64>) {
         let mut clock = lock_clock(&self.shared.clock);
-        (self.epoch(), clock.frame(now), clock.playing() && clock.held().is_none())
+        let speed = (clock.playing() && clock.held().is_none()).then(|| clock.speed());
+        (self.epoch(), clock.frame(now), speed)
     }
 
     pub fn head_from(&self, at: Hour, by: Duration) -> Option<Hour> {

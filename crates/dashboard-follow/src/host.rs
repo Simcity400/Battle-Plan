@@ -300,6 +300,7 @@ struct StepProduct {
     pending_preparation: Option<panel::PendingPreparation>,
     wire: panel::product::Delivery,
     last: Option<(u64, u32, Hour)>,
+    catch_up_costs: [Option<Duration>; 2],
     joined: bool,
     resume: Option<PanelResume>,
     cells: Vec<(Group, u32)>,
@@ -342,8 +343,17 @@ enum PanelRead {
 struct PanelClock {
     epoch: u64,
     head: Hour,
-    playing: bool,
+    playing: Option<(f64, Hour)>,
     newest: Option<Hour>,
+}
+
+fn playing_catch_up_hour(last: Hour, quantum: Hour, head: Hour, speed: f64, newest: Hour, costs: [Option<Duration>; 2]) -> Hour {
+    let next = last.saturating_add(quantum);
+    let cost = costs.into_iter().flatten().max().unwrap_or_default();
+    let quantum = f64::from(quantum);
+    let distance = f64::from(head) - f64::from(last) + cost.as_secs_f64() * speed;
+    let aimed = (f64::from(last) + (distance / quantum).ceil() * quantum) as Hour;
+    next.max(aimed).min(newest)
 }
 
 struct PanelJob {
@@ -377,8 +387,9 @@ impl PanelJob {
         run_panel(move || self.run(read, product, work, move || {
             let owner = owner.upgrade()?;
             let playhead = get(&owner);
-            let (epoch, head, playing) = playhead.clock_state_at(Instant::now());
-            Some(PanelClock { epoch, head, playing, newest: if playing { playhead.newest() } else { None } })
+            let (epoch, head, speed) = playhead.clock_state_at(Instant::now());
+            let playing = speed.map(|speed| (speed, playhead.step_hours()));
+            Some(PanelClock { epoch, head, playing, newest: speed.and_then(|_| playhead.newest()) })
         }));
     }
 
@@ -389,16 +400,17 @@ impl PanelJob {
             PanelRead::Seed(hour) => self.seed(&mut product, hour, head),
             PanelRead::Resume(hour) => preparation = self.prepare_resume(&mut product, hour, &clock),
             PanelRead::CatchUp { through, quantum, parked } => {
-                if let Some((_, _, mut hour)) = product.last {
-                    while hour < through {
-                        hour = hour.saturating_add(quantum).min(through);
+                if let Some((_, _, mut last)) = product.last {
+                    while last < through {
+                        let mut hour = last.saturating_add(quantum).min(through);
                         if let Some(state) = clock() && state.epoch == self.epoch && !self.token.load(Ordering::Acquire) {
-                            if state.playing {
+                            if let Some((speed, quantum)) = state.playing {
                                 if parked {
                                     preparation = self.prepare_resume(&mut product, through, &clock);
                                     break;
                                 }
-                                hour = through.max(state.newest.unwrap_or(through));
+                                let newest = through.max(state.newest.unwrap_or(through));
+                                hour = playing_catch_up_hour(last, quantum, state.head, speed, newest, product.catch_up_costs);
                             } else if hour > state.head {
                                 match self.push.reply_lead_full() {
                                     Err(()) => break,
@@ -414,11 +426,14 @@ impl PanelJob {
                                 }
                             }
                         }
+                        let started = Instant::now();
                         if !self.read_one(&mut product, hour, false, false, true, &head) {
                             product.resend = true;
                             product.joined = true;
                             break;
                         }
+                        product.catch_up_costs = [Some(started.elapsed()), product.catch_up_costs[0]];
+                        last = hour;
                     }
                 }
             }
@@ -453,7 +468,7 @@ impl PanelJob {
 
     fn prepare_resume(&self, product: &mut StepProduct, hour: Hour, clock: &impl Fn() -> Option<PanelClock>) -> Option<(panel::OnPrepared, Arc<AtomicBool>)> {
         product.resume = None;
-        if self.token.load(Ordering::Acquire) || !clock().is_some_and(|state| state.epoch == self.epoch && (state.playing || state.head == hour)) { return None; }
+        if self.token.load(Ordering::Acquire) || !clock().is_some_and(|state| state.epoch == self.epoch && (state.playing.is_some() || state.head == hour)) { return None; }
         let next = product.last.map_or(hour, |(_, _, last)| last.saturating_add(1));
         let resend = product.resend;
         let Some((change, from, fresh)) = product.read_at(self.stamp.2, self.epoch, hour, false, false, true, &self.token, None, &self.reads) else {
@@ -853,8 +868,8 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                     product.resume = None;
                 }
                 if product.resume.as_ref().is_some_and(|resume| step.reset() || {
-                    let (_, head, playing) = playhead.clock_state_at(Instant::now());
-                    !playing && resume.hour() != head
+                    let (_, head, speed) = playhead.clock_state_at(Instant::now());
+                    speed.is_none() && resume.hour() != head
                 }) {
                     product.resume = None;
                     product.resend = true;
@@ -959,7 +974,8 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                     let held = waiting.lock().unwrap_or_else(PoisonError::into_inner);
                     (!held.products.is_empty() || !held.shown.is_empty() || follow_ref.has_work(), held.push.clone().map(|push| (push, held.stamp.1, held.stamp.3)))
                 };
-                let (epoch, head, playing) = playhead.clock_state_at(Instant::now());
+                let (epoch, head, speed) = playhead.clock_state_at(Instant::now());
+                let playing = speed.is_some();
                 if let Some((push, route, seek)) = told {
                     push.head(route, seek, head);
                     let held_at = (!playing && push.reply_lead_full() == Ok(true)).then_some(head);
@@ -1002,7 +1018,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             let epoch = self.playhead().epoch();
             let hour = self.playhead().head(Instant::now());
             let host = panels.cells.clone();
-            let product = StepProduct { id, pending_seed: None, started_on: None, read: exact.advance.clone(), pending_preparation: panel.pending_preparation().cloned(), wire: Default::default(), last: None, joined: false, resume: None, cells: Vec::new(), class, host, followed: None, input: None, resend: false };
+            let product = StepProduct { id, pending_seed: None, started_on: None, read: exact.advance.clone(), pending_preparation: panel.pending_preparation().cloned(), wire: Default::default(), last: None, catch_up_costs: Default::default(), joined: false, resume: None, cells: Vec::new(), class, host, followed: None, input: None, resend: false };
             let task = PanelJob { stamp: (panels.stamp.0, panels.stamp.1, reads.seek), session: panels.session, epoch, token: reads.tokens[&id].clone(), reads: self.reads.clone(), push, wake: self.follow.rehooker(), parking: Weak::new() };
             let work = Arc::new(Work::new(None));
             panels.due.insert((Hour::MIN, id));
@@ -1235,7 +1251,7 @@ fn a_retired_product_read_cannot_publish_its_seed() {
     let (release, wait_release) = std::sync::mpsc::channel();
     let wait_release = Mutex::new(wait_release);
     let mut product = StepProduct {
-        id: 4, pending_seed: None, started_on: None, last: None, joined: false, resume: None, pending_preparation: None, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
+        id: 4, pending_seed: None, started_on: None, last: None, catch_up_costs: Default::default(), joined: false, resume: None, pending_preparation: None, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
         read: Arc::new(move |_, _, _, _| {
             started.send(()).unwrap();
             wait_release.lock().unwrap().recv().unwrap();
@@ -1268,8 +1284,29 @@ fn a_paused_panel_catches_up_to_the_head_without_computing_past_its_credit() {
 
 #[cfg(test)]
 #[test]
-fn a_playing_panel_prepares_only_the_latest_step_when_it_is_behind() {
+fn a_playing_panel_jumps_to_the_visible_head_when_it_is_behind() {
     check_parked_panel("playing");
+}
+
+#[cfg(test)]
+#[test]
+fn a_playing_panel_within_one_quantum_reads_each_current_boundary() {
+    check_parked_panel("playing-near");
+}
+
+#[cfg(test)]
+#[test]
+fn playing_catch_up_targets_the_boundary_it_can_deliver() {
+    let slow = Duration::from_millis(20);
+    let fast = Duration::from_millis(10);
+    let target = |last, newest, costs| playing_catch_up_hour(last, 6, 100, 1440.0, newest, costs);
+
+    assert_eq!(target(82, 150, [None, None]), 100, "the first read aims at the head");
+    assert_eq!(playing_catch_up_hour(82, 6, 101, 1440.0, 130, [None, None]), 106, "the first read lands on a boundary");
+    assert_eq!(target(118, 150, [Some(fast), None]), 124, "an ahead panel reads the next quantum");
+    assert_eq!(target(82, 150, [Some(fast), Some(slow)]), 130, "one fast read cannot lower the cost");
+    assert_eq!(target(82, 150, [Some(slow), Some(fast)]), 130, "the slower of the last two determines the target");
+    assert_eq!(target(82, 126, [Some(slow), None]), 126, "the newest request bounds the target");
 }
 
 #[cfg(test)]
@@ -1301,8 +1338,13 @@ fn check_parked_panel(release: &str) {
         let subscribe = subscribe.clone();
         Some(Box::new(move |wake| subscribe.send(wake).unwrap()) as panel::OnPrepared)
     }) as panel::PendingPreparation);
+    let (last, quantum) = match release {
+        "playing" => (head - 3, 1),
+        "playing-near" => (head - 2, 6),
+        _ => (head - 1, 1),
+    };
     let product = StepProduct {
-        id: 4, pending_seed: None, started_on: Some((epoch, seek)), last: Some((epoch, seek, head - 1)), joined: false, resume: None, pending_preparation, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
+        id: 4, pending_seed: None, started_on: Some((epoch, seek)), last: Some((epoch, seek, last)), catch_up_costs: Default::default(), joined: false, resume: None, pending_preparation, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
         read: Arc::new(move |hour, _, _, _| {
             recorded.lock().unwrap().push(hour);
             let pending = pending_at == Some(hour) && !ready.load(Ordering::Acquire);
@@ -1316,22 +1358,33 @@ fn check_parked_panel(release: &str) {
     }, parking: Arc::downgrade(&parking) };
     let work = Arc::new(Work::new(None));
     let now = Arc::new(AtomicU64::new(epoch));
-    let playing = Arc::new(AtomicBool::new(release == "playing"));
+    let playing = Arc::new(AtomicBool::new(release.starts_with("playing")));
     let clock = now.clone();
     let live = playing.clone();
-    let through = if release == "play" { head + 4 } else { head + 1 };
-    let latest = if release == "playing" { through + 3 } else { through };
-    job().run(PanelRead::CatchUp { through, quantum: 1, parked: false }, product, work.clone(), move || Some(PanelClock {
-        epoch: clock.load(Ordering::Acquire), head, playing: live.load(Ordering::Acquire), newest: Some(latest),
+    let through = match release {
+        "play" => head + 4,
+        "playing" => head,
+        "playing-near" => last + 2 * quantum,
+        _ => head + 1,
+    };
+    let latest = through + 24;
+    let scheduled = if release == "playing-near" { 1 } else { quantum };
+    job().run(PanelRead::CatchUp { through, quantum: scheduled, parked: false }, product, work.clone(), move || Some(PanelClock {
+        epoch: clock.load(Ordering::Acquire), head, playing: live.load(Ordering::Acquire).then_some((0.0, quantum)), newest: Some(latest),
     }));
     if release == "playing" {
-        assert_eq!(*sampled.lock().unwrap(), [latest]);
+        assert_eq!(*sampled.lock().unwrap(), [head]);
         let (_, bytes, ..) = push.try_take().expect("the latest reading is sent");
         let records = panel::dated::records(&bytes).unwrap();
-        assert_eq!((records[0].hour, records[0].kind), (latest, panel::dated::DATA));
-        assert_eq!(rmp_serde::from_slice::<Hour>(records[0].body).unwrap(), latest);
-        assert_eq!((records[1].hour, records[1].kind), (latest + 1, panel::dated::WAITING));
-        assert_eq!(work.take().unwrap().last, Some((epoch, seek, latest)));
+        assert_eq!((records[0].hour, records[0].kind), (head, panel::dated::DATA));
+        assert_eq!(rmp_serde::from_slice::<Hour>(records[0].body).unwrap(), head);
+        assert_eq!((records[1].hour, records[1].kind), (head + 1, panel::dated::WAITING));
+        assert_eq!(work.take().unwrap().last, Some((epoch, seek, head)));
+        return;
+    }
+    if release == "playing-near" {
+        assert_eq!(*sampled.lock().unwrap(), [last + quantum, through]);
+        assert_eq!(work.take().unwrap().last, Some((epoch, seek, through)));
         return;
     }
     assert_eq!(*sampled.lock().unwrap(), [head]);
@@ -1390,7 +1443,7 @@ fn check_parked_panel(release: &str) {
         wake();
         assert_ne!(wake_gate.stamp(), waiting, "preparation wakes the paused host");
         let due = resume(&product).expect("the paused hour is ready to retry");
-        job().run(PanelRead::Resume(due), product, work.clone(), move || Some(PanelClock { epoch, head: through, playing: false, newest: Some(through) }));
+        job().run(PanelRead::Resume(due), product, work.clone(), move || Some(PanelClock { epoch, head: through, playing: None, newest: Some(through) }));
         let (next, change, proof) = work.take().unwrap().resumed_step(through);
         let (hour, kind, body) = change.expect("ready preparation supplies the paused picture");
         assert_eq!((next, proof, hour, kind), (through + 1, Some(through), through, panel::dated::DATA));

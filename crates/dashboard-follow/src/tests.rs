@@ -2931,8 +2931,9 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     }))).unwrap()(8, 1).unwrap();
     let (start8, seed_thread) = s8_entered_rx.recv().unwrap();
     let next8 = host.playhead().newest().unwrap_or(start8).max(start8 + 2 * quantum) + quantum;
+    let head8 = next8 + quantum;
     gate_from.store(next8, Ordering::Release);
-    host.playhead().anchor(f64::from(next8 + quantum), true, 0.0, anchored_at, false);
+    host.playhead().anchor(f64::from(head8), true, 0.0, anchored_at, false);
     let (through8, advance8) = loop {
         let (first, last, permit) = steps.recv().unwrap();
         if first >= next8 { break (last, permit); }
@@ -2956,7 +2957,9 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     };
     let reads = s8_reads.lock().unwrap().clone();
     assert!(!reads.is_empty() && reads.iter().all(|&(_, seed)| !seed), "multi-hour catch-up reads through the held interval, never as a seed: {reads:?}");
-    assert!(caught.0 >= through8, "catch-up skips the backlog to the current boundary");
+    let first = reads[0].0;
+    assert!((through8.min(head8)..head8 + quantum).contains(&first), "the first read without a cost estimate aims at the boundary at the head");
+    assert!(caught.0 >= first, "a later confirmation can fold the first reading");
     assert_eq!(caught.1, dated::AGAIN, "the unchanged value is exact at the new hour and proves nothing about the skipped hours");
 }
 
