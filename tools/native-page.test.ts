@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -9,11 +9,19 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import { browserStage } from './canvas-page.ts';
+import { NativeCdp } from './native-cdp.ts';
 import { builtServer, devServer, formatFixtureLoadError, loadFixture, navigate, runFixtureLoadStage, type BrowserNetworkFailure, type ServerFailure } from './native-page.ts';
+
+async function checkClosed(closing: Promise<unknown>) {
+  const deadline = AbortSignal.timeout(5_000);
+  await Promise.race([closing, once(deadline, 'abort').then(() => { throw new Error('Fixture connection did not close'); })]);
+}
 
 function wsServer(onClient: (send: (payload: unknown) => void, onMessage: (handler: (message: Record<string, unknown>) => void) => void, closeSocket: () => void) => void) {
   const server = createServer();
+  let upgrades = 0;
   server.on('upgrade', (request, socket) => {
+    upgrades++;
     const key = request.headers['sec-websocket-key'];
     const accept = createHash('sha1').update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
@@ -43,7 +51,10 @@ function wsServer(onClient: (send: (payload: unknown) => void, onMessage: (handl
         const mask = masked ? buffer.subarray(offset, offset + 4) : null;
         const payload = Buffer.from(buffer.subarray(offset + maskLen, offset + maskLen + len));
         buffer = buffer.subarray(offset + maskLen + len);
-        if (opcode === 8) { socket.end(); return; }
+        if (opcode === 8) {
+          if (!socket.writableEnded) socket.end(Buffer.from([0x88, 0x00]));
+          return;
+        }
         if (mask) {
           for (let i = 0; i < payload.length; i++) payload[i] = payload[i]! ^ mask[i % 4]!;
         }
@@ -52,12 +63,13 @@ function wsServer(onClient: (send: (payload: unknown) => void, onMessage: (handl
     });
     onClient(send, next => { handler = next; }, () => { socket.write(Buffer.from([0x88, 0x00])); socket.end(); });
   });
-  return new Promise<{ url: string; close(): Promise<void> }>(done => {
+  return new Promise<{ url: string; upgrades(): number; close(): Promise<void> }>(done => {
     server.listen(0, '127.0.0.1', () => {
       const address = server.address();
       assert.ok(address && typeof address !== 'string');
       done({
         url: `ws://127.0.0.1:${address.port}`,
+        upgrades: () => upgrades,
         close: () => new Promise<void>(closed => { server.close(() => closed()); server.closeAllConnections(); }),
       });
     });
@@ -105,7 +117,7 @@ test('builtServer verifies fixture readiness, sets Content-Length, records missi
   }
 });
 
-test('devServer pre-warms virtual and redirected HTTP modules, checks dependency MIME, captures pre-order plugin errors, and closes while a transform stalls', async () => {
+test('devServer bounds readiness connections and closes its listener and sockets, including after a fixture load fails', async () => {
   const brokenProfile = await mkdtemp(resolve(tmpdir(), 'native-dev-broken-'));
   const broken = await devServer('test-broken', '/test-broken-page', '/virtual/broken-fixture.ts', brokenProfile, [{
     name: 'broken-fixture',
@@ -181,7 +193,11 @@ test('devServer pre-warms virtual and redirected HTTP modules, checks dependency
     await rm(virtualProfile, { recursive: true, force: true });
   }
 
+  const redirectPorts = new Set<number>();
+  const redirectedPaths: (string | undefined)[] = [];
   const redirectTarget = createServer((request, response) => {
+    redirectPorts.add(request.socket.remotePort!);
+    redirectedPaths.push(request.url);
     if (request.url === '/deep/entry.js') {
       response.setHeader('Content-Type', 'text/javascript; charset=utf-8');
       response.end('import "./module.js";\n');
@@ -211,6 +227,8 @@ test('devServer pre-warms virtual and redirected HTTP modules, checks dependency
   }]);
   try {
     await redirected.ready();
+    assert.deepEqual(redirectedPaths, ['/deep/entry.js', '/deep/module.js']);
+    assert.equal(redirectPorts.size, 1, 'sequential readiness probes reuse the same connection at the redirected origin');
   } finally {
     await redirected.close();
     await new Promise<void>(done => { redirectTarget.close(() => done()); redirectTarget.closeAllConnections(); });
@@ -300,6 +318,7 @@ test('devServer pre-warms virtual and redirected HTTP modules, checks dependency
     },
   }]);
   const upgradedSocket = connect(stalled.port, '127.0.0.1');
+  const upgradedClosed = once(upgradedSocket, 'close');
   try {
     await new Promise<void>((done, reject) => {
       upgradedSocket.once('connect', () => {
@@ -313,11 +332,33 @@ test('devServer pre-warms virtual and redirected HTTP modules, checks dependency
     await transformEntered;
     controller.abort(new Error('stalled page load timed out'));
     await assert.rejects(() => pending, /stalled page load timed out/);
-    await stalled.close();
+    await checkClosed(stalled.close());
+    await checkClosed(upgradedClosed);
+    const probe = connect(stalled.port, '127.0.0.1');
+    try {
+      await assert.rejects(once(probe, 'connect'), { code: 'ECONNREFUSED' });
+    } finally {
+      probe.destroy();
+    }
   } finally {
     upgradedSocket.destroy();
     releaseTransform();
+    await stalled.close();
     await rm(stalledProfile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test('CDP teardown completes after a rejected WebSocket upgrade', async () => {
+  const server = createServer((_request, response) => { response.writeHead(403); response.end(); });
+  await once(server.listen(0, '127.0.0.1'), 'listening');
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const session = new NativeCdp(`ws://127.0.0.1:${address.port}`);
+  try {
+    await assert.rejects(session.send('SystemInfo.getProcessInfo'), /CDP connection failed/);
+    await checkClosed(session.close());
+  } finally {
+    await new Promise<void>(done => { server.close(() => done()); server.closeAllConnections(); });
   }
 });
 
@@ -346,9 +387,10 @@ test('loadFixture and runFixtureLoadStage report server and browser fetch failur
       }
     });
   });
+  const session = new NativeCdp(cdp.url);
   try {
     await assert.rejects(
-      () => loadFixture(cdp.url, { fixture: '/fixture.js', failures }, new AbortController().signal),
+      () => loadFixture(session, { fixture: '/fixture.js', failures }, new AbortController().signal),
       (error: unknown) => {
         assert.ok(error instanceof Error);
         assert.ok(!(error instanceof assert.AssertionError));
@@ -360,6 +402,7 @@ test('loadFixture and runFixtureLoadStage report server and browser fetch failur
       },
     );
   } finally {
+    await session.close();
     await cdp.close();
   }
 
@@ -375,6 +418,7 @@ test('loadFixture and runFixtureLoadStage report server and browser fetch failur
       }
     });
   });
+  const stalledSession = new NativeCdp(stallCdp.url);
   try {
     const child = Object.assign(new EventEmitter(), { exitCode: null as number | null, signalCode: null }) as unknown as ChildProcess;
     const stage = <T,>(label: string, work: (signal: AbortSignal) => Promise<T>, timeout?: number) => browserStage(child, label, work, timeout);
@@ -388,7 +432,7 @@ test('loadFixture and runFixtureLoadStage report server and browser fetch failur
         seenNetworkFailure();
         return count;
       };
-      await loadFixture(stallCdp.url, served, signal, tracked);
+      await loadFixture(stalledSession, served, signal, tracked);
     });
     await networkFailureSeen;
     child.emit('close', 42, null);
@@ -423,6 +467,7 @@ test('loadFixture and runFixtureLoadStage report server and browser fetch failur
       },
     );
   } finally {
+    await stalledSession.close();
     await stallCdp.close();
   }
 
@@ -431,7 +476,7 @@ test('loadFixture and runFixtureLoadStage report server and browser fetch failur
   assert.match(formatted.message, /fixture could not be loaded \(\/entry\.tsx\): browser net::ERR_EMPTY_RESPONSE/);
 });
 
-test('navigate disables cache on reload and waits for the matching loader load event', async () => {
+test('navigation, fixture import and concurrent commands reuse one CDP socket and wait for its closure', async () => {
   const seen: { method: string; params: unknown }[] = [];
   const cdp = await wsServer((send, onMessage) => {
     onMessage(message => {
@@ -442,14 +487,26 @@ test('navigate disables cache on reload and waits for the matching loader load e
         send({ method: 'Page.lifecycleEvent', params: { name: 'load', loaderId: 'fresh-loader' } });
         return;
       }
+      if (message.method === 'Runtime.evaluate') {
+        send({ id: message.id, result: message.params });
+        return;
+      }
       send({ id: message.id, result: {} });
     });
   });
+  const session = new NativeCdp(cdp.url);
   try {
-    await navigate(cdp.url, 'http://127.0.0.1:1/icon-menu-page', new AbortController().signal, true);
-    assert.deepEqual(seen.map(entry => entry.method), ['Page.enable', 'Page.setLifecycleEventsEnabled', 'Network.enable', 'Network.setCacheDisabled', 'Page.navigate']);
-    assert.deepEqual(seen.find(entry => entry.method === 'Network.setCacheDisabled')?.params, { cacheDisabled: true });
+    await navigate(session, 'http://127.0.0.1:1/icon-menu-page', new AbortController().signal, true);
+    assert.deepEqual(seen.map(entry => entry.method), ['Page.enable', 'Page.setLifecycleEventsEnabled', 'Network.enable', 'Network.setCacheDisabled', 'Page.navigate', 'Network.setCacheDisabled']);
+    assert.deepEqual(seen.filter(entry => entry.method === 'Network.setCacheDisabled').map(entry => entry.params),
+      [{ cacheDisabled: true }, { cacheDisabled: false }]);
+    await loadFixture(session, { fixture: '/fixture.js', failures: [] }, new AbortController().signal);
+    const results = await Promise.all(Array.from({ length: 16 }, (_, value) => session.send('Runtime.evaluate', { value })));
+    assert.deepEqual(results, Array.from({ length: 16 }, (_, value) => ({ value })));
+    assert.equal(cdp.upgrades(), 1);
   } finally {
+    await session.close();
+    assert.ok(session.disconnected.aborted);
     await cdp.close();
   }
 
@@ -464,12 +521,14 @@ test('navigate disables cache on reload and waits for the matching loader load e
       send({ id: message.id, result: {} });
     });
   });
+  const staleSession = new NativeCdp(staleOnly.url);
   try {
     await assert.rejects(
-      () => navigate(staleOnly.url, 'http://127.0.0.1:1/icon-menu-page', new AbortController().signal, true),
-      /Page\.navigate connection closed before the page loaded/,
+      () => navigate(staleSession, 'http://127.0.0.1:1/icon-menu-page', new AbortController().signal, true),
+      /CDP connection closed/,
     );
   } finally {
+    await staleSession.close();
     await staleOnly.close();
   }
 });
