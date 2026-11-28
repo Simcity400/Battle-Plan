@@ -2,7 +2,7 @@
 pub mod ledger;
 
 use dashboard_base::products::Country;
-use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}};
+use dashboard_base::{Source, catalogue::{self, OwnRefusals}, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}};
 use dashboard_world::products::equipment_names::{EquipmentIcon, VariantName, self as names, Named};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::{
@@ -15,11 +15,12 @@ use dashboard_text::{
     variant_names::{Texts, localise_for},
 };
 use replay_data::rows::{CountryLinkRow, LendLeaseAgreementRow, LexicalTokenRow, MarketContractTermsRow, MarketPool, MarketPriceLevel, MarketSubsidy, TableId, tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, TableView, ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashMap},
     io,
+    sync::{Arc, Mutex, PoisonError},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -176,8 +177,8 @@ pub struct MarketLendLeaseReply {
     pub unattributed: u32,
     #[doc = " Why the asked group's members are not known at this hour; every section is then null."]
     pub refused: Option<String>,
-    pub variants: Vec<VariantName>,
-    pub icons: Vec<EquipmentIcon>,
+    pub variants: Arc<[VariantName]>,
+    pub icons: Arc<[EquipmentIcon]>,
     pub warnings: Vec<String>,
 }
 
@@ -220,16 +221,12 @@ pub(crate) fn lease_variants(row: &LendLeaseAgreementRow) -> impl Iterator<Item 
     [&row.monthly, &row.percentage, &row.once, &row.delivered, &row.sunk].into_iter().flat_map(|pool| pool_variants(pool))
 }
 
-fn named_variant(named: &Named, variant: u64) -> Option<String> {
-    named.variants.get(&variant).and_then(|held| held.name.clone())
+fn pool(named: &MarketDesigns, pool: &MarketPool) -> Vec<MarketItem> {
+    pool.items.iter().map(|item| MarketItem { variant: item.variant.to_string(), name: named.name(item.variant), amount_raw: item.amount_raw.to_string() }).collect()
 }
 
-pub(crate) fn pool(named: &Named, pool: &MarketPool) -> Vec<MarketItem> {
-    pool.items.iter().map(|item| MarketItem { variant: item.variant.to_string(), name: named_variant(named, item.variant), amount_raw: item.amount_raw.to_string() }).collect()
-}
-
-fn levels<'r>(named: &Named, rows: impl IntoIterator<Item = &'r MarketPriceLevel>) -> Vec<MarketLevel> {
-    rows.into_iter().map(|row| MarketLevel { variant: row.variant.to_string(), name: named_variant(named, row.variant), level: row.level }).collect()
+fn levels<'r>(named: &MarketDesigns, rows: impl IntoIterator<Item = &'r MarketPriceLevel>) -> Vec<MarketLevel> {
+    rows.into_iter().map(|row| MarketLevel { variant: row.variant.to_string(), name: named.name(row.variant), level: row.level }).collect()
 }
 
 fn grants<'r>(rows: impl IntoIterator<Item = &'r MarketSubsidy>, parties: &Parties<'_>, lexical: Option<&[LexicalTokenRow]>, texts: Option<&dyn Texts>) -> Vec<MarketGrant> {
@@ -246,7 +243,7 @@ fn grants<'r>(rows: impl IntoIterator<Item = &'r MarketSubsidy>, parties: &Parti
         .collect()
 }
 
-pub(crate) fn lease_terms(row: &LendLeaseAgreementRow, party: impl Fn(u32) -> (Option<String>, Option<String>), named: &Named) -> LeaseTerms {
+fn lease_terms(row: &LendLeaseAgreementRow, party: impl Fn(u32) -> (Option<String>, Option<String>), named: &MarketDesigns) -> LeaseTerms {
     let ((giver, giver_missing), (receiver, receiver_missing)) = (party(row.country), party(row.receiver));
     LeaseTerms {
         key: lease_key(row).to_string(),
@@ -308,6 +305,67 @@ fn terms_kind(params: &MarketLendLeaseParams, row: &MarketContractTermsRow) -> b
 pub struct MarketContext {
     pub(crate) names: names::Context,
     pub(crate) groups: GroupsAt,
+    designs: Mutex<Option<KeptDesigns>>,
+}
+
+struct MarketDesigns {
+    ids: Vec<u64>,
+    variants: Arc<[VariantName]>,
+    icons: Arc<[EquipmentIcon]>,
+    warnings: BTreeSet<String>,
+}
+
+impl MarketDesigns {
+    fn read(frame: &DecodedFrame, ids: &[u64], context: &names::Context) -> Self {
+        let mut named = Named::default();
+        names::name(frame, ids, &[], context, &mut named);
+        let (ids, variants): (Vec<_>, Vec<_>) = named.variants.into_iter()
+            .map(|(id, variant)| (id, VariantName { hour: None, ..variant })).unzip();
+        let icons = named.icons.into_iter().map(|(key, image)| EquipmentIcon { key, image }).collect();
+        Self { ids, variants: variants.into(), icons, warnings: named.warnings }
+    }
+
+    fn name(&self, id: u64) -> Option<String> {
+        self.ids.binary_search(&id).ok().and_then(|index| self.variants[index].name.clone())
+    }
+}
+
+struct KeptDesigns {
+    inputs: Vec<ViewIdentity>,
+    value: Arc<MarketDesigns>,
+    noted: OwnRefusals,
+}
+
+fn can_keep_designs(frame: &DecodedFrame) -> bool {
+    [TableId::Countries, TableId::CountryLinks, TableId::LexicalTokens, TableId::VariantDefinitions].into_iter()
+        .all(|table| matches!(frame.tables[table.index()].held(), TableView::Complete(rows) if rows.table() == table))
+        && names::TABLES.iter().all(|table| !matches!(
+            frame.tables[table.index()].held(), TableView::Unavailable { reason } if reason.contains("hour ")
+        ))
+}
+
+impl MarketContext {
+    pub(super) fn new(names: names::Context, groups: GroupsAt) -> Self {
+        Self { names, groups, designs: Mutex::default() }
+    }
+
+    fn designs(&self, frame: &DecodedFrame, ids: &[u64], reuse: bool) -> Arc<MarketDesigns> {
+        let read = || Arc::new(MarketDesigns::read(frame, ids, &self.names));
+        if !reuse { return read(); }
+        let mut kept = self.designs.lock().unwrap_or_else(PoisonError::into_inner);
+        if ids.is_empty() || !can_keep_designs(frame) {
+            *kept = None;
+            return read();
+        }
+        let views = || names::TABLES.iter().map(|table| &frame.tables[table.index()]);
+        if let Some(held) = kept.as_ref().filter(|held| held.value.ids == ids && held.inputs.iter().zip(views()).all(|(input, view)| input.is(view))) {
+            catalogue::credit(&held.noted);
+            return Arc::clone(&held.value);
+        }
+        let (value, noted) = catalogue::capture(read);
+        *kept = Some(KeptDesigns { inputs: views().map(|view| view.identity()).collect(), value: Arc::clone(&value), noted });
+        value
+    }
 }
 
 fn section<'f, R>(shown: bool, rows: io::Result<&'f [R]>, label: &str, warnings: &mut Vec<String>) -> Option<&'f [R]> {
@@ -464,11 +522,11 @@ impl AtHour for MarketLendLease {
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(MarketContext { names: names::context(source, load)?, groups: GroupsAt::default() })
+        Ok(MarketContext::new(names::context(source, load)?, GroupsAt::default()))
     }
 
     fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
-        Ok(MarketContext { names: names::context(source, load)?, groups: GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())? })
+        Ok(MarketContext::new(names::context(source, load)?, GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())?))
     }
 
     fn valid_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
@@ -477,17 +535,30 @@ impl AtHour for MarketLendLease {
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let members = params.group.as_ref().map(|group| at.context.groups.members(group, frame.hour)).transpose()?;
-        let reply = match members {
-            Some(members) if members.refused.is_some() => MarketLendLeaseReply { refused: members.refused, ..empty_reply(params) },
-            members => {
-                let asked: Option<Vec<Country>> = members.map(|members| members.tags.into_iter().map(Country::from).collect());
-                market_at(frame, params, asked.as_deref(), at.holders, &at.context.names, at.live)?
-            }
-        };
-        check_reply_budget(&reply)?;
-        Ok(reply)
+        market_reply(frame, params, at, false)
     }
+
+    fn playback_reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        market_reply(frame, params, at, params.only == Some(MarketSection::Offers))
+    }
+}
+
+fn market_reply(frame: &DecodedFrame, params: &MarketLendLeaseParams, at: &At<'_, MarketContext>, reuse_designs: bool) -> io::Result<MarketLendLeaseReply> {
+    let members = params.group.as_ref().map(|group| at.context.groups.members(group, frame.hour)).transpose()?;
+    let reply = match members {
+        Some(members) if members.refused.is_some() => MarketLendLeaseReply { refused: members.refused, ..empty_reply(params) },
+        members => {
+            let asked: Option<Vec<Country>> = members.map(|members| members.tags.into_iter().map(Country::from).collect());
+            market_at(frame, params, asked.as_deref(), at.holders, at.context, at.live, reuse_designs)?
+        }
+    };
+    if let Err(error) = check_reply_budget(&reply) {
+        if reuse_designs {
+            *at.context.designs.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        }
+        return Err(error);
+    }
+    Ok(reply)
 }
 
 fn empty_reply(params: &MarketLendLeaseParams) -> MarketLendLeaseReply {
@@ -500,13 +571,13 @@ fn empty_reply(params: &MarketLendLeaseParams) -> MarketLendLeaseReply {
         purchases_missing: None,
         unattributed: 0,
         refused: None,
-        variants: Vec::new(),
-        icons: Vec::new(),
+        variants: Arc::default(),
+        icons: Arc::default(),
         warnings: Vec::new(),
     }
 }
 
-fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, members: Option<&[Country]>, holders: &Holders, context: &names::Context, live: &Cells) -> io::Result<MarketLendLeaseReply> {
+fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, members: Option<&[Country]>, holders: &Holders, context: &MarketContext, live: &Cells, reuse_designs: bool) -> io::Result<MarketLendLeaseReply> {
     let [show_offers, show_contracts, show_agreements] = sections(params);
     let hour = frame.hour;
     let mut reply = empty_reply(params);
@@ -582,11 +653,10 @@ fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, members: Opti
         variants.extend(lease_variants(row));
     }
     variants.remove(&0);
-    let mut named = Named::default();
-    let variants: Vec<u64> = variants.into_iter().collect();
-    names::name(frame, &variants, &[], context, &mut named);
+    let ids: Vec<_> = variants.into_iter().collect();
+    let named = context.designs(frame, &ids, reuse_designs);
     let lexical = frame.complete::<tables::LexicalTokens>().ok();
-    let texts: Option<&dyn Texts> = context.as_ref().ok().map(|content| content.catalogue.as_ref() as &dyn Texts);
+    let texts: Option<&dyn Texts> = context.names.as_ref().ok().map(|content| content.catalogue.as_ref() as &dyn Texts);
 
     reply.offers = offers.map(|rows| {
         rows.into_iter()
@@ -653,8 +723,8 @@ fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, members: Opti
     if reply.unattributed > 0 {
         reply.warnings.push(format!("{} market or lend-lease rows name a country with no tag at this hour; a chosen country may take part in them, so they are not listed", reply.unattributed));
     }
-    reply.warnings.extend(std::mem::take(&mut named.warnings));
-    reply.icons = named.icons();
-    reply.variants = named.variants.into_values().map(|variant| VariantName { hour: None, ..variant }).collect();
+    reply.warnings.extend(named.warnings.iter().cloned());
+    reply.icons = Arc::clone(&named.icons);
+    reply.variants = Arc::clone(&named.variants);
     Ok(reply)
 }

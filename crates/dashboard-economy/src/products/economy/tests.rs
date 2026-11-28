@@ -1031,7 +1031,7 @@ mod market {
             }),
             FIRST,
         );
-        let context = MarketContext { names: Err("no content".into()), groups };
+        let context = MarketContext::new(Err("no content".into()), groups);
         let faction = GroupSelection { kind: GroupKind::Faction, id: Some("42".into()), tag: None, membership: GroupMembership::Hour };
         let params: crate::products::economy::market::MarketLendLeaseParams = serde_json::from_value(json!({ "branchId": "1", "countries": [], "only": "offers" })).unwrap();
         let params = crate::products::economy::market::MarketLendLeaseParams { group: Some(faction), ..params };
