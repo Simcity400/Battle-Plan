@@ -12,13 +12,66 @@ mod tests;
 
 const TABLE: TableId = TableId::LexicalTokens;
 const RETAINED_BYTES: usize = 16 * 1024 * 1024;
+const ANCHOR_BYTES: usize = 16 * 1024;
+
 #[derive(Default)]
-pub struct LexicalCursor(CompleteCursor);
+pub struct LexicalCursor(CompleteCursor, Box<[VerifiedAnchors]>);
 
 impl LexicalCursor {
     pub fn read(&mut self, recording: &Recording, run: u32, hour: i32) -> Option<(SharedView, bool, u64)> {
-        self.0.read(recording, run, hour, TABLE, RETAINED_BYTES)
+        let source = Arc::downgrade(&recording.source());
+        let known = self.1.iter().find(|held| held.run == run && held.revision == recording.revision()
+            && held.source.ptr_eq(&source));
+        self.0.read_with(recording, run, hour, TABLE, RETAINED_BYTES, |block| {
+            known.is_some_and(|held| held.blocks.binary_search(&block).is_ok())
+        })
     }
+
+    pub fn prepare(recording: &Recording, run: u32) -> Option<VerifiedAnchors> {
+        if recording.columns().get(TABLE.index()) != Some(&1) || recording.read_columns(TABLE.index()) != [0]
+            || !matches!(recording.table_coverage(TABLE.index(), run), TableCoverage::Valid)
+        {
+            return None;
+        }
+        let span = recording.run(run).ok()?;
+        let mut blocks = Vec::new();
+        let mut reader = TableReader::new(recording, run, TABLE, None).ok()?;
+        for block in 0..(span.pages() as u32).saturating_sub(1) {
+            if recording.table_entry(run, block, TABLE.index()).ok()?.unit.restore.is_none() { continue; }
+            if reader.seek(recording, (block + 1) * BLOCK - 1).is_ok()
+                && reader.verify_restore(recording, block).unwrap_or(false)
+            {
+                if (blocks.len() + 1) * size_of::<u32>() + size_of::<VerifiedAnchors>() > ANCHOR_BYTES {
+                    return None;
+                }
+                blocks.push(block);
+            }
+        }
+        Some(VerifiedAnchors { run, source: Arc::downgrade(&recording.source()), revision: recording.revision(), blocks: blocks.into_boxed_slice() })
+    }
+
+    pub fn use_anchors(&mut self, anchors: VerifiedAnchors) {
+        if anchors.blocks.is_empty() { return; }
+        if self.1.first().is_some_and(|held| held.revision != anchors.revision || !held.source.ptr_eq(&anchors.source)) {
+            self.1 = Box::default();
+        }
+        if self.1.iter().any(|held| held.run == anchors.run) { return; }
+        let bytes = size_of_val(&*self.1) + size_of::<VerifiedAnchors>() + size_of_val(&*anchors.blocks)
+            + self.1.iter().map(|held| size_of_val(&*held.blocks)).sum::<usize>();
+        if bytes > ANCHOR_BYTES { return; }
+        let mut kept = std::mem::take(&mut self.1).into_vec();
+        kept.push(anchors);
+        self.1 = kept.into_boxed_slice();
+    }
+
+    pub fn release_view(&mut self) { self.0.held = None; }
+}
+
+pub struct VerifiedAnchors {
+    run: u32,
+    source: Weak<Source>,
+    revision: Revision,
+    blocks: Box<[u32]>,
 }
 
 #[derive(Default)]
@@ -41,6 +94,10 @@ impl CompleteCursor {
     }
 
     pub fn read(&mut self, recording: &Recording, run: u32, hour: i32, table: TableId, budget: usize) -> Option<(SharedView, bool, u64)> {
+        self.read_with(recording, run, hour, table, budget, |_| false)
+    }
+
+    fn read_with(&mut self, recording: &Recording, run: u32, hour: i32, table: TableId, budget: usize, verified: impl Fn(u32) -> bool) -> Option<(SharedView, bool, u64)> {
         let held = self.held.take();
         let columns = table.schema().len();
         if recording.columns().get(table.index()) != Some(&columns)
@@ -67,7 +124,7 @@ impl CompleteCursor {
                     }
                     _ => None,
                 };
-                warm.reader.walk_exact(recording, ordinal, |changes, cells| {
+                warm.reader.walk_exact(recording, ordinal, verified, |changes, cells| {
                     if let Some(rows) = &mut appended && append_keys(rows, tail, changes, cells).is_none() {
                         appended = None;
                     }
