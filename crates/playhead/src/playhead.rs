@@ -1103,14 +1103,14 @@ impl Consumer {
     pub fn reader(&self) -> Reader {
         self.reader
     }
+
+    pub fn set_blocking(&mut self, blocking: bool) -> bool {
+        std::mem::replace(&mut self.blocking, blocking)
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
 impl Consumer {
-    pub fn set_blocking(&mut self, blocking: bool) -> bool {
-        std::mem::replace(&mut self.blocking, blocking)
-    }
-
     pub fn take_blocking(&mut self, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
         let ring = lock(&self.shared.ring);
         self.take_from(ring, head, out)

@@ -767,6 +767,7 @@ pub struct MapSide<P: PlaybackProducts = NoProducts> {
     handed_viewer: Option<(viewer_foundation::perspective::Choice, u32)>,
     switched: Option<Instant>,
     stepped: bool,
+    progress: Option<(Receiver<()>, playhead::Watcher)>,
     #[cfg(any(test, feature = "test-support"))]
     settles_held: Arc<AtomicBool>,
     declared_each: Vec<LayerDeclared>,
@@ -826,6 +827,7 @@ impl<P: PlaybackProducts> MapSide<P> {
     pub fn lay_overlay_again(&mut self) -> Result<viewer_runtime::landed::Landed<P::OverlayMade>, String> {
         let mut until = Instant::now() + HANDS_BACK;
         loop {
+            let _ = self.whole_progress().try_recv();
             self.step_makers(false).map_err(|error| error.to_string())?;
             if self.applied.is_some_and(|hour| !self.head_products_reached(hour)) {
                 self.settle_all().map_err(|error| error.to_string())?;
@@ -841,7 +843,7 @@ impl<P: PlaybackProducts> MapSide<P> {
                 until = Instant::now() + HANDS_BACK;
                 continue;
             }
-            if Instant::now() >= until {
+            if Instant::now() >= until || !(self.composing || self.wait_whole_progress(until)) {
                 let loading = self.overlay.as_deref().map(Overlaying::loading).unwrap_or_default().join("; ");
                 return Err(format!(
                     "the overlay's maker was not asked for hour {:?}: composing {}, superseded {}, branch {:?}, an overlay {}{}",
@@ -853,7 +855,6 @@ impl<P: PlaybackProducts> MapSide<P> {
                     if loading.is_empty() { String::new() } else { format!("; {loading}") },
                 ));
             }
-            std::thread::sleep(std::time::Duration::from_micros(200));
         }
         let hour = self.applied;
         self.take_overlay().ok_or_else(|| {
@@ -937,6 +938,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             handed_viewer: None,
             switched: None,
             stepped: false,
+            progress: None,
             #[cfg(any(test, feature = "test-support"))]
             settles_held: Arc::default(),
             sight: None,
@@ -1747,13 +1749,37 @@ impl<P: PlaybackProducts> MapSide<P> {
         self.layer_parts().draws(name)
     }
 
+    fn frame_whole_step(&mut self, head: Hour, lay: bool) -> io::Result<Frame> {
+        let was = self.consumer.set_blocking(true);
+        let result = self.frame_step(head, Settling::step(), lay, true);
+        self.consumer.set_blocking(was);
+        result
+    }
+
+    fn whole_progress(&mut self) -> &Receiver<()> {
+        let (ready, _) = self.progress.get_or_insert_with(|| {
+            let (send, ready) = mpsc::sync_channel(1);
+            let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || { let _ = send.try_send(()); });
+            self.views.set_wake(Arc::clone(&wake));
+            self.views.handle().set_on_publish(Arc::clone(&wake));
+            (ready, self.entry.playhead.watch(wake))
+        });
+        ready
+    }
+
+    fn wait_whole_progress(&mut self, until: Instant) -> bool {
+        self.vision.wait_made(until) || self.whole_progress().recv_timeout(until.saturating_duration_since(Instant::now())).is_ok()
+    }
+
     pub fn catch_up(&mut self, head: Hour) -> io::Result<()> {
         self.stepped = true;
         self.combat_whole = None;
-        let started = Instant::now();
+        let until = Instant::now() + CATCHING_UP;
         loop {
+            let _ = self.whole_progress().try_recv();
             let newest = self.entry.playhead.newest().unwrap_or(head);
-            self.frame_within(head.min(newest.max(self.applied.unwrap_or(newest))), crate::layers::Settling::step(), false)?;
+            let target = head.min(newest.max(self.applied.unwrap_or(newest)));
+            let frame = self.frame_whole_step(target, false)?;
             if !self.composing && !self.superseded && self.applied == Some(head) && self.makers_home() && self.ready.iter().zip(&self.reads).all(|(&ready, reads)| ready || reads.is_err()) {
                 if self.settle_all()? && self.overlay_whole(head)? {
                     self.combat_whole = self.combat_whole();
@@ -1766,10 +1792,11 @@ impl<P: PlaybackProducts> MapSide<P> {
             if let Some(error) = self.entry.playhead.error() {
                 return Err(io::Error::other(format!("The playhead stopped: {error}")));
             }
-            if started.elapsed() > CATCHING_UP {
-                return Err(io::Error::new(io::ErrorKind::TimedOut, self.waiting_state(head)));
+            let local = self.composing || frame.swapped.is_some() || self.pending.front().is_some_and(|step| step.last() <= target);
+            if Instant::now() < until && (local || self.wait_whole_progress(until)) {
+                continue;
             }
-            std::thread::sleep(std::time::Duration::from_micros(200));
+            return Err(io::Error::new(io::ErrorKind::TimedOut, self.waiting_state(head)));
         }
     }
 
@@ -1826,10 +1853,9 @@ impl<P: PlaybackProducts> MapSide<P> {
                 if asked && self.join_overlay(Settling::Whole) {
                     break;
                 }
-                if Instant::now() >= until {
+                if !self.vision.wait_made(until) {
                     return Ok(false);
                 }
-                std::thread::sleep(std::time::Duration::from_micros(200));
             }
             if !self.settle_all()? {
                 return Ok(false);
@@ -1880,7 +1906,7 @@ impl<P: PlaybackProducts> MapSide<P> {
 
     fn step_makers(&mut self, lay: bool) -> io::Result<()> {
         self.applied.filter(|_| !self.makers_home())
-            .map_or(Ok(()), |hour| self.frame_within(hour, Settling::step(), lay).map(|_| ()))
+            .map_or(Ok(()), |hour| self.frame_whole_step(hour, lay).map(|_| ()))
     }
 
     fn post_makers(&mut self) {

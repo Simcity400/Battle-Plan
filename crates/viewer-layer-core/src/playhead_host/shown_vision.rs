@@ -73,13 +73,23 @@ impl ShownVision {
     }
 
     pub(super) fn take_made(&mut self) {
-        let Some((_, made)) = &self.maker else { return };
-        while let Ok(vision) = made.try_recv() {
-            if let Some((key, at, forgotten)) = self.making.take()
-                && forgotten == self.forgotten
-            {
-                self.held = Some((key, at, Ok(vision)));
-            }
+        if let Some(vision) = self.maker.as_ref().and_then(|(_, made)| made.try_recv().ok()) {
+            self.install(vision);
+        }
+    }
+
+    pub(super) fn wait_made(&mut self, until: Instant) -> bool {
+        let Some((_, made)) = self.maker.as_ref().filter(|_| self.making.is_some()) else { return false };
+        let Ok(vision) = made.recv_timeout(until.saturating_duration_since(Instant::now())) else { return false };
+        self.install(vision);
+        true
+    }
+
+    fn install(&mut self, vision: Landed<Arc<Vision>>) {
+        if let Some((key, at, forgotten)) = self.making.take()
+            && forgotten == self.forgotten
+        {
+            self.held = Some((key, at, Ok(vision)));
         }
     }
 
