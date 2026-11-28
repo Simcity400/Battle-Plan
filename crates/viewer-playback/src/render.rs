@@ -319,7 +319,6 @@ pub fn dump_png(
         if !layers.omitted.gradient {
             scene.warm_political(
                 &device,
-                &queue,
                 &layers.content.map,
                 &layers.content.strategic_regions,
                 &layers.content.map_defines.gradient_field,

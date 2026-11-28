@@ -18,7 +18,6 @@ fn local_strategic_styles_split_shared_views_and_rejoin_after_clearing(fallback:
     let base = Cache::default()
         .warm(
             &harness.device,
-            &harness.queue,
             Inputs {
                 map: ProvinceMap {
                     width: 64,
@@ -56,8 +55,8 @@ fn local_strategic_styles_split_shared_views_and_rejoin_after_clearing(fallback:
         ]),
         mode: None,
     });
-    let mut a = View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
-    let mut b = View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
+    let mut a = View::new(Arc::clone(&base), &harness.device).unwrap();
+    let mut b = View::new(Arc::clone(&base), &harness.device).unwrap();
     a.show(&harness.device, &harness.queue, &regions).unwrap();
     b.show(&harness.device, &harness.queue, &regions).unwrap();
     assert!(Arc::ptr_eq(
@@ -169,7 +168,7 @@ fn local_strategic_styles_split_shared_views_and_rejoin_after_clearing(fallback:
         a.shown.as_ref().unwrap(),
         b.shown.as_ref().unwrap()
     ));
-    let mut c = View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
+    let mut c = View::new(Arc::clone(&base), &harness.device).unwrap();
     assert!(
         !c.set_strategic_styles(&harness.device, &harness.queue, &selected)
             .unwrap()
@@ -213,7 +212,6 @@ fn province_colors_keep_dirty_tiles_until_submission_and_clear_old_selection(fal
         let source = cache
             .warm(
                 &harness.device,
-                &harness.queue,
                 Inputs {
                     map: ProvinceMap {
                         width: 64,
@@ -290,7 +288,6 @@ fn political_gpu_fallback_naval_attributes_change_shared_fill(fallback: &Fallbac
     let base = Cache::default()
         .warm(
             &harness.device,
-            &harness.queue,
             Inputs {
                 map,
                 strategic: &keys,
@@ -328,8 +325,8 @@ fn political_gpu_fallback_naval_attributes_change_shared_fill(fallback: &Fallbac
             mode: None,
         })
     };
-    let mut a = View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
-    let mut b = View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
+    let mut a = View::new(Arc::clone(&base), &harness.device).unwrap();
+    let mut b = View::new(Arc::clone(&base), &harness.device).unwrap();
     let one = tables(255);
     a.show(&harness.device, &harness.queue, &one).unwrap();
     b.show(&harness.device, &harness.queue, &tables(255))
@@ -696,7 +693,6 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
         cache
             .warm(
                 &harness.device,
-                &harness.queue,
                 Inputs {
                     map,
                     strategic: &strategic_keys,
@@ -754,7 +750,7 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
     let show = |view: &mut View, regions: &Arc<Regions>| {
         view.show(&harness.device, &harness.queue, regions).unwrap()
     };
-    let new_view = || View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
+    let new_view = || View::new(Arc::clone(&base), &harness.device).unwrap();
     let (mut a, mut b) = (new_view(), new_view());
     assert!(a.textures().is_none() && b.textures().is_none());
     let (one, two) = (hour(1), hour(2));
@@ -767,12 +763,12 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
         let state = a.shown.as_ref().unwrap();
         let fill = state.lock();
         let gpu = &fill.gpu;
-        assert!(Arc::ptr_eq(&gpu.scratch, &base.scratch));
+        assert!(Arc::ptr_eq(&gpu.scratch, &base.strategic.scratch));
         assert!(Arc::ptr_eq(
             &gpu.scratch,
             &b.shown.as_ref().unwrap().lock().gpu.scratch
         ));
-        assert!(!Arc::ptr_eq(&base.scratch, &base.strategic.scratch));
+        assert!(Arc::ptr_eq(&fill.naval.scratch, &gpu.scratch));
         let cells = u64::from(gpu.params.columns) * u64::from(gpu.params.rows);
         let textures = 2 * u64::from(base.size[0]) * u64::from(base.size[1]) * 4;
         let expected = textures
@@ -789,7 +785,7 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
         assert_eq!(a.state_bytes(), Some(expected));
         println!(
             "POLITICAL fallback state_bytes={expected} textures={textures} shared_scratch={}",
-            base.scratch.bytes()
+            base.strategic.scratch.bytes()
         );
     }
     check(&a, &one, true, "view a, first frame");
@@ -890,7 +886,6 @@ fn grid_fixture(
     let base = Cache::default()
         .warm(
             &harness.device,
-            &harness.queue,
             Inputs {
                 map: ProvinceMap {
                     width,
@@ -961,7 +956,7 @@ fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
         );
         gradient::build_layer(&map, &layer).unwrap()
     };
-    let new_view = || View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
+    let new_view = || View::new(Arc::clone(&base), &harness.device).unwrap();
     let (mut a, mut b) = (new_view(), new_view());
     let both = |a: &View, b: &View| {
         let mut encoder = harness.device.create_command_encoder(&Default::default());
@@ -1032,7 +1027,7 @@ fn political_gpu_fallback_lockstep(fallback: &Fallback) {
     let mut keys = (0..=columns * (height / GRID_CELL))
         .map(|id| if id % columns < columns / 2 { 1 } else { 2 })
         .collect::<Vec<_>>();
-    let new_view = || View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
+    let new_view = || View::new(Arc::clone(&base), &harness.device).unwrap();
     let (mut a, mut b) = (new_view(), new_view());
     let cells = (columns * height / GRID_CELL) as usize;
     let spares = [&a, &b].map(|view| Arc::downgrade(view.spare.as_ref().unwrap()));
@@ -1096,7 +1091,7 @@ fn political_gpu_fallback_pool_interleavings(fallback: &Fallback) {
     };
     let checks = || base.race_checks.load(std::sync::atomic::Ordering::Relaxed);
     let (device, queue) = (&harness.device, &harness.queue);
-    let new_view = || View::new(Arc::clone(&base), device, queue).unwrap();
+    let new_view = || View::new(Arc::clone(&base), device).unwrap();
     let (mut x, mut y) = (new_view(), new_view());
     let (one, two) = (hour(1), hour(2));
     x.show(device, queue, &one).unwrap();

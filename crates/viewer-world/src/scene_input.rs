@@ -184,7 +184,7 @@ impl Scene {
                 field,
                 cache,
             } => {
-                self.warm_political(device, queue, map, strategic_regions, field, cache)?;
+                self.warm_political(device, map, strategic_regions, field, cache)?;
             }
             SceneInput::SetBorders {
                 assets,
