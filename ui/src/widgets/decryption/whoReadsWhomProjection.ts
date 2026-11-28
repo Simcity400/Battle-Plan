@@ -78,12 +78,10 @@ export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOption
 
     const { pairs, country, reply, live } = frame;
     const byOwner = new Map<number, { counts: CipherCounts; country: ResolvedCountry }>();
-    const byCell = new Map<string, CipherPair>();
     for (const pair of pairs) {
       const held = byOwner.get(pair.owner.id) ?? { counts: { broken: 0, decrypting: 0, paused: 0, breakUnknown: 0 }, country: country(pair.owner) };
       held.counts[pair.status]++;
       byOwner.set(pair.owner.id, held);
-      byCell.set(`${pair.owner.id}:${pair.target.id}`, pair);
     }
     const targetsById = new Map(pairs.map(pair => [pair.target.id, pair.target]));
     const ownerIds = firstSeen(pairs, 'owner');
@@ -98,32 +96,29 @@ export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOption
     const rowOf = new Map(ownerIds.map((id, index) => [id, index]));
     const columnOf = new Map(targetIds.map((id, index) => [id, index]));
     const present = new Map<number, MatrixCell>();
+    const byCell = new Map<number, CipherPair>();
     for (const pair of pairs) {
       if (pair.owner.id === pair.target.id) continue;
       const owner = byOwner.get(pair.owner.id)!.country;
       const at = rowOf.get(pair.owner.id)! * width + columnOf.get(pair.target.id)!;
-      const target = country(pair.target);
-      const numbers = readCipherNumbers(live, pair);
-      const percent = percentOf(pair, numbers);
-      const tooltip = {
-        title: `${owner.name} → ${target.name}`,
-        hour: readView.hour,
-        items: pairTooltipItems(pair, reply, numbers, owner, target, percent),
-      };
+      byCell.set(at, pair);
       const color = owner.colour ?? '';
       if (pair.status === 'broken') {
         const date = brokenText(pair.brokenAt) ?? 'Date not recorded';
-        present.set(at, { kind: 'value', mark: 'square', color, tooltip, audit: `${pairKey(pair)}|broken|${date}`, selectable: true });
-      } else if (percent === null) {
-        const reason = pair.thresholdUnknown ?? (numbers.missing || 'Progress not recorded');
-        present.set(at, { kind: 'missing', reason, tooltip, audit: `${pairKey(pair)}|not-recorded`, selectable: true });
+        present.set(at, { kind: 'value', mark: 'square', color, audit: `${pairKey(pair)}|broken|${date}`, selectable: true });
+        continue;
+      }
+      const numbers = pair.thresholdRaw === null ? undefined : readCipherNumbers(live, pair, false);
+      const percent = numbers ? percentOf(pair, numbers) : null;
+      if (percent === null) {
+        const reason = pair.thresholdUnknown ?? (numbers?.missing || 'Progress not recorded');
+        present.set(at, { kind: 'missing', reason, audit: `${pairKey(pair)}|not-recorded`, selectable: true });
       } else {
         present.set(at, {
           kind: 'value',
           mark: 'ring',
           fraction: percent / 100,
           color,
-          tooltip,
           audit: `${pairKey(pair)}|${formatProgress(percent / 100)}`,
           selectable: true,
         });
@@ -135,6 +130,18 @@ export const whoReadsWhomProjection: HeatMatrixProjection<DecryptionFilterOption
       rows,
       columns,
       cells: { present, absent: NO_ATTEMPT, self: SELF },
+      tooltip: (_row, _column, _cell, r, c) => {
+        const pair = byCell.get(r * width + c);
+        if (!pair) return null;
+        const owner = byOwner.get(pair.owner.id)!.country;
+        const target = country(pair.target);
+        const numbers = readCipherNumbers(live, pair);
+        return {
+          title: `${owner.name} → ${target.name}`,
+          hour: readView.hour,
+          items: pairTooltipItems(pair, reply, numbers, owner, target, percentOf(pair, numbers)),
+        };
+      },
       summaryText: frame.summaryText,
       notes: frame.notes,
       warnings: reply.warnings,
