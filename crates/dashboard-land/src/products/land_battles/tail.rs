@@ -489,14 +489,7 @@ pub struct Battle {
     pub province: Option<u32>,
 }
 
-pub fn battles(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Vec<Battle>> {
-    if let Some(index) = source.state::<Branches>().try_lock().ok().and_then(|held| held.0.get(&query.timeline.id).cloned()) {
-        return Ok((0..index.len() as u32).map(|i| {
-            let entry = index.get(i);
-            Battle { combat: (entry.id >> 64) as u64, start: entry.date, written: entry.payload.written,
-                observed: entry.observed, province: entry.payload.place.first().and_then(|(_, (province, _))| *province) }
-        }).collect());
-    }
+pub fn battles(query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<Vec<Battle>> {
     let recording = query.replay.recording();
     let columns = Columns::new()?;
     let mut places = BTreeMap::<Key, (i32, Steps<Option<u32>>)>::new();

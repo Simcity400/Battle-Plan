@@ -103,7 +103,7 @@ fn number(battles: Vec<(Battle, Result<String, String>)>) -> Names {
 }
 
 fn join(source: &Source, query: &Query<'_>, content: &Content, cancelled: &AtomicBool) -> io::Result<Names> {
-    let mut battles: Vec<_> = land::battles(source, query, cancelled)?.into_iter().map(|battle| Battle {
+    let mut battles: Vec<_> = land::battles(query, cancelled)?.into_iter().map(|battle| Battle {
         key: Key::Land(battle.combat, battle.start, battle.written), date: battle.start, observed: battle.observed, province: battle.province,
         reports: Vec::new(), port_strike: false, live_hours: None,
     }).collect();

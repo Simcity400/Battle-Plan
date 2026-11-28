@@ -295,8 +295,7 @@ impl BattleView {
             return state;
         };
         state.close_requests = (held.close_requests > 0).then_some(held.close_requests);
-        if held.window.loading_art() || held.window.loading_title() { return state; }
-        let hour = match (&held.refused, held.shown) {
+        let hour = match picture_reply(held.refused.as_ref(), held.shown, || held.window.loading_art() || held.window.loading_title()) {
             (Some((hour, _)), _) => Some(*hour),
             (None, Some(shown)) => {
                 state.notes.clone_from(&held.notes);
@@ -315,6 +314,10 @@ impl BattleView {
     }
 }
 
+fn picture_reply(refused: Option<&(Hour, String)>, shown: Option<OnScreen>, pending: impl FnOnce() -> bool) -> (Option<&(Hour, String)>, Option<OnScreen>) {
+    (refused, shown.filter(|_| refused.is_none() && !pending()))
+}
+
 fn memory(name: &str, frame: &eframe::Frame) {
     if !crate::perf_log::enabled() {
         return;
@@ -325,6 +328,19 @@ fn memory(name: &str, frame: &eframe::Frame) {
         "gpu_allocated": gpu.as_ref().map(|report| report.total_allocated_bytes),
         "gpu_reserved": gpu.as_ref().map(|report| report.total_reserved_bytes),
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_seek_refusal_answers_while_the_previous_naval_title_is_pending() {
+        let shown = Some(OnScreen { branch: 1, hour: 104, seek: 1 });
+        let refusal = (105, "This hour was not recorded".to_owned());
+        assert_eq!(picture_reply(None, shown, || true), (None, None));
+        assert_eq!(picture_reply(Some(&refusal), shown, || panic!("a refusal never waits for a title")), (Some(&refusal), None));
+    }
 }
 
 fn note(ui: &mut egui::Ui, body: egui::Rect, ink: egui::Color32, text: &str) {
