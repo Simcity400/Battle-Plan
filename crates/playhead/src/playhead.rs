@@ -1084,7 +1084,7 @@ impl Consumer {
     }
 
     pub fn reaches(&self, head: Hour) -> Option<bool> {
-        try_lock(&self.shared.ring).map(|ring| ring.reaches(self.id, head))
+        self.lock_ring().map(|ring| ring.reaches(self.id, head))
     }
 
     pub fn next_hour(&self) -> Option<Hour> {
