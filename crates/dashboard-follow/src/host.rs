@@ -392,13 +392,15 @@ impl PanelJob {
                 if let Some((_, _, mut hour)) = product.last {
                     while hour < through {
                         hour = hour.saturating_add(quantum).min(through);
+                        let next = hour;
                         if let Some(state) = clock() && state.epoch == self.epoch && !self.token.load(Ordering::Acquire) {
                             if state.playing {
                                 if parked {
                                     preparation = self.prepare_resume(&mut product, through, &clock);
                                     break;
                                 }
-                                hour = through.max(state.newest.unwrap_or(through));
+                                let reached = state.head.min(through.max(state.newest.unwrap_or(through)));
+                                hour = next.max(reached);
                             } else if hour > state.head {
                                 match self.push.reply_lead_full() {
                                     Err(()) => break,
@@ -419,6 +421,7 @@ impl PanelJob {
                             product.joined = true;
                             break;
                         }
+                        if hour > next { break; }
                     }
                 }
             }
@@ -1268,8 +1271,14 @@ fn a_paused_panel_catches_up_to_the_head_without_computing_past_its_credit() {
 
 #[cfg(test)]
 #[test]
-fn a_playing_panel_prepares_only_the_latest_step_when_it_is_behind() {
+fn a_playing_panel_jumps_to_the_visible_head_when_it_is_behind() {
     check_parked_panel("playing");
+}
+
+#[cfg(test)]
+#[test]
+fn a_playing_panel_within_one_quantum_reads_each_next_boundary() {
+    check_parked_panel("playing-near");
 }
 
 #[cfg(test)]
@@ -1301,8 +1310,13 @@ fn check_parked_panel(release: &str) {
         let subscribe = subscribe.clone();
         Some(Box::new(move |wake| subscribe.send(wake).unwrap()) as panel::OnPrepared)
     }) as panel::PendingPreparation);
+    let (last, quantum) = match release {
+        "playing" => (head - 3, 1),
+        "playing-near" => (head - 2, 6),
+        _ => (head - 1, 1),
+    };
     let product = StepProduct {
-        id: 4, pending_seed: None, started_on: Some((epoch, seek)), last: Some((epoch, seek, head - 1)), joined: false, resume: None, pending_preparation, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
+        id: 4, pending_seed: None, started_on: Some((epoch, seek)), last: Some((epoch, seek, last)), joined: false, resume: None, pending_preparation, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
         read: Arc::new(move |hour, _, _, _| {
             recorded.lock().unwrap().push(hour);
             let pending = pending_at == Some(hour) && !ready.load(Ordering::Acquire);
@@ -1316,22 +1330,31 @@ fn check_parked_panel(release: &str) {
     }, parking: Arc::downgrade(&parking) };
     let work = Arc::new(Work::new(None));
     let now = Arc::new(AtomicU64::new(epoch));
-    let playing = Arc::new(AtomicBool::new(release == "playing"));
+    let playing = Arc::new(AtomicBool::new(release.starts_with("playing")));
     let clock = now.clone();
     let live = playing.clone();
-    let through = if release == "play" { head + 4 } else { head + 1 };
-    let latest = if release == "playing" { through + 3 } else { through };
-    job().run(PanelRead::CatchUp { through, quantum: 1, parked: false }, product, work.clone(), move || Some(PanelClock {
+    let through = match release {
+        "play" | "playing" => head + 4,
+        "playing-near" => last + 2 * quantum,
+        _ => head + 1,
+    };
+    let latest = through + 24;
+    job().run(PanelRead::CatchUp { through, quantum, parked: false }, product, work.clone(), move || Some(PanelClock {
         epoch: clock.load(Ordering::Acquire), head, playing: live.load(Ordering::Acquire), newest: Some(latest),
     }));
     if release == "playing" {
-        assert_eq!(*sampled.lock().unwrap(), [latest]);
+        assert_eq!(*sampled.lock().unwrap(), [head]);
         let (_, bytes, ..) = push.try_take().expect("the latest reading is sent");
         let records = panel::dated::records(&bytes).unwrap();
-        assert_eq!((records[0].hour, records[0].kind), (latest, panel::dated::DATA));
-        assert_eq!(rmp_serde::from_slice::<Hour>(records[0].body).unwrap(), latest);
-        assert_eq!((records[1].hour, records[1].kind), (latest + 1, panel::dated::WAITING));
-        assert_eq!(work.take().unwrap().last, Some((epoch, seek, latest)));
+        assert_eq!((records[0].hour, records[0].kind), (head, panel::dated::DATA));
+        assert_eq!(rmp_serde::from_slice::<Hour>(records[0].body).unwrap(), head);
+        assert_eq!((records[1].hour, records[1].kind), (head + 1, panel::dated::WAITING));
+        assert_eq!(work.take().unwrap().last, Some((epoch, seek, head)));
+        return;
+    }
+    if release == "playing-near" {
+        assert_eq!(*sampled.lock().unwrap(), [last + quantum, through]);
+        assert_eq!(work.take().unwrap().last, Some((epoch, seek, through)));
         return;
     }
     assert_eq!(*sampled.lock().unwrap(), [head]);
