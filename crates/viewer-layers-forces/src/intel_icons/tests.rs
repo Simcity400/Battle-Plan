@@ -62,15 +62,12 @@ fn state(side: &MapSide) -> String {
     format!("icons {:?}, applied {:?}, open (busy, handed, seen, rows, error) {open:?}, tables {:?}, {:?}", layer.icons().map(|(_, hour)| hour), layer.applied, layer.tables(), layer.stats())
 }
 
-fn at(side: &mut MapSide, hour: replay_data::Hour, what: &str, done: impl Fn(&Icons) -> bool) {
+fn at(side: &mut MapSide, hour: replay_data::Hour, what: &str, mut done: impl FnMut(&mut MapSide) -> bool) {
     let until = Instant::now() + Duration::from_secs(60);
     loop {
         side.frame(hour).unwrap();
-        if !side.composing() {
-            side.settle_all().unwrap();
-            if done(layer(side)) {
-                return;
-            }
+        if !side.composing() && done(side) {
+            return;
         }
         assert!(Instant::now() < until, "{what}: never; {}", state(side));
         std::thread::yield_now();
@@ -79,25 +76,30 @@ fn at(side: &mut MapSide, hour: replay_data::Hour, what: &str, done: impl Fn(&Ic
 
 fn icons_at(side: &mut MapSide, hour: replay_data::Hour, what: &str) {
     sought(side, hour);
-    at(side, hour, what, |layer| layer.icons().is_some_and(|(_, at)| at == hour));
+    settled_icons(side, hour, what);
+}
+
+fn settled_icons(side: &mut MapSide, hour: replay_data::Hour, what: &str) {
+    at(side, hour, what, |side| {
+        side.settle_all().unwrap();
+        layer(side).icons().is_some_and(|(_, at)| at == hour)
+    });
 }
 
 fn learned_at(side: &mut MapSide, hour: replay_data::Hour) {
     icons_at(side, 0, "the icons before learning another table");
     let mut held = drawn(side.layer_parts()).unwrap();
     assert!(!layer(side).tables().contains(&TableId::HumanControllers));
-    let until = Instant::now() + Duration::from_secs(60);
-    while !layer(side).tables().contains(&TableId::HumanControllers) {
-        side.frame(hour).unwrap();
+    at(side, hour, "the worker learns the table its content reads", |side| {
         let icons = drawn(side.layer_parts()).expect("while a new table loads, the window keeps its icons");
-        if layer(side).tables().contains(&TableId::HumanControllers) {
+        let learned = layer(side).tables().contains(&TableId::HumanControllers);
+        if learned {
             assert!(Arc::ptr_eq(&held, &icons));
         }
         held = icons;
-        assert!(Instant::now() < until, "the table the content reads is never learned: {}", state(side));
-        std::thread::yield_now();
-    }
-    at(side, hour, "the icons of the hour", |layer| layer.icons().is_some_and(|(_, at)| at == hour));
+        learned
+    });
+    settled_icons(side, hour, "the icons of the hour");
 }
 
 fn play(side: &mut MapSide, from: replay_data::Hour, what: &str, mut each: impl FnMut(&MapSide, &viewer_layer_core::playhead_host::Frame) -> bool) {
@@ -164,7 +166,7 @@ fn in_another_map_mode_it_declares_nothing_and_holds_nothing_and_opens_again_wit
     assert!(layer(&side).icons().is_none() && drawn(side.layer_parts()).is_none(), "no icons");
     assert!(layer(&side).held() <= 64 * std::mem::size_of::<TableId>(), "only the names of the tables it learned: {}", layer(&side).held());
     side.set_view(operatives()).unwrap();
-    at(&mut side, 2, "the reader opens again", Icons::is_open);
+    at(&mut side, 2, "the reader opens again", |side| layer(side).is_open());
     icons_at(&mut side, 40, "the icons opened again");
     let stats = layer(&side).stats();
     assert_eq!(stats.learning, learned, "opened with the tables it learned, nothing is discarded");

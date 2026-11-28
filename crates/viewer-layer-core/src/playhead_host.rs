@@ -900,7 +900,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             }
         }
         entry.maps.fetch_add(1, Ordering::AcqRel);
-        Ok((Self {
+        let side = Self {
             entry,
             reader,
             consumer,
@@ -970,7 +970,8 @@ impl<P: PlaybackProducts> MapSide<P> {
             waited: Waited::default(),
             doing: Arc::default(),
             composed: Arc::default(),
-        }, readers))
+        };
+        Ok((side, readers))
     }
 
     pub fn take_installs(&mut self) -> Vec<Box<dyn Installs>> {
