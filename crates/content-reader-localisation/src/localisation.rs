@@ -123,6 +123,17 @@ impl Entries {
 }
 
 impl Localisation {
+    fn packed(mut self) -> io::Result<Self> {
+        let Entries::Read(entries) = self.entries else {
+            return Ok(self);
+        };
+        let payload = entries.iter().map(|(key, value)| key.len() + value.len()).sum();
+        self.entries = Entries::Kept(content_reader_layers::kept::Table::pack(
+            entries.into_iter(), payload,
+        )?);
+        Ok(self)
+    }
+
     pub fn get(&self, key: &str) -> Option<&str> {
         self.entries.get(key)
     }
@@ -1128,7 +1139,9 @@ pub fn read_shared(
     build: impl FnOnce(&ResolvedLayers, &str) -> io::Result<Localisation>,
 ) -> io::Result<std::sync::Arc<Localisation>> {
     let language = carried(layers, language);
-    layers.retained_product("localisation", 1, language.as_bytes(), |reader| build(reader, language))
+    layers.retained_product("localisation", 1, language.as_bytes(), |reader| {
+        build(reader, language)?.packed()
+    })
 }
 
 pub fn declared_languages(layers: &ResolvedLayers) -> io::Result<Vec<String>> {
@@ -1524,6 +1537,7 @@ mod tests {
             let first = usize::from(traced_first);
             let table_for = |layers| read_shared(layers, "english", read).unwrap();
             let table = table_for(readers[first]);
+            assert!(matches!(table.entries, Entries::Kept(_)));
             assert!(Arc::ptr_eq(&table, &table_for(readers[1 - first])));
             assert_eq!(table.get("key"), Some("value"));
             assert!(!previous.is_some_and(|old| Arc::ptr_eq(&old, &table)));
