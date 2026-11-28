@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { DashboardSource } from '../../dashboard/client';
 import { countryKey } from '../../dashboard/countryKey.ts';
+import type { FollowQuery } from '../../dashboard/regionTime.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import { compileFollowPlan, hoverAsks, readPlanExact } from '../../families/broker.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
@@ -9,7 +10,6 @@ import { unitEntries } from '../../families/readUnits.ts';
 import type { FrozenGate } from '../../families/sources.ts';
 import { DEFAULT_LINE_SETTINGS } from '../../families/time-chart/settings.ts';
 import type { NavalLossesAtReply } from '../../generated/dashboard';
-import { navalLossesAtProof } from './navalLossesAt.ts';
 import {
   navalLossesLinesDeclaration,
   navalLossesLinesProjection,
@@ -270,8 +270,7 @@ test('the exact audit reads the dated head, so a correct picture has an exact re
 test('the naval losses head follows changes without exact playback requests', () => {
   const ctx = makeCtx();
   const plan = navalLossesLinesDeclaration.sources(ctx, { following: true, staticSpan: null });
-  const { subscriptions } = compileFollowPlan(plan, query => ({ query, refused: null }));
-  assert.deepEqual(subscriptions.map(sub => [sub.name, sub.query.panel]), [['head', 'naval-losses-at']]);
+  const { subscriptions } = compileFollowPlan(plan, query => ({ query: query as FollowQuery | null, refused: null }));
+  assert.deepEqual(subscriptions.map(sub => [sub.name, sub.channel, sub.product]), [['head', 'panel', 'naval-losses-at']]);
   assert.ok(unitEntries(plan, true, subscriptions).every(entry => entry.name !== 'head'));
-  assert.deepEqual(navalLossesAtProof({ firstHour: 100, lastHour: 250 }, 150), [100, 250]);
 });

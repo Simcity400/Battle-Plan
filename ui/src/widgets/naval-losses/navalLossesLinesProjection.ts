@@ -46,7 +46,7 @@ import type {
   NavalLossesTileFamily,
   NavalPeriod,
 } from '../../generated/dashboard';
-import { NAVAL_NOTE, navalLossesAtProof } from './navalLossesAt.ts';
+import { NAVAL_NOTE } from './navalLossesAt.ts';
 import { navalAttribution, navalKind, navalMeasure, navalPeriod } from './navalLossesData.ts';
 
 const COLOURED = 8;
@@ -400,7 +400,6 @@ export const navalLossesLinesDeclaration: TimeChartWidgetDeclaration<NavalLosses
           exactProduct: 'naval-losses-at',
           followQuery: { panel: 'naval-losses-at', ...headParams },
           params: headParams,
-          provenInterval: navalLossesAtProof,
           dynamicKeys: ['hour', 'countries'],
           validate: validateNavalLossesAtReply,
         },

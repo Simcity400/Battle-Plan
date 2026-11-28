@@ -107,7 +107,6 @@ test('every race and mix view sends a group whole, and naval losses keys each ro
   const read = navalLossesRaceDeclaration.sources(ctx('race'), { following: true, staticSpan: null }).entries[0]!.read;
   assert.ok(read.shape === 'point');
   if (read.shape !== 'point') return;
-  assert.deepEqual(read.provenInterval?.(reply, 500), [321, 599], 'asked again at 600, when the membership changes');
   const options = navalLossesRaceDeclaration.projectionOptions(ctx('race'), { extent: [0, 0], surface: '#1e1e1e' });
   const view = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity: fakeIdentity({}) });
   assert.deepEqual(navalLossesRaceProjection.project(view, options).rows.map(row => row.key), [countryKey(7)]);

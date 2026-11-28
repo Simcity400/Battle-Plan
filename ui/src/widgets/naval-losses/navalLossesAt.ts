@@ -1,14 +1,8 @@
 import { forceSelection, validateNavalLossesAtReply } from '../../families/bars/forceAtRace.ts';
 import type { FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/contract.ts';
-import type { NavalLossesAtReply } from '../../generated/dashboard';
 import { navalAttribution, navalKind, navalPeriod } from './navalLossesData.ts';
 
 export const NAVAL_NOTE = 'Counted when the game lists a sinking; a country is named as it was when the sinking was read.';
-
-export function navalLossesAtProof(data: unknown, hour: number): readonly [number, number] {
-  const reply = data as NavalLossesAtReply;
-  return reply.firstHour <= hour && hour <= reply.lastHour ? [reply.firstHour, reply.lastHour] : [hour, hour];
-}
 
 export function navalLossesAtSources(ctx: FamilyPlanContext, view: 'race' | 'mix'): SourcePlan {
   const kind = navalKind(ctx.options);
@@ -29,7 +23,6 @@ export function navalLossesAtSources(ctx: FamilyPlanContext, view: 'race' | 'mix
       exactProduct: 'naval-losses-at',
       followQuery: { panel: 'naval-losses-at', ...params },
       params,
-      provenInterval: navalLossesAtProof,
       dynamicKeys: ['hour', 'countries'],
       validate: validateNavalLossesAtReply,
     },
