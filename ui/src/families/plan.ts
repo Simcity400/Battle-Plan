@@ -114,6 +114,7 @@ export interface PixelBinnedSourceRead {
   readonly exactProduct?: DeclaredProduct;
   readonly params?: Readonly<Record<string, unknown>> | null;
   readonly top?: { readonly n: number | 'all'; readonly least?: boolean; readonly by?: string };
+  readonly followRank?: string;
 }
 
 export interface ExactHoverSourceRead {

@@ -9,7 +9,7 @@ import type { WidgetBase } from '../../dashboard/model';
 import { PreparingPage } from '../../dashboard/preparing.ts';
 import { StripPageContext, type StripWidget } from '../../dashboard/strip/driver.ts';
 import { EMPTY_STRIP_RECEIPT } from '../../dashboard/strip/store.ts';
-import type { TiledLine } from '../../dashboard/tiles/view';
+import { TILE_ROSTER_FIELD, type TiledLine, type TileRosters } from '../../dashboard/tiles/view.ts';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
@@ -257,6 +257,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly onHoverHour?: (hour: number | null, drawnKeys?: DrawnKeys) => void;
   readonly onTooltipRow?: (subject: string | null, by: TooltipRowSource) => void;
   readonly onInstalledHour?: (hour: number | null) => void;
+  readonly onFollowedTileRanks?: (hour: number, proof: readonly [number, number], ranks: TileRosters | undefined) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (action: InstalledAction) => void;
   readonly onPointsNavigate?: (request: PointsNavigateRequest) => boolean;
@@ -325,6 +326,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   onHoverHour,
   onTooltipRow,
   onInstalledHour,
+  onFollowedTileRanks,
   selectedKey = null,
   onActivate,
   onPointsNavigate,
@@ -583,6 +585,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     onHoverHour,
     onTooltipRow,
     onInstalledHour,
+    onFollowedTileRanks,
     selectedKey,
     onActivate,
     onPointsNavigate,
@@ -1280,6 +1283,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
 
       if (!visible || !fields || shown?.id === undefined) {
+        if (cur.onFollowedTileRanks) {
+          const hour = shown?.target ?? runtime.clock.getHour();
+          cur.onFollowedTileRanks(hour, [hour, hour], undefined);
+        }
         recordRef.current = null;
         if (lastInstalledHourRef.current !== null) {
           lastInstalledHourRef.current = null;
@@ -1326,6 +1333,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       };
       const record = recordInstalled(installed, fields, selectionsRef.current.at(installed.generation.binding));
       recordRef.current = record;
+      if (cur.onFollowedTileRanks && !shown.dim) {
+        cur.onFollowedTileRanks(installedHour, installed.validInterval, fields[TILE_ROSTER_FIELD] as TileRosters | undefined);
+      }
       if (lastHoverHourRef.current !== null) publishHoverHour(lastHoverHourRef.current);
       const rawSummary = rawMeta?.empty ? null : resolveHeaderSummary({
         summaryText: rawMeta?.summaryText ?? null,

@@ -33,18 +33,25 @@ export interface TileLane {
   prepared?: boolean;
   promote?(binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): void;
   top?: TileTop;
+  followRank?: string;
 }
 
 export interface TileTop {
   ask(binHours: number, index: number, hour: number, read?: StripTileRead): Promise<TileReply>;
 }
 
-export interface TileRanked {
+export interface TileRoster {
   readonly tags: readonly string[];
+  readonly refused: string | null;
+}
+
+export type TileRosters = Readonly<Record<string, TileRoster>>;
+export const TILE_ROSTER_FIELD = 'model:tile-rank';
+
+export interface TileRanked extends TileRoster {
   readonly hour: number;
   readonly from: number;
   readonly until: number;
-  readonly refused: string | null;
 }
 
 export interface TiledLine { tag: string; head: string; decimals: number; summary: ChartSummary; missing: MissingSpan[]; partial?: MissingSpan[]; parts: TilePart[]; marks: MarkSummary | null }
@@ -93,6 +100,7 @@ export class TileView {
   private failure: unknown = null;
   private closed = false;
   private ranked: TileRanked | null = null;
+  private followingRank = false;
   private rankHour: number | null = null;
   private rankAsked = 0;
   private rankPending = false;
@@ -125,6 +133,8 @@ export class TileView {
   get error(): unknown { return this.failure; }
   get top(): TileRanked | null { return this.ranked; }
   get isTop(): boolean { return !!this.lane.top; }
+  get rankSource(): string | undefined { return this.lane.followRank; }
+  get usesFollowedRank(): boolean { return this.followingRank; }
   get stripBasis(): number | null { return this.wanted?.binHours ?? null; }
 
   async holdStrip(firstHour: number, hours: readonly number[], claim: StripTileClaim, read: StripTileRead, rolling?: TileViewport['rolling']) {
@@ -197,18 +207,50 @@ export class TileView {
     return this.lane.top ? this.ranked?.tags ?? [] : this.lane.tags;
   }
 
-  setHour(hour: number): void {
+  setHour(hour: number, playing = false): void {
     if (this.closed || !this.lane.top) return;
+    const follow = playing && this.rankSource !== undefined;
+    if (follow !== this.followingRank) {
+      this.followingRank = follow;
+      this.rankAsked++;
+      this.rankPending = false;
+      this.rankFailedHour = null;
+      this.setRank(null);
+    }
     this.rankHour = hour;
+    if (follow) return;
     const held = this.ranked;
     if (held && hour >= held.from && hour <= held.until) return;
     if (this.rankPending || this.rankFailedHour === hour) return;
     this.askTop();
   }
 
+  setFollowedRank(hour: number, rank: TileRanked | null): void {
+    if (!this.closed && this.followingRank) {
+      this.setRank(rank && rank.from <= hour && hour <= rank.until ? rank : null);
+    }
+  }
+
+  private setRank(rank: TileRanked | null): void {
+    const before = this.ranked;
+    if (!before && !rank) return;
+    this.ranked = rank;
+    if (before && rank && before.refused === rank.refused
+      && (before.tags === rank.tags || (before.tags.length === rank.tags.length && before.tags.every((tag, at) => tag === rank.tags[at])))) return;
+    this.repin();
+    this.fetch();
+    this.assemble();
+    if (!rank || !this.settled || this.lines?.size !== rank.tags.length
+      || [...(this.lines?.keys() ?? [])].some((tag, at) => tag !== rank.tags[at])) {
+      this.lines = null;
+      this.assembled = null;
+      this.notify();
+    }
+  }
+
   private askTop(): void {
     const top = this.lane.top, wanted = this.wanted, hour = this.rankHour;
-    if (!top || !wanted || hour === null) return;
+    if (this.followingRank || !top || !wanted || hour === null) return;
     const binHours = wanted.binHours, index = Math.max(wanted.first, Math.min(wanted.last, Math.floor(hour / (TILE_BINS * binHours))));
     const asked = ++this.rankAsked;
     this.rankPending = true;

@@ -403,6 +403,7 @@ export default function DeclaredFamilyWidget<
       staticProof={plan.staticProof}
       pagedRows={plan.pagedRows}
       tiledSeries={hasPixelBinned ? plan.tiledSeries : undefined}
+      {...(plan.onFollowedTileRanks ? { onFollowedTileRanks: plan.onFollowedTileRanks } : {})}
       hovers={plan.hovers}
       laneArt={laneArt}
       extent={extent}

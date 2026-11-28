@@ -24,7 +24,7 @@ import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import { useGate, type Holder } from '../../dashboard/regionGate';
 import { axisAt, coverageAt, coverageSpan, lastRecordedHour, SPEC } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
-import { TileView, tileCache, type TiledLine, type TileViewport } from '../../dashboard/tiles/view.ts';
+import { TileView, tileCache, type TiledLine, type TileRosters, type TileViewport } from '../../dashboard/tiles/view.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { countRead, measuredWidget } from '../../dashboard/widgetPerf.ts';
 import { useRegion, useRegionCoverage, watchBoundary } from '../../dashboard/widgetTime';
@@ -199,6 +199,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly onRowWindow: (window: FamilyRowWindow, hour: number | null) => void;
   readonly tiledSeries: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly onSeriesViewport: (viewport: TileViewport) => void;
+  readonly onFollowedTileRanks?: (hour: number, proof: readonly [number, number], ranks: TileRosters | undefined) => void;
   readonly retryTiles: () => void;
   readonly onHoverHour: (hour: number | null, keys?: DrawnKeys) => void;
   readonly hovers: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
@@ -594,7 +595,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (!entries.length) return '';
     return JSON.stringify(entries.map(e => {
       const r = e.read as Extract<typeof e.read, { shape: 'pixel-binned' }>;
-      return [e.name, e.source.id, e.source.revision, e.branch, r.family, r.tags, r.keys ?? null, r.within ? [...r.within.entries()] : null, r.top ?? null, lastHour];
+      return [e.name, e.source.id, e.source.revision, e.branch, r.family, r.tags, r.keys ?? null, r.within ? [...r.within.entries()] : null, r.top ?? null, lastHour,
+        ...(r.followRank === undefined ? [] : [r.followRank])];
     }));
   }, [plan, lastHour]);
 
@@ -613,6 +615,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const planForTilesRef = useRef(plan);
   planForTilesRef.current = plan;
+  const hasFollowedRanks = plan?.entries.some(entry => entry.read.shape === 'pixel-binned' && entry.read.followRank !== undefined) === true;
   const gateSpanRef = useRef(gate.span);
   gateSpanRef.current = gate.span;
   const gateRecordedRef = useRef(gate.recorded);
@@ -651,9 +654,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       for (const tv of views.values()) {
         if (!tv.settled) allReady = false;
         if (firstError === null && tv.error !== null) firstError = tv.error;
-        topRefused ??= tv.top?.refused ?? null;
+        if (!tv.usesFollowedRank) topRefused ??= tv.top?.refused ?? null;
       }
-      if (!allReady && firstError === null && topRefused === null) return;
+      if (!hasFollowedRanks && !allReady && firstError === null && topRefused === null) return;
       heldSeries = allReady ? reuseTiledSeries(heldSeries, views) : NO_TILED_SERIES;
       rev++;
       const snapshot = { key: pixelBinnedKey, series: heldSeries, revision: rev, error: firstError, topRefused };
@@ -688,7 +691,18 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         tileViewsKeyRef.current = '';
       }
     };
-  }, [runtime.client, active, pixelBinnedKey, lastHour, strips]);
+  }, [runtime.client, active, pixelBinnedKey, lastHour, strips, hasFollowedRanks]);
+
+  const onFollowedTileRanks = useCallback((hour: number, proof: readonly [number, number], ranks: TileRosters | undefined) => {
+    if (!following || !runtime.clock.getSnapshot().playing || tileViewsKeyRef.current !== pixelBinnedKey) return;
+    const recorded = gateRecordedRef.current(hour) !== null;
+    for (const tv of tileViewsRef.current.values()) {
+      if (tv.rankSource === undefined) continue;
+      tv.setHour(hour, true);
+      const rank = recorded ? ranks?.[tv.rankSource] : undefined;
+      tv.setFollowedRank(hour, rank ? { ...rank, hour, from: proof[0], until: proof[1] } : null);
+    }
+  }, [following, runtime.clock, pixelBinnedKey]);
 
   const onSeriesViewport = useCallback((nextViewport: TileViewport) => {
     seriesViewportRef.current = nextViewport;
@@ -851,19 +865,24 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     const apply = () => {
       const at = now();
       if (gateRecordedRef.current(at) === null) return;
-      for (const tv of tops) tv.setHour(at);
+      const playing = following && hasFollowedRanks && runtime.clock.getSnapshot().playing;
+      for (const tv of tops) tv.setHour(at, playing);
     };
     apply();
     if (!following) return;
     const proof = () => topTileProof(
-      tops,
+      hasFollowedRanks && runtime.clock.getSnapshot().playing ? tops.filter(tv => tv.rankSource === undefined) : tops,
       now(),
       trackOffset,
       gateRecordedRef.current,
       at => (track ? coverageSpan(track, at) : [at, at]),
     );
-    return watchBoundary(runtime.clock, proof, apply);
-  }, [active, following, tileHour, pixelBinnedKey, currentTiled?.revision, runtime.clock, track, trackOffset]);
+    const stop = watchBoundary(runtime.clock, proof, apply);
+    const stopMode = hasFollowedRanks ? runtime.clock.onPublish((previous, next) => {
+      if (previous.playing !== next.playing || previous.seekSequence !== next.seekSequence) apply();
+    }) : undefined;
+    return () => { stop(); stopMode?.(); };
+  }, [active, following, tileHour, pixelBinnedKey, currentTiled?.revision, runtime.clock, track, trackOffset, hasFollowedRanks]);
   const tileUnrecordedRef = useRef<HeldTileUnrecorded | null>(null);
   const tileUnrecorded = useMemo(() => {
     const held = reuseTileUnrecorded(tileUnrecordedRef.current, currentTiledSeries, tileHour);
@@ -1278,6 +1297,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     pagedRows,
     onRowWindow,
     tiledSeries: currentTiled?.series ?? NO_SERIES,
+    ...(hasFollowedRanks ? { onFollowedTileRanks } : {}),
     onSeriesViewport,
     retryTiles,
     onHoverHour,
