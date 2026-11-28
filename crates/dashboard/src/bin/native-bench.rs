@@ -3,6 +3,9 @@
 mod heaviest;
 #[path = "native-bench/widgets.rs"]
 mod widgets;
+#[cfg(feature = "bench-counts")]
+#[path = "native-bench/all.rs"]
+mod all;
 
 use dashboard_base::{Source, SourceKey, products::at_hour};
 use dashboard_core::config::{ContentOptions, LoadContext};
@@ -133,8 +136,17 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
     let [recording, game, user, cache, tag, flags @ ..] = &args[..] else {
-        return Err(io::Error::other("native-bench RECORDING GAME_DIR USER_DIR CACHE_DIR TAG [--audit|--capacity|--hourly-check|--heaviest30 [--quantum N] [--steps N] [--product NAME]]"));
+        return Err(io::Error::other("native-bench RECORDING GAME_DIR USER_DIR CACHE_DIR TAG [--audit|--capacity|--hourly-check|--heaviest30 [--quantum N] [--steps N] [--product NAME]|--all-views [--quantum 24|3|1] [--steps N] [--branch ID] [--start HOUR] [--view KIND[/VIEW]]...]"));
     };
+    if let Some(options) = flags.strip_prefix(&["--all-views".into()]) {
+        #[cfg(feature = "bench-counts")]
+        return all::run(recording, game, user, cache, tag, options);
+        #[cfg(not(feature = "bench-counts"))]
+        {
+            let _ = options;
+            return Err(io::Error::other("--all-views requires --features bench-counts"));
+        }
+    }
     let mut heaviest30 = false;
     let mut custom_quantum = QUANTUM;
     let mut custom_steps = 150i32;
