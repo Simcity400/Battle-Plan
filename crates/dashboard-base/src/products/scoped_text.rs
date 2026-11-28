@@ -16,17 +16,74 @@ use dashboard_text::{
     triggers::inputs::{Inputs, TableRead},
 };
 use replay::campaign::Replay;
+use replay_columnar::{manifest::Status, store::{ColumnState, TableState, Value}};
 use replay_data::rows::TableId;
-use replay_frame::frame::{DecodedFrame, Metrics, TableView, not_selected};
+use replay_frame::frame::{DecodedFrame, Metrics, NOT_SELECTED, SharedView, TABLE_COUNT, TableView, not_selected};
+use replay_recording::{cells::TableReader, columnar_frames::TableCoverage};
 use std::{
     collections::{HashMap, VecDeque},
     io,
-    sync::{Arc, Mutex, atomic::AtomicBool},
+    sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}},
 };
 
 pub const MAX_CACHED_FRAMES: usize = 4;
 
 const UNRECORDED_RANDOM_SEED: &str = "random seed is not recorded for this text";
+const VARIABLE_READER_BYTES: usize = 32 * 1024 * 1024;
+const VARIABLES: TableId = TableId::ScriptVariableValues;
+static UNSELECTED: LazyLock<[SharedView; TABLE_COUNT]> = LazyLock::new(|| {
+    std::array::from_fn(|_| TableView::Unavailable { reason: NOT_SELECTED.into() }.into())
+});
+pub struct KeyedVariables {
+    replay: Arc<Replay>,
+    reader: Mutex<Option<(u32, TableReader)>>,
+}
+
+impl KeyedVariables {
+    pub fn new(replay: Arc<Replay>) -> Self {
+        Self { replay, reader: Mutex::new(None) }
+    }
+
+    fn read(&self, run: u32, hour: i32, key: Option<u128>) -> Option<Option<i64>> {
+        let recording = self.replay.recording();
+        let table = VARIABLES.index();
+        if recording.columns()[table] != VARIABLES.schema().len()
+            || !matches!(recording.table_coverage(table, run), TableCoverage::Valid)
+        {
+            return None;
+        }
+        let ordinal = recording.run(run).ok()?.ordinal(hour)?;
+        let mut held = self.reader.lock().unwrap_or_else(|e| e.into_inner());
+        let mut reader = match held.take() {
+            Some((at, reader)) if at == run => reader,
+            _ => {
+                let mut reader = TableReader::new(recording, run, VARIABLES, None).ok()?;
+                reader.index_keys();
+                reader
+            }
+        };
+        dashboard_query::cost::storage(|| reader.go_to(recording, ordinal)).ok()?;
+        (reader.status() == Status::Complete && reader.columns() == [0]).then_some(())?;
+        let value = recorded_variable(reader.cells(), key)?;
+        *held = (reader.held_bytes() <= VARIABLE_READER_BYTES).then_some((run, reader));
+        Some(value)
+    }
+}
+
+fn recorded_variable(cells: &TableState, key: Option<u128>) -> Option<Option<i64>> {
+    let ColumnState::Number { unrecorded, .. } = cells.column(0)? else { return None };
+    if unrecorded.as_ref().is_some_and(|bits| bits.ones().any(|slot| cells.live().get(slot))) {
+        return None;
+    }
+    if let Some(slot) = key.and_then(|key| cells.find(key)) {
+        at_hour::count_rows(|| 1);
+        if let Value::Number(raw) = cells.value(0, slot) {
+            return Some(Some(raw as i64));
+        }
+        return None;
+    }
+    Some(None)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
@@ -118,7 +175,7 @@ impl BoundedFrames {
         Self { entries: HashMap::new(), order: VecDeque::new() }
     }
 
-    fn take_or_empty(&mut self, run: u32, hour: i32) -> DecodedFrame {
+    fn take_or_empty(&mut self, run: u32, hour: i32, distinct: bool) -> DecodedFrame {
         if let Some(frame) = self.entries.remove(&(run, hour)) {
             if let Some(pos) = self.order.iter().position(|&k| k == (run, hour)) {
                 self.order.remove(pos);
@@ -128,7 +185,7 @@ impl BoundedFrames {
         DecodedFrame {
             branch: 0,
             hour,
-            tables: std::array::from_fn(|_| not_selected()),
+            tables: if distinct { UNSELECTED.clone() } else { std::array::from_fn(|_| not_selected()) },
             metrics: Metrics::default(),
         }
     }
@@ -225,6 +282,7 @@ pub struct ScopedText<'a> {
     reader: FrameReader<'a>,
     catalogue: CatalogueSource<'a>,
     frames: Mutex<BoundedFrames>,
+    variables: Option<Arc<KeyedVariables>>,
 }
 
 impl<'a> ScopedText<'a> {
@@ -233,7 +291,13 @@ impl<'a> ScopedText<'a> {
             reader: FrameReader::Borrowed(replay),
             catalogue: CatalogueSource::Borrowed(catalogue),
             frames: Mutex::new(BoundedFrames::new()),
+            variables: None,
         }
+    }
+
+    pub fn with_keyed_variables(mut self, variables: Arc<KeyedVariables>) -> Self {
+        self.variables = Some(variables);
+        self
     }
 }
 
@@ -247,6 +311,7 @@ impl ScopedText<'static> {
             reader: FrameReader::Owned(replay),
             catalogue,
             frames: Mutex::new(BoundedFrames::new()),
+            variables: None,
         }
     }
 
@@ -272,6 +337,7 @@ impl ScopedText<'static> {
             reader: FrameReader::Custom(Box::new(read_tables)),
             catalogue,
             frames: Mutex::new(BoundedFrames::new()),
+            variables: None,
         }
     }
 }
@@ -287,7 +353,7 @@ impl ScopedText<'_> {
             .frames
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .take_or_empty(run, hour);
+            .take_or_empty(run, hour, false);
         let mut outcome = None;
         for _ in 0..=SCRIPTED_TABLES.len() {
             let needed = probe_unselected_tables(&frame, || {
@@ -442,14 +508,14 @@ impl ScopedText<'_> {
             .frames
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .take_or_empty(run, hour);
+            .take_or_empty(run, hour, self.variables.is_some());
         let mut last_result: Result<String, String> =
             Err("scripted localisation did not resolve".to_owned());
         for _ in 0..=SCRIPTED_TABLES.len() {
             let scripted = dashboard_text::triggers::inputs::unrecorded(|| {
                 ScriptedText::new(&frame, &catalogue.localisation, content, root)
             });
-            let (needed, result, captured) = if validity.is_some() {
+            let evaluate = || if validity.is_some() {
                 let ((needed, result), inputs) =
                     dashboard_text::triggers::inputs::capture(&frame, || {
                         let mut result = None;
@@ -465,6 +531,24 @@ impl ScopedText<'_> {
                     result = Some(scripted.expand_in(text, &scopes));
                 });
                 (needed, result.expect("probe ran expansion"), None)
+            };
+            let (needed, result, captured) = match &self.variables {
+                Some(variables) => {
+                    let whole = Arc::new(AtomicBool::new(false));
+                    let fallback = Arc::clone(&whole);
+                    let variables = Arc::clone(variables);
+                    let (mut needed, result, captured) = dashboard_text::triggers::world::with_variable_values(
+                        Some(Arc::new(move |key| {
+                            let value = variables.read(run, hour, key);
+                            if value.is_none() { fallback.store(true, Ordering::Relaxed); }
+                            value
+                        })),
+                        evaluate,
+                    );
+                    if !whole.load(Ordering::Relaxed) { needed.retain(|&table| table != VARIABLES); }
+                    (needed, result, captured)
+                }
+                None => evaluate(),
             };
             last_result = result;
             if needed.is_empty() {
@@ -510,7 +594,8 @@ mod tests {
     use crate::test_fixtures::{CAMPAIGN, records, source};
     use replay_data::rows::{
         ActiveIdeaRow, CompletedFocusRow, CountryAppearanceRow, CountryLinkRow, CountryRow,
-        PoliticsRow, Recorded, ScriptVariableEntry, ScriptVariablesRow, StateRow, TableRows,
+        PoliticsRow, Recorded, ScriptVariableEntry, ScriptVariableNameRow, ScriptVariableValueRow,
+        ScriptVariablesRow, StateRow, TableRows,
     };
 
     fn with_script_game<T>(work: impl FnOnce() -> T) -> T {
@@ -519,6 +604,10 @@ mod tests {
     }
 
     fn synthetic_replay(hours: std::ops::RangeInclusive<i32>) -> Arc<Replay> {
+        recorded_variables(hours, false)
+    }
+
+    fn recorded_variables(hours: std::ops::RangeInclusive<i32>, split: bool) -> Arc<Replay> {
         let frames: Vec<_> = hours
             .map(|hour| {
                 let mut frame = source(1, hour, Some(1_000));
@@ -623,6 +712,28 @@ mod tests {
                         },
                     ]),
                 );
+                if split {
+                    let mut values = Vec::new();
+                    let TableView::Complete(TableRows::ScriptVariables(stores)) =
+                        &mut *frame.tables[TableId::ScriptVariables.index()]
+                    else { panic!("the synthetic variable stores are present") };
+                    for store in stores {
+                        values.push(ScriptVariableValueRow {
+                            scope_kind: store.scope_kind, scope_id: store.scope_id, var_id: 1,
+                            value_raw: store.entries.pop().unwrap().value_raw,
+                        });
+                    }
+                    set(&mut frame, TableId::ScriptVariableNames, TableRows::ScriptVariableNames(vec![
+                        ScriptVariableNameRow { id: 1, name: b"synth_tier".to_vec() },
+                    ]));
+                    if hour == 115 {
+                        values.remove(0);
+                        *frame.tables[VARIABLES.index()] =
+                            TableView::Truncated { rows: TableRows::ScriptVariableValues(values), missing: 1 };
+                    } else {
+                        set(&mut frame, VARIABLES, TableRows::ScriptVariableValues(values));
+                    }
+                }
                 frame
             })
             .collect();
@@ -700,6 +811,44 @@ mod tests {
         assert_eq!(rows, 0);
         assert!(reads.lock().unwrap().is_empty());
         assert_eq!(cat.content_loads(), loads_before);
+    }
+
+    #[test]
+    fn keyed_values_fall_back_to_a_whole_read_when_authoritative_absence_is_unproven() {
+        with_script_game(|| {
+            let replay = recorded_variables(100..=115, true);
+            let (cat, _dir) = synthetic_catalogue();
+            let whole = ScopedText::new(&replay, &cat);
+            let reads = Arc::new(Mutex::new(Vec::new()));
+            let log = Arc::clone(&reads);
+            let from = Arc::clone(&replay);
+            let keyed = ScopedText::with_reader(Ok(Arc::clone(&cat)), move |run, hour, tables| {
+                log.lock().unwrap().extend(tables.iter().map(|&table| (hour, table)));
+                read_replay_tables(&from, run, hour, tables)
+            }).with_keyed_variables(Arc::new(KeyedVariables::new(Arc::clone(&replay))));
+            let read = |text: &ScopedText<'_>, hour| text.localise(0, hour, Scope::Country(7), "TIER_KEY", &[], None);
+            assert_eq!(read(&keyed, 100).as_deref(), Ok("Tier Low"));
+            assert!(!reads.lock().unwrap().iter().any(|&(_, table)| table == TableId::ResearchTechnologies));
+            assert_eq!(read(&keyed, 115), read(&whole, 115));
+            let restores: Vec<_> = reads.lock().unwrap().iter().filter_map(|&(hour, table)| (table == VARIABLES).then_some(hour)).collect();
+            assert_eq!(restores, [115], "only the truncated store reaches the whole-table reader");
+        });
+    }
+
+    #[test]
+    fn one_unrecorded_value_withholds_even_a_lookup_for_another_or_absent_key() {
+        use replay_columnar::{state::Kind, store::Store};
+        let mut store = Store::new(vec![vec![Kind::I64]], vec![false]);
+        store.begin_hour(0, &[]).unwrap();
+        let mut edit = store.table(0).unwrap();
+        let first = edit.insert(1).unwrap();
+        edit.put_value(first, 0, Value::Number(23)).unwrap();
+        let second = edit.insert(2).unwrap();
+        edit.put_value(second, 0, Value::Unrecorded).unwrap();
+        store.settle();
+        let cells = store.table_state(0).unwrap();
+        assert_eq!(recorded_variable(cells, Some(1)), None);
+        assert_eq!(recorded_variable(cells, Some(3)), None);
     }
 
     #[test]

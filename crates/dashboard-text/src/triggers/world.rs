@@ -3,6 +3,7 @@ use crate::triggers::refusal::refused;
 
 use std::{
     borrow::Cow,
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex, OnceLock, PoisonError},
 };
@@ -16,7 +17,7 @@ use replay_data::{
     rows::CountryLinkRow, rows::CountryRow, rows::InvasionPreparationRow, rows::LexicalTokenRow,
     rows::ProvinceRow, rows::Recorded, rows::RowCodec, rows::ScriptVariableNameRow,
     rows::ScriptVariablesRow, rows::StateRow,
-    rows::TableSchema, rows::column, rows::mask, rows::tables,
+    rows::TableId, rows::TableSchema, rows::column, rows::mask, rows::tables,
 };
 use replay_frame::frame::{HourFrame, Leader, OperandStatus, Province, Rowset};
 use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
@@ -30,6 +31,24 @@ use crate::{
 
 #[path = "world/literals.rs"]
 mod literals;
+
+type VariableValues = Arc<dyn Fn(Option<u128>) -> Option<Option<i64>> + Send + Sync>;
+thread_local! {
+    static VARIABLE_VALUES: RefCell<Option<VariableValues>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn variable_values() -> Option<VariableValues> {
+    VARIABLE_VALUES.with(|read| read.borrow().clone())
+}
+
+pub fn with_variable_values<T>(read: Option<VariableValues>, work: impl FnOnce() -> T) -> T {
+    struct Restore(Option<VariableValues>);
+    impl Drop for Restore {
+        fn drop(&mut self) { VARIABLE_VALUES.replace(self.0.take()); }
+    }
+    let _restore = Restore(VARIABLE_VALUES.replace(read));
+    work()
+}
 
 type Index<T> = OnceLock<super::refusal::Resolved<Result<T, Failure>>>;
 
@@ -3374,14 +3393,25 @@ impl<'a> World<'a> {
             return Ok(None);
         }
         const VALUE: u64 = mask::<replay_data::rows::ScriptVariableValueRow>(&["value_raw"]);
+        let row_key = |var_id| (u128::from(variables.scope_kind) << 64)
+            | (u128::from(variables.scope_id) << 32)
+            | u128::from(var_id);
+        if let Some(read) = variable_values()
+            && self.frame.decoded().is_some_and(|frame| frame.decoded_frame().tables[TableId::ScriptVariableValues.index()].held().is_not_selected())
+            && read(None).is_some()
+        {
+            let Some(var_id) = self.variable_id(key)? else {
+                return Ok(None);
+            };
+            if let Some(value) = read(Some(row_key(var_id))) {
+                return Ok(value);
+            }
+        }
         let values = table::<tables::ScriptVariableValues>(self.frame, VALUE)?;
         let Some(var_id) = self.variable_id(key)? else {
             return Ok(None);
         };
-        let row_key = (u128::from(variables.scope_kind) << 64)
-            | (u128::from(variables.scope_id) << 32)
-            | u128::from(var_id);
-        Ok(keyed::<tables::ScriptVariableValues>(&values, row_key)?.map(|row| row.value_raw))
+        Ok(keyed::<tables::ScriptVariableValues>(&values, row_key(var_id))?.map(|row| row.value_raw))
     }
 
     fn variable_id(&self, key: &[u8]) -> Result<Option<u32>, Failure> {
