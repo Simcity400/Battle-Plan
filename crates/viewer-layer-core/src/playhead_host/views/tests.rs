@@ -567,6 +567,49 @@ fn a_maker_asking_for_other_keys_during_a_same_hour_post_is_answered_by_that_pos
     }
 }
 
+#[test]
+fn keyed_refresh_waits_for_the_rows_and_change_marks_of_an_active_post() {
+    let columns = replay_data::rows::mask::<replay_data::rows::CountryRow>(&["stability_raw"]);
+    for after_telling in [false, true] {
+        let entry = open(record("keyed refresh and row changes", 4), hourly_steps()).unwrap();
+        entry.playhead().seek(0);
+        let mut apart = Apart::new(&entry, RECORDING.branch).unwrap();
+        let reader = Arc::new(apart.store().handle().telling("mesh inputs", &[Need::columns(COUNTRIES, columns)]));
+        reader.declare_keyed(KEYED, Arc::new(BTreeSet::new()));
+        assert!(apart.drive(0));
+        assert!(apart.drive(1));
+        let (frame, _, _) = reader.take_keyed().unwrap();
+        let stability = |frame: &replay_frame::frame::DecodedFrame| {
+            frame.complete_fields::<tables::Countries>(columns).unwrap().iter().find(|row| row.id == 9).unwrap().stability_raw
+        };
+        let cached = stability(&frame);
+        assert_eq!(cached, 40_000);
+        let published = reader.published();
+        let (observed, during_build) = std::sync::mpsc::channel();
+        let keys = Arc::new(BTreeSet::from([0]));
+        *apart.store().shared.worker_built.lock().unwrap() = Some((after_telling, Box::new({
+            let (reader, keys) = (Arc::clone(&reader), Arc::clone(&keys));
+            move || {
+                reader.declare_keyed(KEYED, keys);
+                observed.send(reader.published()).unwrap();
+            }
+        })));
+
+        assert!(apart.drive(2));
+        assert_eq!(during_build.try_recv().unwrap(), published);
+        assert_eq!(reader.published(), published + 1);
+        let (frame, told, held) = reader.take_keyed().unwrap();
+        assert_eq!(frame.hour, 2);
+        assert_eq!(held.of(KEYED), Some(&keys));
+        let updated = match told.get(&COUNTRIES) {
+            Some(Some(rows)) if rows.get(&9).is_some_and(|changed| changed & columns != 0) => stability(&frame),
+            Some(None) => stability(&frame),
+            _ => cached,
+        };
+        assert_eq!(updated, 50_000, "the cache must see the changed row in the first publication");
+    }
+}
+
 fn learned_at(side: &MapSide) -> Option<(Hour, usize)> {
     let frame = maker(side).reader.as_ref().and_then(super::Reader::frame)?;
     if frame.tables[LEARNED.index()].is_not_declared() {
@@ -802,4 +845,54 @@ fn keyed_view_replacement_clears_whole_view_failure_for_same_table() {
         failures.is_empty(),
         "successful keyed replacement must not retain whole-view failure: {failures:?}"
     );
+}
+
+#[test]
+fn posting_after_a_selection_change_does_not_publish_the_same_reply_twice() {
+    use std::sync::Mutex;
+
+    let table = TableId::Divisions;
+    let entry = open(record("selected reply post race", 1), hourly_steps()).unwrap();
+    let mut store = Store::new(&entry);
+    let reader = store.reader("selected reply post race", &[Need::every(table)]);
+    let mirrors = Arc::new(Mirrors::default());
+    reader.declare_keyed(table, Arc::new(BTreeSet::new()));
+    store.post(&mirrors, 0, RECORDING.branch, 0, false);
+    let published = reader.published();
+    let store = Arc::new(Mutex::new(store));
+    let weak = Arc::downgrade(&store);
+    store.lock().unwrap().set_wake(Arc::new(move || {
+        if let Some(store) = weak.upgrade() {
+            store.lock().unwrap().post(&mirrors, 0, RECORDING.branch, 0, false);
+        }
+    }));
+    reader.declare_keyed(table, Arc::new(BTreeSet::from([1])));
+    assert_eq!(reader.published(), published + 1);
+    assert_eq!(reader.frame_keyed().unwrap().1.of(table).unwrap().as_ref(), &BTreeSet::from([1]));
+
+    let shared = Arc::clone(&reader.shared);
+    let id = reader.id;
+    *store.lock().unwrap().shared.chosen.lock().unwrap() = Some(Box::new(move || super::republish(&shared, id)));
+    reader.declare_keyed(table, Arc::new(BTreeSet::from([1, 2])));
+    assert_eq!(reader.published(), published + 2);
+    drop(store);
+    drop(reader);
+}
+
+#[test]
+fn an_unrecorded_selection_is_answered_once() {
+    let entry = open(record("unrecorded selection", 1), hourly_steps()).unwrap();
+    entry.set_capture(CaptureMode::Full);
+    let mut store = Store::new(&entry);
+    let reader = store.reader("unrecorded divisions", &[Need::every(TableId::Divisions)]);
+    let keys = Arc::new(BTreeSet::from([1]));
+    reader.declare_keyed(TableId::Divisions, Arc::clone(&keys));
+    let mirrors = Arc::new(Mirrors::default());
+    store.post(&mirrors, 0, RECORDING.branch, 0, false);
+    let (frame, held) = reader.frame_keyed().unwrap();
+    assert_eq!(*frame.tables[TableId::Divisions.index()], TableView::NotRecorded { mode: CaptureMode::Full });
+    assert_eq!(held.of(TableId::Divisions), Some(&keys));
+    let published = reader.published();
+    store.post(&mirrors, 0, RECORDING.branch, 0, false);
+    assert_eq!(reader.published(), published);
 }
