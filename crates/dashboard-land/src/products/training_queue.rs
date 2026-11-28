@@ -306,17 +306,30 @@ fn location(frame: &DecodedFrame, cat: &Result<Arc<Catalogue>, String>, province
     text.plain_state_name(row.state).and_then(|name| catalogue::plain_text(&name))
 }
 
-fn design(frame: &DecodedFrame, names: &Content, units: Option<&content_reader_key_names::equipment::Database>, variant: u64, refusals: &mut Refusals) -> (Option<String>, Option<String>, Option<String>) {
+#[cfg(test)]
+thread_local! { static DESIGNS_RESOLVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[derive(Default)]
+struct Design {
+    name: Option<String>,
+    archetype: Option<String>,
+    archetype_name: Option<String>,
+    refusals: Vec<String>,
+}
+
+fn design(frame: &DecodedFrame, names: &Content, units: Option<&content_reader_key_names::equipment::Database>, variant: u64) -> Design {
+    #[cfg(test)]
+    DESIGNS_RESOLVED.set(DESIGNS_RESOLVED.get() + 1);
     let cat = &names.cat;
     let Ok(rows) = frame.complete::<tables::VariantDefinitions>() else {
-        refusals.note("Design definitions were not read at this hour");
-        return (None, None, None);
+        return Design { refusals: vec!["Design definitions were not read at this hour".into()], ..Design::default() };
     };
-    let Some(row) = rows.iter().find(|row| row.id == variant) else {
-        refusals.note(format!("Design {variant} has no definition at this hour"));
-        return (None, None, None);
+    let Ok(index) = rows.binary_search_by_key(&variant, |row| row.id) else {
+        return Design { refusals: vec![format!("Design {variant} has no definition at this hour")], ..Design::default() };
     };
-    let name = refusals.keep(names.design_name(frame, row)).0;
+    let row = &rows[index];
+    let mut refusals = Vec::new();
+    let name = names.design_name(frame, row).map_err(|why| refusals.push(why)).ok();
     let token = frame.complete::<tables::LexicalTokens>().ok().and_then(|tokens| {
         let at = tokens.binary_search_by_key(&row.equipment_token, |token| token.token).ok()?;
         std::str::from_utf8(content_reader_parser::parser::c_string(&tokens[at].literal)).ok().map(str::to_owned)
@@ -326,10 +339,10 @@ fn design(frame: &DecodedFrame, names: &Content, units: Option<&content_reader_k
         units.equipment[ordinal].name_str().ok().map(str::to_owned)
     });
     if archetype.is_none() {
-        refusals.note(format!("Design {variant}'s equipment type is unresolved"));
+        refusals.push(format!("Design {variant}'s equipment type is unresolved"));
     }
     let archetype_name = archetype.as_deref().and_then(|key| localised(cat, key).ok());
-    (name, archetype, archetype_name)
+    Design { name, archetype, archetype_name, refusals }
 }
 
 fn queue_sample(frame: &DecodedFrame) -> Option<i32> {
@@ -558,6 +571,7 @@ impl AtHour for TrainingQueue {
         for line in lines {
             by_order.entry(line.conveyor).or_default().push(line);
         }
+        let mut designs = BTreeMap::new();
         for order in orders {
             dashboard_text::metadata::check_cancel(at.cancelled)?;
             let (template_name, template_missing) = refusals.keep(template_name(frame, order.template, cat));
@@ -584,8 +598,17 @@ impl AtHour for TrainingQueue {
                     .iter()
                     .take_while(|row| row.line == line.handle)
                     .map(|row| {
-                        let (name, archetype, archetype_name) = design(frame, names, units.as_deref(), row.variant_handle, &mut refusals);
-                        TrainingEquipment { variant: row.variant_handle.to_string(), name, archetype, archetype_name, amount_raw: row.amount_raw.to_string() }
+                        let (design, diagnostics) = designs.entry(row.variant_handle).or_insert_with(|| {
+                            catalogue::capture_isolated(|| design(frame, names, units.as_deref(), row.variant_handle))
+                        });
+                        catalogue::credit(diagnostics);
+                        for reason in &design.refusals {
+                            refusals.note(reason.clone());
+                        }
+                        TrainingEquipment {
+                            variant: row.variant_handle.to_string(), name: design.name.clone(), archetype: design.archetype.clone(),
+                            archetype_name: design.archetype_name.clone(), amount_raw: row.amount_raw.to_string(),
+                        }
                     })
                     .collect();
                 let unclassified = held.iter().any(|row| row.archetype.is_none());
