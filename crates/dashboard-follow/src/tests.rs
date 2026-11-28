@@ -2834,9 +2834,8 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     let (next, last, advance) = steps.recv().unwrap();
     handoffs.recv().unwrap();
     let cold: Vec<_> = catching_up.try_iter().collect();
-    assert_eq!(cold.first().map(|r| r.0), Some(start + quantum));
-    assert_eq!(cold.last().map(|r| r.0), Some(through), "catch-up covers the scheduling step");
-    assert!(cold.iter().all(|r| !r.1));
+    assert_eq!(cold.len(), 1, "catch-up looks up only the newest requested hour: {cold:?}");
+    assert_eq!((cold[0].0, cold[0].1), (through, false));
     assert_eq!(next, through + 1);
     gate_from.store(i32::MAX, Ordering::Release);
     advance.send(()).unwrap();
@@ -2908,7 +2907,6 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     assert_eq!(wide7["live"]["groups"][0]["rawValues"], serde_json::json!([expected_wide]), "multi-hour (quantum=6) catch-up preserves lossless wide rawValues");
     assert!(wide7["live"]["groups"][0].get("follow").is_none());
     gate_from.store(i32::MAX, Ordering::Release);
-    drop(steps);
 
     host.unpanel(7);
     let (s8_entered_tx, s8_entered_rx) = mpsc::channel();
@@ -2923,32 +2921,43 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     host.prepare_panel(product(Arc::new(move |hour, seed, _, step| {
         if s8_first.swap(false, Ordering::Relaxed) {
             s8_start_cb.store(hour, Ordering::Release);
-            let _ = s8_entered_tx.send(hour);
+            let _ = s8_entered_tx.send((hour, std::thread::current().id()));
             let _ = s8_release_rx.lock().unwrap().recv();
         } else if step.is_none() {
             s8_reads_cb.lock().unwrap().push((hour, seed));
         }
-        let read_again = hour == s8_start_cb.load(Ordering::Acquire).saturating_add(2 * quantum);
+        let read_again = hour > s8_start_cb.load(Ordering::Acquire);
         ProductRead { value: Arc::clone(&proven), rows: 1, fresh: read_again, pending: false, live: None, lanes: Vec::new(), from: Hour::MIN }
     }))).unwrap()(8, 1).unwrap();
-    let start8 = s8_entered_rx.recv().unwrap();
-    host.playhead().anchor(f64::from(start8 + 3 * quantum), true, 0.0, anchored_at, false);
-    host.playhead().wait_newest(start8 + 2 * quantum).unwrap();
+    let (start8, seed_thread) = s8_entered_rx.recv().unwrap();
+    let next8 = host.playhead().newest().unwrap_or(start8).max(start8 + 2 * quantum) + quantum;
+    gate_from.store(next8, Ordering::Release);
+    host.playhead().anchor(f64::from(next8 + quantum), true, 0.0, anchored_at, false);
+    let (through8, advance8) = loop {
+        let (first, last, permit) = steps.recv().unwrap();
+        if first >= next8 { break (last, permit); }
+        permit.send(()).unwrap();
+    };
+    let (returned, seeded) = mpsc::channel();
+    let _seed_watch = host.playhead().watch_control(Arc::new(move || {
+        if std::thread::current().id() == seed_thread { let _ = returned.send(()); }
+    }));
     s8_release_tx.send(()).unwrap();
-    let mut caught = Vec::new();
-    while !caught.iter().any(|&(hour, _)| hour == start8 + 2 * quantum) {
+    seeded.recv().unwrap();
+    gate_from.store(i32::MAX, Ordering::Release);
+    advance8.send(()).unwrap();
+    let caught = loop {
         let (kind, bytes, session) = push.take_sent().expect("a catch-up packet for panel 8");
         push.credit(session, u64::MAX);
         if kind != PANEL { continue; }
-        caught.extend(dated::records(&bytes).unwrap().into_iter().filter(|r| r.id == 8 && !r.stepped() && r.kind != dated::WAITING && [start8 + quantum, start8 + 2 * quantum].contains(&r.hour)).map(|r| (r.hour, r.kind)));
-    }
+        if let Some(r) = dated::records(&bytes).unwrap().into_iter().find(|r| r.id == 8 && !r.stepped() && r.kind != dated::WAITING && r.hour > start8) {
+            break (r.hour, r.kind);
+        }
+    };
     let reads = s8_reads.lock().unwrap().clone();
     assert!(!reads.is_empty() && reads.iter().all(|&(_, seed)| !seed), "multi-hour catch-up reads through the held interval, never as a seed: {reads:?}");
-    assert_eq!(
-        caught,
-        [(start8 + quantum, dated::STANDS), (start8 + 2 * quantum, dated::AGAIN)],
-        "a value the reader carried across the skipped hours stands on the previous record; one it read again at the hour proves nothing about the hours between and starts again, both without the body"
-    );
+    assert!(caught.0 >= through8, "catch-up skips the backlog to the current boundary");
+    assert_eq!(caught.1, dated::AGAIN, "the unchanged value is exact at the new hour and proves nothing about the skipped hours");
 }
 
 type StepGate = mpsc::Receiver<(Hour, mpsc::Sender<()>)>;
