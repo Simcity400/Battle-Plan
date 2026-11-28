@@ -556,7 +556,7 @@ fn bucket_registered(spawn: &SpawnPoint, roster: &Roster) -> bool {
     };
     names
         .iter()
-        .any(|name| roster.descriptors.entities.contains_key(name))
+        .any(|name| roster.has_entity(name))
 }
 
 pub const FLOATING_HARBOR_SLOT: &str = "floating_harbor";

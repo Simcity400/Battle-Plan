@@ -1013,17 +1013,18 @@ impl MapBuildingAssets {
                 wanted.push((building.name.clone(), variant, entity));
             }
             let destroyed = building.destroyed_entity_name();
-            if roster.descriptors.entities.contains_key(&destroyed) {
+            if roster.has_entity(&destroyed) {
                 wanted.push((building.name.clone(), usize::MAX, destroyed));
             }
         }
+        let job = roster.descriptor_job();
         let mut aliases = BTreeMap::new();
         let mut names: Vec<String> = wanted.iter().map(|(_, _, entity)| entity.clone()).collect();
         if !floating.is_empty() {
             names.push(FLOATING_HARBOR_ENTITY.to_owned());
         }
         for (_, _, entity) in &wanted {
-            let descriptors = roster.descriptors.with_aliases(&aliases);
+            let descriptors = job.view().with_aliases(&aliases);
             if descriptors
                 .inherit(entity)
                 .is_some_and(|value| value.states.contains_key("damaged"))
@@ -1036,7 +1037,7 @@ impl MapBuildingAssets {
                 names.push(name);
             }
         }
-        let descriptors = roster.descriptors.with_aliases(&aliases);
+        let descriptors = job.view().with_aliases(&aliases);
         let library = ModelLibrary::load(layers, decode, descriptors, &names, warnings)?;
         let unselected: BTreeSet<_> = wanted
             .iter()

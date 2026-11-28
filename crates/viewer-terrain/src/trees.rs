@@ -10,7 +10,7 @@ use viewer_gpu::textures::load_image;
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use content_reader_layers::ResolvedLayers;
-use content_reader_mesh::mesh::{self, Descriptors};
+use content_reader_mesh::mesh;
 use content_reader_image::{IndexedImage, SharedRgba8Image as Rgba8Image, dds, native::Decode};
 
 use viewer_scene_base::shadow::{BUFFER_FORMAT, DEPTH_MAP_FORMAT};
@@ -332,9 +332,9 @@ impl TreeAssets {
                         let materials = recorded_materials.get_or_insert_with(|| {
                             viewer_scene_base::mesh_effect::Materials::new(stack, size, decode)
                         });
-                        load_mesh(stack, decode, &roster.descriptors, palette, materials)
+                        load_mesh(stack, decode, roster.mesh_definitions(), palette, materials)
                     }
-                    _ => load_mesh(layers, decode, &roster.descriptors, palette, &mut materials),
+                    _ => load_mesh(layers, decode, roster.mesh_definitions(), palette, &mut materials),
                 },
             );
             match kind {
@@ -411,12 +411,12 @@ pub fn tree_mask(rivers: &IndexedImage) -> io::Result<TreeMask> {
 fn load_mesh(
     layers: &ResolvedLayers,
     decode: Decode,
-    descriptors: &Descriptors,
+    meshes: &BTreeMap<String, mesh::MeshDefinition>,
     palette: u8,
     materials: &mut viewer_scene_base::mesh_effect::Materials,
 ) -> io::Result<TreeMeshAssets> {
     let name = mapobject_name(palette);
-    let definition = tree_definition(descriptors, palette)?;
+    let definition = tree_definition(meshes, palette)?;
     let path = definition.file.clone();
     let scale = definition.scale;
     let bytes = layers.read_uncovered(&path)?;
@@ -474,10 +474,9 @@ fn first_tree_record<'a>(
     Ok(None)
 }
 
-fn tree_definition(descriptors: &Descriptors, palette: u8) -> io::Result<&mesh::MeshDefinition> {
+fn tree_definition(meshes: &BTreeMap<String, mesh::MeshDefinition>, palette: u8) -> io::Result<&mesh::MeshDefinition> {
     let name = mapobject_name(palette);
-    descriptors
-        .meshes
+    meshes
         .get(&name)
         .ok_or_else(|| invalid(format!("content declares no pdxmesh \"{name}\"")))
 }

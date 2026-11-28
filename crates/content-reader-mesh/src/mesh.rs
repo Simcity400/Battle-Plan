@@ -9,7 +9,7 @@ mod descriptors;
 pub use animation::{Animation, AnimationJoint, FIRST_FRAME, JointPose, read_animation};
 pub use container::{Node, Value, parse};
 pub use descriptors::{
-    AnimationDefinition, Attachment, DEFAULT_CULL_DISTANCE_SQUARED, DEFAULT_STATE, DescriptorView, Descriptors, EntityDefinition, EntityEvent,
+    AnimationDefinition, Attachment, DEFAULT_CULL_DISTANCE_SQUARED, DEFAULT_STATE, DescriptorJob, DescriptorView, Descriptors, EntityDefinition, EntityEvent,
     EntityGameData, EntityState, InheritedEntity, Locator, MeshDefinition, MeshSetting,
     NavalHitMissEffect, ResolvedEntity, ResolvedMesh, Roster, TextureIndex, balanced_blocks,
     lexical_names, parse_descriptors,
