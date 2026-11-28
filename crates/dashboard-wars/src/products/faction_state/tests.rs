@@ -459,7 +459,7 @@ fn country_faction_goals_refreshes_when_scripted_goal_text_input_changes() {
 fn scripted_goal_refresh(fixture: &str, condition: &str, unrelated_tokens: bool) {
     use super::country_goals::CountryFactionGoals;
     use dashboard_base::{
-        products::at_hour::{exact_panel, frame_panel},
+        products::at_hour::{AtHour, exact_panel, frame_panel},
         test_fixtures::{game, materialized_frame, played, source, source_with_content, streamed, visual_mods::Machine},
     };
     use replay_data::rows::{CountryRow, CountryWarRow, Recorded, ScriptFlagRow};
@@ -511,12 +511,30 @@ fn scripted_goal_refresh(fixture: &str, condition: &str, unrelated_tokens: bool)
         })
         .collect();
 
-    let (source, load) = source_with_content(frames, &machine.root);
     let params = json!({"branchId": "1", "country": "AAA", "goals": "all"});
+    if unrelated_tokens {
+        let (control, load) = source_with_content(frames.clone(), &machine.root);
+        let panel = exact_panel::<CountryFactionGoals>(&control, &load, &params).unwrap();
+        let (_, reads) = replay_recording::cells::count_reads(|| {
+            played(control.replay_ref(), panel.exact().unwrap(), 100, 105)
+        });
+        assert!(reads[&TableId::CountryWars].stretches > 0);
+    }
+    let (source, load) = source_with_content(frames, &machine.root);
+    let source = std::sync::Arc::new(source);
+    if unrelated_tokens {
+        let asked = serde_json::from_value(params.clone()).unwrap();
+        if let Some(pending) = CountryFactionGoals::PREPARE.unwrap()(&source, &asked, &load, 100).unwrap() {
+            pending.wait().unwrap();
+        }
+    }
     let panel = exact_panel::<CountryFactionGoals>(&source, &load, &params).unwrap();
     let exact = panel.exact().unwrap();
     let mut whole = frame_panel::<CountryFactionGoals>(&source, &load, &params).unwrap();
-    let steps = played(source.replay_ref(), exact, 100, 105);
+    let (steps, reads) = replay_recording::cells::count_reads(|| played(source.replay_ref(), exact, 100, 105));
+    if unrelated_tokens {
+        assert_eq!(reads.get(&TableId::CountryWars).map_or(0, |read| read.stretches), 0);
+    }
     for step in &steps {
         let expected = streamed(&materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour), step.fresh);
         assert_eq!(streamed(&step.value, step.fresh), expected, "scripted country-faction-goals at {}", step.hour);

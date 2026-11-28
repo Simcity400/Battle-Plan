@@ -44,6 +44,29 @@ fn prepared_idea_dates_keep_exact_owner_selections_without_restoring() {
 }
 
 #[test]
+fn prepared_block_dates_match_exact_dates_without_opening_history() {
+    let boundary = 100 + replay_columnar::unit::BLOCK as i32;
+    let replay = ideas_recording(boundary + 2, |hour| vec![ActiveIdeaRow {
+        country: 1, ordinal: 0, token: hour.to_string().into_bytes(),
+    }]);
+    let spec = DateSelection { shift: None, ..ACTIVE_IDEAS };
+    let selection = Selection { fields: spec.fields, rows: None, ends: false };
+    let (prepared, _) = RunDates::load(&replay, 0, &[spec], DateWindows::Blocks, RETAINED_BYTES).unwrap();
+    for (first, last) in [(100, boundary - 1), (boundary, boundary + 2)] {
+        let (legacy, reads) = replay_recording::cells::count_reads(|| {
+            selection.dates(&replay, 0, spec.table, first, last).unwrap()
+        });
+        assert!(reads[&spec.table].stretches > 0);
+        let (next, reads) = replay_recording::cells::count_reads(|| {
+            prepared.next(spec.table, &selection, (first, last), first)
+        });
+        assert_eq!(next, Some(legacy.into_iter().find(|&hour| hour > first)));
+        assert!(reads.is_empty());
+    }
+    assert_eq!(prepared.next(spec.table, &selection, (boundary, boundary + 1), boundary), None);
+}
+
+#[test]
 fn a_damaged_anchor_refuses_dates_even_when_another_owner_spans_it() {
     use replay_columnar::unit::{BLOCK, restore::column_stream};
     let checkpoint = 100 + 6 * BLOCK as i32;

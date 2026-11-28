@@ -11,7 +11,7 @@ use dashboard_base::{
     catalogue::{self, Catalogue},
     products::{
         LoadContext,
-        at_hour::{At, AtHour, Edits, Held, Keys, Owner, Read, ReadsAt, ScriptedInputs, before, field_columns, warnings_through},
+        at_hour::{At, AtHour, DateSelection, Edits, Held, Keys, Owner, Read, ReadsAt, ScriptedInputs, before, field_columns, warnings_through},
     },
 };
 use dashboard_world::products::territory::slot_tags;
@@ -419,8 +419,8 @@ impl AtHour for FactionDetails {
 }
 
 impl DetailContent {
-    pub(super) fn with_scripted_playback(mut self, source: &Source) -> Self {
-        self.inputs = self.inputs.with_lexical(source).with_variable_dates(source);
+    pub(super) fn with_scripted_playback(mut self, source: &Source, dates: &'static [DateSelection]) -> Self {
+        self.inputs = self.inputs.with_lexical(source).with_prepared_block_dates(source, dates);
         self
     }
 
