@@ -250,15 +250,17 @@ impl AtHour for PoliticsState {
             };
         }
         if step == 0 {
-            return Self::tables(params).into_iter().map(Read::all).collect();
+            return BALANCE_TABLES.into_iter().filter(|&table| table != TableId::LexicalTokens).map(Read::all).collect();
         }
-        if step > MAX_SCRIPTED_STAGES {
-            return Vec::new();
-        }
-        let Some(Ok(catalogue)) = at.context.catalogue.as_ref().map(|held| held.as_deref()) else {
-            return Vec::new();
-        };
+        let catalogue = at.context.catalogue.as_ref().and_then(|held| held.as_deref().ok());
         let requested_slot = selected_slot(params.country.as_ref(), at.holders, at.hour);
+        if step == 1 {
+            return vec![balance_words(held, catalogue, params.country.is_some(), requested_slot)];
+        }
+        if step > MAX_SCRIPTED_STAGES + 1 {
+            return Vec::new();
+        }
+        let Some(catalogue) = catalogue else { return Vec::new() };
         probe_balance_tables(held, catalogue, params.country.is_some(), requested_slot)
             .into_iter()
             .map(Read::all)
@@ -518,11 +520,32 @@ fn selected_records(members: &[MemberRow], links: &Links<'_>, filter_country: bo
     })
 }
 
+pub(super) fn balance_words(frame: &DecodedFrame, catalogue: Option<&Catalogue>, filter_country: bool, requested_slot: Option<u32>) -> Read {
+    let selected = if filter_country {
+        match (frame.complete::<tables::PowerBalanceMembers>(), Links::new(frame)) {
+            (Ok(members), Ok(links)) => selected_records(members, &links, true, requested_slot),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    if catalogue.is_some_and(|catalogue| scripted_names(frame, catalogue, selected.as_ref())) {
+        return Read::all(TableId::LexicalTokens);
+    }
+    let tokens = frame.complete::<tables::ModifierDefinitions>().into_iter().flatten()
+        .filter(|row| row.token != 0).map(|row| u128::from(row.token));
+    Read::these(TableId::LexicalTokens, tokens)
+}
+
 pub(super) fn names_read_the_date(frame: &DecodedFrame, catalogue: &Catalogue) -> bool {
+    scripted_names(frame, catalogue, None)
+}
+
+fn scripted_names(frame: &DecodedFrame, catalogue: &Catalogue, selected: Option<&BTreeSet<u32>>) -> bool {
     let Ok(records) = frame.complete::<tables::PowerBalances>() else { return false };
     let effects = catalogue.scripted_content().ok().and_then(|content| content.effects().ok());
     let power_balances = effects.as_ref().and_then(|effects| effects.view(None).power_balances);
-    records.iter().any(|record| {
+    records.iter().filter(|record| selected.is_none_or(|selected| selected.contains(&record.ordinal))).any(|record| {
         [&record.balance, &record.left, &record.right, &record.trending, &record.active_range].into_iter().any(|bytes| raw_scripted_text(catalogue, &token(bytes)).is_some())
             || power_balances.and_then(|database| database.ranges(&record.balance)).is_some_and(|ranges| ranges.iter().any(|range| raw_scripted_text(catalogue, &token(&range.id)).is_some()))
     })

@@ -80,6 +80,37 @@ fn recording() -> Source {
 }
 
 #[test]
+fn balance_reads_only_the_modifier_words_it_can_name() {
+    use dashboard_base::products::{LoadContext, at_hour::{counted, exact_panel}};
+    use replay_data::rows::{LexicalTokenRow, ModifierDefinitionRow};
+
+    let read = |words| {
+        let mut frame = frame(FIRST);
+        set(&mut frame, TableId::ModifierDefinitions, TableRows::ModifierDefinitions(vec![
+            ModifierDefinitionRow { index: 0, token: 1, ..Default::default() },
+        ]));
+        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(
+            (1..=words).map(|token| LexicalTokenRow { token, literal: token.to_string().into_bytes(), ..Default::default() }).collect(),
+        ));
+        let source = source_of("balance-word-reads", vec![frame]);
+        let panel = exact_panel::<state::PoliticsState>(
+            &source,
+            &LoadContext { content: None },
+            &serde_json::json!({"branchId":"1", "view":"balances", "country":"GER"}),
+        ).unwrap();
+        counted(|| (panel.exact().unwrap().cold)(FIRST, &false.into()))
+    };
+
+    let (small, small_rows) = read(1);
+    let (large, large_rows) = read(2_000);
+    assert_eq!(large.as_ref().unwrap(), small.as_ref().unwrap());
+    assert!(!large.as_ref().unwrap()["warnings"].as_array().unwrap().iter().any(|warning| {
+        warning.as_str().is_some_and(|warning| warning.contains("has no lexical token"))
+    }), "the registry resolves the one referenced token");
+    assert_eq!(large_rows, small_rows, "unrelated tokens don't add typed rows to the balance reply");
+}
+
+#[test]
 fn exile_playback_recomputes_for_host_edits_and_matches_the_exact_reply() {
     use dashboard_base::{products::{LoadContext, at_hour::exact_panel}, test_fixtures::{played, records, streamed}};
     use replay_data::rows::CountryStabilityInputRow;
@@ -659,6 +690,19 @@ fn balance_scripted_names_respect_scopes_causality_staged_reads_and_named_refusa
     };
     let early = selected(105);
     assert_eq!(early.balances[0].left.name.as_deref(), Some("Fascist Council"));
+    {
+        use dashboard_base::products::at_hour::Keys;
+        let mut mixed = make_frame(105);
+        let mut balances = mixed.complete::<replay_data::rows::tables::PowerBalances>().unwrap().to_vec();
+        balances.push(PowerBalanceRow { ordinal: 1, balance: b"ENG_bop".to_vec(), ..Default::default() });
+        set(&mut mixed, TableId::PowerBalances, TableRows::PowerBalances(balances));
+        set(&mut mixed, TableId::PowerBalanceMembers, TableRows::PowerBalanceMembers(vec![
+            PowerBalanceMemberRow { record: 0, ordinal: 0, country: GER, ..Default::default() },
+            PowerBalanceMemberRow { record: 1, ordinal: 0, country: ENG, ..Default::default() },
+        ]));
+        assert!(matches!(state::balance_words(&mixed, Some(&catalogue), true, Some(8)).keys, Keys::These(_)));
+        assert!(matches!(state::balance_words(&mixed, Some(&catalogue), true, Some(7)).keys, Keys::All));
+    }
     assert_eq!(early.balances[0].range.as_ref().unwrap().name.as_deref(), Some("GER low"));
     let late = selected(125);
     assert_eq!(late.balances[0].left.name.as_deref(), Some("Democratic Council"));
