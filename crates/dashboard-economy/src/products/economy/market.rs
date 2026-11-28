@@ -539,7 +539,7 @@ impl AtHour for MarketLendLease {
     }
 
     fn playback_reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        market_reply(frame, params, at, params.only == Some(MarketSection::Offers))
+        market_reply(frame, params, at, matches!(params.only, Some(MarketSection::Offers | MarketSection::Contracts)))
     }
 }
 

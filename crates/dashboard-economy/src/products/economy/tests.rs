@@ -800,20 +800,29 @@ mod market {
     }
 
     #[test]
-    fn changing_inventory_amounts_reuses_names_until_the_design_set_or_its_inputs_change() {
+    fn changing_market_amounts_reuse_names_until_the_design_set_or_its_inputs_change() {
+        for only in ["offers", "contracts"] {
+            market_names_follow(only);
+        }
+    }
+
+    fn market_names_follow(only: &str) {
         use dashboard_base::products::at_hour::At;
         use replay_data::rows::LexicalTokenRow;
 
         let source = recording();
         let query = dashboard_base::queries::query(&source, 1).unwrap();
         let context = MarketLendLease::context(&source, &load()).unwrap();
-        let params = serde_json::from_value(json!({ "branchId": "1", "countries": ["GER"], "only": "offers" })).unwrap();
+        let params = serde_json::from_value(json!({ "branchId": "1", "countries": ["GER"], "only": only })).unwrap();
         let cancelled = AtomicBool::new(false);
-        let live = dashboard_follow::live::Cells::default();
         let read = |frame: &DecodedFrame| {
-            let at = At { owner: None, holders: &query.holders, hour: frame.hour, context: &context, cancelled: &cancelled, live: &live };
+            let played_cells = dashboard_follow::live::Cells::default();
+            let at = At { owner: None, holders: &query.holders, hour: frame.hour, context: &context, cancelled: &cancelled, live: &played_cells };
             let played = MarketLendLease::playback_reply(frame, &params, &at).unwrap();
-            assert_eq!(played, MarketLendLease::reply(frame, &params, &at).unwrap(), "hour {}", frame.hour);
+            let exact_cells = dashboard_follow::live::Cells::default();
+            let exact = MarketLendLease::reply(frame, &params, &At { live: &exact_cells, ..at }).unwrap();
+            assert_eq!(played, exact, "hour {}", frame.hour);
+            assert_eq!(played_cells.finish(), exact_cells.finish(), "live bindings at hour {}", frame.hour);
             played
         };
         let mut held = frame(PARTLY - 1);
@@ -821,14 +830,23 @@ mod market {
             LexicalTokenRow { token: 1, literal: b"first_type".to_vec() },
             LexicalTokenRow { token: 2, literal: b"second_type".to_vec() },
         ]);
+        let set_amount = |frame: &mut DecodedFrame, variant, amount| {
+            if only == "offers" {
+                set::<tables::CountryMarket>(frame, vec![CountryMarketRow { country: GER, inventory: equipment(variant, amount), ..Default::default() }]);
+            } else {
+                set::<tables::MarketContractTerms>(frame, vec![MarketContractTermsRow {
+                    country: FRA, id: 0x51, kind: 1, buyer: GER, equipment: equipment(variant, amount), ..Default::default()
+                }]);
+            }
+        };
+        set_amount(&mut held, 6, 1);
         let first = read(&held);
         assert_eq!(first.variants[0].token, "first_type");
-        let offer = |variant, amount| CountryMarketRow { country: GER, inventory: equipment(variant, amount), ..Default::default() };
 
         held.hour += 1;
-        set::<tables::CountryMarket>(&mut held, vec![offer(6, 2)]);
+        set_amount(&mut held, 6, 2);
         let amount = read(&held);
-        assert_ne!(first.offers, amount.offers);
+        assert_ne!((&first.offers, &first.contracts), (&amount.offers, &amount.contracts));
         assert!(std::ptr::eq(first.variants.as_ptr(), amount.variants.as_ptr()), "one naming result for the two amounts");
 
         held.hour += 1;
@@ -837,7 +855,7 @@ mod market {
         assert_eq!(design.variants[0].token, "second_type");
 
         held.hour += 1;
-        set::<tables::CountryMarket>(&mut held, vec![offer(9, 2)]);
+        set_amount(&mut held, 9, 2);
         let roster = read(&held);
         assert_eq!(roster.variants[0].id, "9");
 
