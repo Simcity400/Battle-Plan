@@ -264,7 +264,7 @@ impl AtHour for CountryFactionGoals {
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        <FactionDetails as AtHour>::context(source, load)
+        <FactionDetails as AtHour>::context(source, load).map(|context| context.with_lexical(source))
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

@@ -99,19 +99,19 @@ test('seeking into recorded divisions registers the settled row count once, and 
     assert.deepEqual(await act('decoratedRegistrations()'), []);
     const seeking = await act<Step>('seek(100)');
     assert.match(seeking.states[id]!.main[0]!, /^loading:/);
-    const settled = await act<Read>('settleDecorated()');
+    const settled = await act<Read>('settleDecorated(11)');
     assert.equal(settled.shown, 1000);
     assert.deepEqual(settled.main, []);
     const seek = await act<{ count: number }[]>('decoratedRegistrations()');
     assert.deepEqual(seek.map(query => query.count), [11]);
 
     await act('seek(104)');
-    const followed = await act<Read>('settleDecorated()');
+    const followed = await act<Read>('settleDecorated(11)');
     assert.equal(followed.shown, 1004);
     assert.deepEqual(await act('decoratedRegistrations()'), []);
 
     await act('resizeDecorated(492)');
-    const resized = await act<Read>('settleDecorated()');
+    const resized = await act<Read>('settleDecorated(13)');
     assert.equal(resized.shown, 1004);
     const resize = await act<{ count: number }[]>('decoratedRegistrations()');
     assert.deepEqual(resize.map(query => query.count), [13]);

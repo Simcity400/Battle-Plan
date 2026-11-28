@@ -18,9 +18,11 @@ use dashboard_text::{
 use replay::campaign::Replay;
 use replay_columnar::{manifest::Status, store::{ColumnState, TableState, Value}};
 use replay_data::rows::TableId;
-use replay_frame::frame::{DecodedFrame, Metrics, NOT_SELECTED, SharedView, TABLE_COUNT, TableView, not_selected};
+use replay_frame::frame::{DecodedFrame, Metrics, NOT_SELECTED, READ_TIME_NOT_RECORDED, SharedView, TABLE_COUNT, TableView, not_selected};
+use replay_lanes::at::LexicalCursor;
 use replay_recording::{cells::TableReader, columnar_frames::TableCoverage};
 use std::{
+    borrow::BorrowMut,
     collections::{HashMap, VecDeque},
     io,
     sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}},
@@ -34,6 +36,34 @@ const VARIABLES: TableId = TableId::ScriptVariableValues;
 static UNSELECTED: LazyLock<[SharedView; TABLE_COUNT]> = LazyLock::new(|| {
     std::array::from_fn(|_| TableView::Unavailable { reason: NOT_SELECTED.into() }.into())
 });
+
+pub struct Lexical(Arc<Mutex<LexicalCursor>>);
+
+impl Lexical {
+    pub fn for_source(source: &Source) -> Self { Self(source.state::<LexicalCursor>()) }
+
+    pub fn release(&self) { *self.0.lock().unwrap_or_else(|e| e.into_inner()) = LexicalCursor::default(); }
+}
+
+pub(crate) fn read_with_lexical<F: BorrowMut<DecodedFrame>>(
+    lexical: Option<&Lexical>, replay: &Replay, (run, hour): (u32, i32), tables: &[TableId],
+    read: impl FnOnce(&[TableId]) -> io::Result<F>,
+) -> io::Result<F> {
+    let table = TableId::LexicalTokens;
+    let Some(lexical) = lexical.filter(|_| tables.contains(&table)) else { return read(tables) };
+    let held = dashboard_query::cost::storage(|| {
+        lexical.0.lock().unwrap_or_else(|e| e.into_inner()).read(replay.recording(), run, hour)
+    });
+    let Some((view, sampled, rows)) = held else { return read(tables) };
+    at_hour::count_rows(|| rows);
+    let companion = tables.iter().copied().filter(|&id| id != table).collect::<Vec<_>>();
+    let mut frame = read(&companion).inspect_err(|_| lexical.release())?;
+    let decoded = frame.borrow_mut();
+    decoded.tables[table.index()] = view;
+    if sampled { decoded.metrics.table_ns[table.index()] = READ_TIME_NOT_RECORDED; }
+    Ok(frame)
+}
+
 pub struct KeyedVariables {
     replay: Arc<Replay>,
     reader: Mutex<Option<(u32, TableReader)>>,
@@ -223,10 +253,10 @@ impl FrameReader<'_> {
         }
     }
 
-    fn read(&self, run: u32, hour: i32, tables: &[TableId]) -> io::Result<DecodedFrame> {
+    fn read(&self, run: u32, hour: i32, tables: &[TableId], lexical: Option<&Lexical>) -> io::Result<DecodedFrame> {
         match self {
-            Self::Borrowed(replay) => read_replay_tables(replay, run, hour, tables),
-            Self::Owned(replay) => read_replay_tables(replay, run, hour, tables),
+            Self::Borrowed(replay) => read_with_lexical(lexical, replay, (run, hour), tables, |tables| read_replay_tables(replay, run, hour, tables)),
+            Self::Owned(replay) => read_with_lexical(lexical, replay, (run, hour), tables, |tables| read_replay_tables(replay, run, hour, tables)),
             #[cfg(any(test, feature = "test-support"))]
             Self::Custom(read) => read(run, hour, tables),
         }
@@ -283,6 +313,7 @@ pub struct ScopedText<'a> {
     catalogue: CatalogueSource<'a>,
     frames: Mutex<BoundedFrames>,
     variables: Option<Arc<KeyedVariables>>,
+    lexical: Option<&'a Lexical>,
 }
 
 impl<'a> ScopedText<'a> {
@@ -292,11 +323,17 @@ impl<'a> ScopedText<'a> {
             catalogue: CatalogueSource::Borrowed(catalogue),
             frames: Mutex::new(BoundedFrames::new()),
             variables: None,
+            lexical: None,
         }
     }
 
     pub fn with_keyed_variables(mut self, variables: Arc<KeyedVariables>) -> Self {
         self.variables = Some(variables);
+        self
+    }
+
+    pub fn with_lexical(mut self, lexical: &'a Lexical) -> Self {
+        self.lexical = Some(lexical);
         self
     }
 }
@@ -312,6 +349,7 @@ impl ScopedText<'static> {
             catalogue,
             frames: Mutex::new(BoundedFrames::new()),
             variables: None,
+            lexical: None,
         }
     }
 
@@ -338,6 +376,7 @@ impl ScopedText<'static> {
             catalogue,
             frames: Mutex::new(BoundedFrames::new()),
             variables: None,
+            lexical: None,
         }
     }
 }
@@ -362,7 +401,7 @@ impl ScopedText<'_> {
             if needed.is_empty() {
                 break;
             }
-            let partial = match self.reader.read(run, hour, &needed) {
+            let partial = match self.reader.read(run, hour, &needed, self.lexical) {
                 Ok(partial) => partial,
                 Err(error) => {
                     self.frames
@@ -375,6 +414,7 @@ impl ScopedText<'_> {
             frame.branch = partial.branch;
             for table in needed {
                 frame.tables[table.index()] = partial.tables[table.index()].clone();
+                if self.lexical.is_some() && table == TableId::LexicalTokens { frame.metrics.table_ns[table.index()] = partial.metrics.table_ns[table.index()]; }
             }
         }
         self.frames
@@ -557,7 +597,7 @@ impl ScopedText<'_> {
                 }
                 break;
             }
-            let partial = match self.reader.read(run, hour, &needed) {
+            let partial = match self.reader.read(run, hour, &needed, self.lexical) {
                 Ok(partial) => partial,
                 Err(error) => {
                     self.frames
@@ -573,6 +613,7 @@ impl ScopedText<'_> {
             frame.branch = partial.branch;
             for table in needed {
                 frame.tables[table.index()] = partial.tables[table.index()].clone();
+                if self.lexical.is_some() && table == TableId::LexicalTokens { frame.metrics.table_ns[table.index()] = partial.metrics.table_ns[table.index()]; }
             }
         }
         self.frames

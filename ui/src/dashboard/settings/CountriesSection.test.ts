@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { mergeViewPreferences } from '../model.ts';
 import type { BoundTrack, CountrySelection, DashboardTemplate, WidgetSpec } from '../model';
@@ -8,8 +10,15 @@ import { countryKey } from '../countryKey.ts';
 import { selectedCountryKeys } from '../countrySelection.ts';
 import { parseTemplate } from '../storage.ts';
 
-const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
-const { CountriesSection, groupKinds } = await vite.ssrLoadModule('/ui/src/dashboard/settings/CountriesSection.tsx').finally(() => vite.close()) as typeof import('./CountriesSection.tsx');
+const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+  plugins: [{ name: 'choose-group', enforce: 'pre', transform(_source, id) {
+    if (id.replaceAll('\\', '/').endsWith('/components/Select.tsx')) return `let change;
+      export const chooseGroup = value => change(value);
+      export const Select = props => { if (props.label === 'Group') change = props.onChange; return null; };`;
+  } }],
+});
+const { CountriesSection, groupKinds } = await vite.ssrLoadModule('/ui/src/dashboard/settings/CountriesSection.tsx') as typeof import('./CountriesSection.tsx');
+const { chooseGroup } = await vite.ssrLoadModule('/ui/src/components/Select.tsx').finally(() => vite.close()) as { chooseGroup: (value: string) => void };
 
 test('faction choices keep their labels without showing backend naming refusals', () => {
   const reply = { factions: [{ id: '42', name: null, nameReason: 'Synthetic native faction refusal', names: [] }] } as unknown as import('../../generated/dashboard').CountryGroupReply;
@@ -23,6 +32,26 @@ test('a faction founded after the hour shown is offered by its own name, never a
   const reply = { factions: [later('7', 'African Union', 500), later('8', "The People's Front", 800)] } as unknown as import('../../generated/dashboard').CountryGroupReply;
   assert.deepEqual(groupKinds(reply, { max: 5000 }, 100).slice(1, 3).map(kind => kind.label), ['African Union', "The People's Front"]);
   assert.equal(groupKinds(reply, { max: 5000 }, 600)[1].label, 'African Union');
+});
+
+test('the country picker hides and clears one total when switching a faction to Top', () => {
+  const runtime = { client: {}, clock: { getHour: () => 0 } } as WidgetRuntime;
+  const limits = { max: 100, ranked: true, aggregate: true };
+  const render = (countries: CountrySelection) => {
+    const widget: WidgetSpec = { id: 'w', kind: 'territory', configVersion: 1, title: 'Territory', campaign: 'default',
+      trackIds: ['main'], countries, time: { mode: 'campaign' } };
+    return renderToStaticMarkup(createElement(CountriesSection, { widget, runtime, limits, reference: undefined, onChange: value => changes.push(value) }));
+  };
+  const changes: CountrySelection[] = [];
+  const faction = { kind: 'group', group: { type: 'faction', id: '42' }, membership: 'ever', aggregate: true } as const;
+  assert.match(render(faction), /Show as one total/);
+  chooseGroup('faction:17');
+  assert.deepEqual(changes.pop(), { ...faction, group: { type: 'faction', id: '17' } });
+  chooseGroup('top');
+  const top = changes.pop()!;
+  assert.ok(top.kind === 'group' && top.group.type === 'top');
+  assert.equal(top.aggregate, false);
+  assert.doesNotMatch(render(top), /Show as one total/);
 });
 
 

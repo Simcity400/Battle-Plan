@@ -1219,7 +1219,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       };
     }
 
-    return compiledFollow.refused ? { kind: 'refused', reason: compiledFollow.refused, technical: compiledFollow.refused } : null;
+    return !plan?.refused && compiledFollow.refused ? { kind: 'refused', reason: compiledFollow.refused, technical: compiledFollow.refused } : null;
   })();
   const outcome = ((): FamilyBodyStatus | null => {
     if (history && spanBody) return spanBody;
@@ -1254,7 +1254,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       if (currentTiled?.topRefused) return { kind: 'not-recorded', reason: currentTiled.topRefused };
       if (tileUnrecorded?.reason) return { kind: 'not-recorded', reason: tileUnrecorded.reason };
     }
-    return following && compiledFollow.unavailable ? { kind: 'refused', reason: compiledFollow.unavailable } : null;
+    const refusal = plan?.refused ?? (following ? compiledFollow.unavailable : null);
+    return refusal ? { kind: 'refused', reason: refusal } : null;
   })();
   const settled = ((): FamilyBodyStatus => {
     if (following) return view.kind === 'outside' ? { kind: 'outside' } : { kind: 'ready' };

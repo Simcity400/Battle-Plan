@@ -5,6 +5,7 @@ use replay_frame::frame::DecodedFrame;
 use replay_data::rows::TableId;
 use replay_lanes::lanes::{Cell, Keys, StatusRun, Step};
 use std::{collections::{BTreeMap, VecDeque}, io, sync::{Arc, Mutex, atomic::AtomicBool}};
+use crate::{Source, products::scoped_text::{Lexical, read_with_lexical}};
 
 const MAX_CACHED_TABLE_DATES: usize = 256;
 
@@ -335,11 +336,17 @@ pub fn reads_through(replay: &Replay, run: u32, reads: &[TableRead], hour: i32, 
 pub struct ScriptedInputs {
     replay: Arc<Replay>,
     dates: Mutex<ReadDates>,
+    lexical: Option<Lexical>,
 }
 
 impl ScriptedInputs {
     pub fn new(replay: Arc<Replay>) -> Self {
-        Self { replay, dates: Mutex::default() }
+        Self { replay, dates: Mutex::default(), lexical: None }
+    }
+
+    pub fn with_lexical(mut self, source: &Source) -> Self {
+        self.lexical = Some(Lexical::for_source(source));
+        self
     }
 
     pub fn evaluate<T>(&self, frame: &DecodedFrame, tables: &[TableId], cancelled: &AtomicBool, evaluate: impl FnOnce(&DecodedFrame) -> T) -> io::Result<(T, i32)> {
@@ -348,11 +355,16 @@ impl ScriptedInputs {
 
     pub fn evaluate_with_reads<T>(&self, frame: &DecodedFrame, tables: &[TableId], cancelled: &AtomicBool, evaluate: impl FnOnce(&DecodedFrame) -> (T, Vec<TableRead>)) -> io::Result<(T, i32)> {
         let Some(block) = self.replay.block_at(frame.branch, frame.hour) else {
+            if let Some(lexical) = &self.lexical { lexical.release(); }
             return Err(io::Error::other("Scripted text hour is not recorded"));
         };
-        let SeekResult::Frame(recorded) = self.replay.seek_selected_with(frame.branch, frame.hour, Some(tables), || check_cancel(cancelled))? else {
-            return Err(io::Error::other("Scripted text hour is not recorded"));
-        };
+        if self.lexical.is_some() { check_cancel(cancelled)?; }
+        let recorded = read_with_lexical(self.lexical.as_ref(), &self.replay, (block.run, frame.hour), tables, |tables| {
+            match self.replay.seek_selected_with(frame.branch, frame.hour, Some(tables), || check_cancel(cancelled))? {
+                SeekResult::Frame(recorded) => Ok(recorded),
+                SeekResult::Gap { .. } => Err(io::Error::other("Scripted text hour is not recorded")),
+            }
+        })?;
         let ((value, mut watched), inputs) = dashboard_text::triggers::inputs::capture(&recorded, || evaluate(&recorded));
         if !READ_DATES.get() {
             check_cancel(cancelled)?;

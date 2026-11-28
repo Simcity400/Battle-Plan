@@ -31,7 +31,8 @@ export const factionStrengthRaceProjection: BarsProjection<FactionTotalsRaceOpti
 
 function factionStrengthRaceSources(ctx: FamilyPlanContext): SourcePlan {
   const source = factionStrengthSource(ctx.options);
-  return factionTotalsSources('faction-strength:race', ctx, source.kind, source.measure);
+  const plan = factionTotalsSources('faction-strength:race', ctx, source.kind, source.measure);
+  return plan.entries.length ? plan : { ...plan, refused: ctx.countries.reason ?? 'No faction strength is available for this selection.' };
 }
 
 export const factionStrengthRaceDeclaration: BarsWidgetDeclaration<FactionTotalsRaceOptions> = {

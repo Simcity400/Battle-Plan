@@ -251,6 +251,13 @@ struct Frames {
 }
 
 impl Frames {
+    fn retained_bytes(&self) -> usize {
+        self.frames.capacity() * size_of::<Vec<u8>>()
+            + self.frames.iter().map(Vec::capacity).sum::<usize>()
+            + self.streams.capacity() * size_of::<(u32, Span)>()
+            + size_of::<Self>() + 2 * size_of::<usize>()
+    }
+
     fn span(&self, id: u32) -> Option<Span> {
         self.streams.binary_search_by_key(&id, |&(held, _)| held).ok().map(|at| self.streams[at].1)
     }
@@ -304,6 +311,12 @@ struct Tracks {
 }
 
 impl Tracks {
+    fn retained_bytes(&self) -> usize {
+        (self.slot.capacity() + self.at.capacity() + self.end.capacity() + self.left.capacity() + self.payload.capacity()) * size_of::<u32>()
+            + (self.next.capacity() + self.born.capacity() + self.gap.capacity() + self.mins.capacity()) * size_of::<u16>()
+            + self.last.capacity() * size_of::<u64>()
+    }
+
     fn len(&self) -> usize {
         self.slot.len()
     }
@@ -348,6 +361,10 @@ struct Opened {
 }
 
 impl Opened {
+    fn retained_bytes(&self) -> usize {
+        self.older.retained_bytes() + self.born.retained_bytes() + self.pool.capacity() * size_of::<(u32, u32)>()
+    }
+
     fn track_count(&self) -> usize {
         self.older.len() + self.born.len()
     }
@@ -497,6 +514,14 @@ pub struct Part {
 }
 
 impl Part {
+    fn retained_bytes(&self) -> usize {
+        self.frames.retained_bytes()
+            + self.columns.capacity() * size_of::<Option<Opened>>()
+            + self.columns.iter().flatten().chain(self.read.iter()).chain(self.touched.iter()).map(Opened::retained_bytes).sum::<usize>()
+            + self.strings.capacity() * size_of::<(u32, Vec<u8>)>()
+            + self.strings.iter().map(|(_, text)| text.capacity()).sum::<usize>()
+    }
+
     pub fn is_log(&self) -> bool {
         self.log
     }
@@ -739,6 +764,19 @@ pub type Gone<'a> = &'a mut dyn FnMut(u16, u32, u128, &TableState);
 type Seeing<'a, 'b> = &'a mut (dyn FnMut(u16, u32, u128, &TableState) + 'b);
 
 impl Cursor {
+    pub fn retained_bytes(&self) -> usize {
+        self.columns.capacity() * size_of::<usize>() + self.list.capacity() + self.passing.capacity()
+            + self.parts.capacity() * size_of::<Part>() + self.parts.iter().map(Part::retained_bytes).sum::<usize>()
+            + self.passed.as_ref().map_or(0, |prefix| prefix.0.retained_bytes())
+            + self.born.capacity() * size_of::<u16>()
+            + (self.born_slots.capacity() + self.slots.capacity() + self.targets.capacity()) * size_of::<u32>()
+            + self.cell.capacity() + self.scratch.capacity()
+            + 2 * self.open.capacity() * (size_of::<(u32, usize)>() + 1)
+            + 2 * self.skipped.capacity() * (size_of::<(u32, u128)>() + 1)
+            + 2 * self.texts.capacity() * (size_of::<(u32, Vec<u8>)>() + 1)
+            + self.texts.values().map(Vec::capacity).sum::<usize>()
+    }
+
     pub fn new(kinds: &[Kind], columns: &[usize], hour: u16) -> Self {
         let kind = |column: usize| kinds.get(column).copied().unwrap_or(Kind::U8);
         Self {

@@ -419,6 +419,11 @@ impl AtHour for FactionDetails {
 }
 
 impl DetailContent {
+    pub(super) fn with_lexical(mut self, source: &Source) -> Self {
+        self.inputs = self.inputs.with_lexical(source);
+        self
+    }
+
     pub(super) fn catalogue(&self) -> Result<&Catalogue, &String> {
         self.catalogue.as_deref()
     }

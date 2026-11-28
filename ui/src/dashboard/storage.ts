@@ -53,7 +53,7 @@ function selection(value: unknown, dropped?: (count: number) => void): CountrySe
   if (value.kind === 'group') {
     const group = countryGroup(value.group);
     return group && (value.membership === 'hour' || value.membership === 'ever') && typeof value.aggregate === 'boolean'
-      ? { kind: 'group', group, membership: value.membership, aggregate: value.aggregate } : null;
+      ? { kind: 'group', group, membership: value.membership, aggregate: group.type !== 'top' && value.aggregate } : null;
   }
   if (value.kind !== 'tags' || !Array.isArray(value.tags)) return null;
   const tags = value.tags.filter(storableTag);

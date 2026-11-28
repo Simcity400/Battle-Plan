@@ -937,6 +937,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
         exclude: None,
         expanded: None,
         full: None,
+        place_names: None,
     };
     let cards_at = |hour: i32| ScriptTailParams { branch_id: "1".into(), hour: Some(hour), from: Some(100), to: None, countries: None, group: None, search: None, row: None, sort: None, offset: None, limit: 64, events: None, statuses: None };
 
@@ -1205,6 +1206,7 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
         exclude: None,
         expanded: None,
         full: None,
+        place_names: None,
     };
     let cards = |hour: i32, statuses: Option<Vec<ScriptStatus>>, countries: Option<Vec<Country>>| ScriptTailParams {
         branch_id: "1".into(),
@@ -1466,6 +1468,7 @@ fn choice_not_recorded_reason_keeps_first_break_before_later_pause() {
                 exclude: None,
                 expanded: None,
                 full: None,
+                place_names: None,
             },
             &context,
             &cancel,
@@ -1546,7 +1549,7 @@ fn activity_bins_and_table_rows_count_the_same_resolved_countries_after_renames_
     for (label, countries, group, expected) in cases {
         let table = EventFeedTail::load(&held, &EventFeedTailParams { branch_id: "1".into(), hour: Some(143), from: Some(100), to: Some(143),
             countries: countries.clone(), group: group.clone(), search: None, row: None, sort: None, offset: None, limit: 64,
-            categories: vec![EventFeedCategory::Politics], exclude: None, expanded: None, full: None }, &context, &cancel).unwrap();
+            categories: vec![EventFeedCategory::Politics], exclude: None, expanded: None, full: None, place_names: None }, &context, &cancel).unwrap();
         let strip = EventFeedActivity::load(&held, &EventFeedActivityParams { branch_id: "1".into(), hour: 143, from: 100, bin_hours: 12,
             categories: vec![EventFeedCategory::Politics], exclude: None, countries, group }, &context, &cancel).unwrap();
         let total: u64 = strip.lines.iter().flat_map(|line| &line.bins).map(|&(_, count)| count).sum();
@@ -1627,6 +1630,7 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
         exclude: None,
         expanded: None,
         full: None,
+        place_names: None,
     };
     let at = |hour: i32| EventFeedTail::load(&replay_source, &ask(hour), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
     let early = at(101);
@@ -1941,6 +1945,7 @@ fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and
         exclude: None,
         expanded: None,
         full: None,
+        place_names: None,
     };
 
     fn event_item<'a>(reply: &'a super::EventFeedTailReply, id: &str) -> &'a super::EventFeedItem {
@@ -2225,15 +2230,15 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
     use super::{EventFeedCategory, EventFeedLine, EventFeedTail, EventFeedTailParams, event_feed_dated_panel};
     use dashboard_base::{
         products::{LoadContext, Product, occurrences::OccurrenceSort},
-        test_fixtures::{CAMPAIGN, records, source},
+        test_fixtures::{CAMPAIGN, records, source, source_with_content, visual_mods::Machine},
     };
     use dashboard_query::log::occurrence::Direction;
     use replay::campaign::Replay;
     use replay_data::{
         event_feed_rows::{
-            EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript, EventPresentation, EventWindows,
+            EventFeedCause, EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript, EventPresentation, EventWindows,
         },
-        rows::{Recorded, TableId, TableRows},
+        rows::{Recorded, StateRow, TableId, TableRows},
     };
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
@@ -2282,6 +2287,11 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
     let frames: Vec<_> = (96..=170)
         .map(|hour| {
             let mut frame = source(1, hour, Some(1));
+            *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow {
+                id: 42,
+                custom_name: if hour < 106 { b"First Reach".to_vec() } else { b"Second Reach".to_vec() },
+                ..Default::default()
+            }]));
             frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
             *frame.tables[TableId::EventFeedHistory.index()] = match hour {
                 103..=104 => TableView::Unavailable { reason: "recording paused".into() },
@@ -2295,6 +2305,11 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
                         100 => vec![ev(5, 100, EventFeedSource::DecisionActivated, ger)],
                         101 => vec![ev(6, 101, EventFeedSource::DecisionActivated, ger)],
                         105 => vec![ev(7, 105, EventFeedSource::ScriptEvent, ger)],
+                        106 => vec![EventFeedEvent {
+                            script: None,
+                            cause: Recorded::Value(EventFeedCause { state: Some(42), ..Default::default() }),
+                            ..ev(8, 99, EventFeedSource::StateTransfer, ger)
+                        }],
                         120 => (0..35u64).map(|i| ev(100 + i, 120, EventFeedSource::DecisionSelected, ger)).collect(),
                         144 => (0..3u64).map(|i| ev(200 + i, 144, EventFeedSource::DecisionSelected, ger)).collect(),
                         145 => vec![ev(203, 145, EventFeedSource::DecisionSelected, missing)],
@@ -2314,6 +2329,7 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
             frame
         })
         .collect();
+    let dated_frames = frames.iter().take_while(|frame| frame.hour <= 106).cloned().collect();
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
         .unwrap()
         .into_timelines(&Default::default())
@@ -2345,6 +2361,7 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
         exclude: None,
         expanded: None,
         full: None,
+        place_names: None,
     };
 
     let at_99 = EventFeedTail::load(&replay_source, &ask(99), &context, &cancel).unwrap();
@@ -2501,6 +2518,28 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
             .reply(|| EventFeedTail::load(&replay_source, &ask(hour), &context, &cancel)).unwrap();
         assert_eq!(*stepped.value, Ok(serde_json::to_value(rebuilt).unwrap()), "stepped vs exact product at step {idx} hour {hour}");
     }
+
+    let places = |hour, place_names| EventFeedTailParams { place_names, categories: vec![EventFeedCategory::WarsPeace], ..ask(hour) };
+    let before = EventFeedTail::load(&replay_source, &places(105, Some(true)), &context, &cancel).unwrap();
+    assert!(before.rows.is_empty(), "the transfer was not observed at hour 105");
+    let unnamed = EventFeedTail::load(&replay_source, &places(106, None), &context, &cancel).unwrap();
+    let EventFeedLine::Event(transfer) = &unnamed.rows[0] else { panic!("expected the transfer") };
+    assert_eq!((transfer.hour, transfer.observed, &transfer.place_missing), (99, 106, &None));
+    let refused = EventFeedTail::load(&replay_source, &places(106, Some(true)), &context, &cancel).unwrap();
+    let EventFeedLine::Event(transfer) = &refused.rows[0] else { panic!("expected the transfer") };
+    assert_eq!(transfer.place_missing.as_deref(), Some("Place names need the recorded content stack and language"));
+    let machine = Machine::new("event_feed_places");
+    machine.write("localisation/fixture_l_english.yml", b"\xef\xbb\xbfl_english:\n fixture_place:0 \"Fixture place\"\n");
+    let (named_source, content) = source_with_content(dated_frames, &machine.root);
+    let named_source = Arc::new(named_source);
+    let named = dashboard_base::products::Finish::new(&named_source, &content, EventFeedTail::CONTENT_DEPENDENT)
+        .reply(|| EventFeedTail::load(&named_source, &places(106, Some(true)), &content, &cancel)).unwrap();
+    let EventFeedLine::Event(transfer) = &named.rows[0] else { panic!("expected the transfer") };
+    assert_eq!(transfer.place_name.as_deref(), Some("First Reach"));
+    let params = serde_json::json!({ "panel": "event-feed-tail", "branchId": "1", "limit": 64, "categories": ["warsPeace"], "placeNames": true });
+    let followed = event_feed_dated_panel(&named_source, &content, &params).unwrap();
+    let stepped = (followed.exact().unwrap().advance)(106, true, &cancel, None);
+    assert_eq!(*stepped.value, Ok(serde_json::to_value(named).unwrap()));
 }
 
 #[test]

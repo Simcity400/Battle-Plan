@@ -48,7 +48,7 @@ pub const FLOATING_HARBOR_VISIBILITY: u8 = 0x96;
 
 pub const BUILDING_TILE: f32 = 128.0;
 
-fn unselected_meshless_states(descriptors: &mesh::Descriptors, name: &str) -> Vec<String> {
+fn unselected_meshless_states(descriptors: mesh::DescriptorView<'_>, name: &str) -> Vec<String> {
     let Some(entity) = descriptors
         .inherit(name)
         .filter(|entity| entity.mesh.is_none())
@@ -1017,28 +1017,30 @@ impl MapBuildingAssets {
                 wanted.push((building.name.clone(), usize::MAX, destroyed));
             }
         }
-        let mut descriptors = roster.descriptors.clone();
+        let mut aliases = BTreeMap::new();
         let mut names: Vec<String> = wanted.iter().map(|(_, _, entity)| entity.clone()).collect();
         if !floating.is_empty() {
             names.push(FLOATING_HARBOR_ENTITY.to_owned());
         }
         for (_, _, entity) in &wanted {
+            let descriptors = roster.descriptors.with_aliases(&aliases);
             if descriptors
                 .inherit(entity)
                 .is_some_and(|value| value.states.contains_key("damaged"))
             {
                 let name = format!("{entity}::damaged");
-                let mut damaged = descriptors.entities[entity].clone();
+                let mut damaged = descriptors.entity(entity).expect("inherited entity").clone();
                 damaged.name = name.clone();
                 damaged.default_state = Some("damaged".into());
-                descriptors.entities.insert(name.clone(), damaged);
+                aliases.insert(name.clone(), damaged);
                 names.push(name);
             }
         }
-        let library = ModelLibrary::load(layers, decode, &descriptors, &names, warnings)?;
+        let descriptors = roster.descriptors.with_aliases(&aliases);
+        let library = ModelLibrary::load(layers, decode, descriptors, &names, warnings)?;
         let unselected: BTreeSet<_> = wanted
             .iter()
-            .flat_map(|(_, _, name)| unselected_meshless_states(&descriptors, name))
+            .flat_map(|(_, _, name)| unselected_meshless_states(descriptors, name))
             .collect();
         warnings.extend(
             unselected

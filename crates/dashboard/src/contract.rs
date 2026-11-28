@@ -1,4 +1,13 @@
 use crate::{answer, products};
+use std::fmt::Write;
+
+fn write_product_keys<'a>(text: &mut String, name: &str, keys: impl IntoIterator<Item = &'a str>) {
+    writeln!(text, "export const {name} = [").unwrap();
+    for key in keys {
+        writeln!(text, "  {key:?},").unwrap();
+    }
+    text.push_str("] as const;\n");
+}
 
 pub fn typescript_contract() -> String {
     use dashboard_core::{QueryError, dto::*, map_display, map_settings, protocol, transport};
@@ -148,36 +157,14 @@ pub fn typescript_contract() -> String {
     text.push_str(&format!(
         "/** Errors that only say there was no room: the request may be tried again. */\nexport const TRANSIENT_ERRORS = [{transient}] as const;\n"
     ));
-    let panels: Vec<_> = crate::panel::READERS.keys().copied().collect();
-    text.push_str(&format!("export const PANEL_KEYS = {} as const;\n", serde_json::to_string(&panels).unwrap()));
+    write_product_keys(&mut text, "PANEL_KEYS", crate::panel::READERS.keys().copied());
     text.push_str("export type PanelKey = typeof PANEL_KEYS[number];\n");
-    let content_products = products::PRODUCTS
-        .iter()
-        .filter(|product| product.content_dependent)
-        .map(|product| format!("{:?}", product.key))
-        .collect::<Vec<_>>()
-        .join(", ");
-    text.push_str(&format!(
-        "/** Products whose replies depend on configured game content. */\nexport const CONTENT_PRODUCTS = [{content_products}] as const;\n"
-    ));
-    let interactive_products = products::PRODUCTS
-        .iter()
-        .filter(|product| product.interactive)
-        .map(|product| format!("{:?}", product.key))
-        .collect::<Vec<_>>()
-        .join(", ");
-    text.push_str(&format!(
-        "/** Products served separately from whole-branch history reads. */\nexport const INTERACTIVE_PRODUCTS = [{interactive_products}] as const;\n"
-    ));
-    let replay_products = products::PRODUCTS
-        .iter()
-        .filter(|product| product.replays)
-        .map(|product| format!("{:?}", product.key))
-        .collect::<Vec<_>>()
-        .join(", ");
-    text.push_str(&format!(
-        "/** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */\nexport const REPLAY_PRODUCTS = [{replay_products}] as const;\n"
-    ));
+    text.push_str("/** Products whose replies depend on configured game content. */\n");
+    write_product_keys(&mut text, "CONTENT_PRODUCTS", products::PRODUCTS.iter().filter(|product| product.content_dependent).map(|product| product.key));
+    text.push_str("/** Products served separately from whole-branch history reads. */\n");
+    write_product_keys(&mut text, "INTERACTIVE_PRODUCTS", products::PRODUCTS.iter().filter(|product| product.interactive).map(|product| product.key));
+    text.push_str("/** Pages that replay recorded tables to their rows' hours: served apart, so no other request waits behind them. */\n");
+    write_product_keys(&mut text, "REPLAY_PRODUCTS", products::PRODUCTS.iter().filter(|product| product.replays).map(|product| product.key));
     text.push_str(&request_hours());
     {
         use map_display::option_defaults as defaults;

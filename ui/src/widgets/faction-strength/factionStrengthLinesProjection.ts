@@ -22,7 +22,8 @@ export const factionStrengthLinesProjection: TimeChartProjection<FactionTotalsLi
 
 function factionStrengthLinesSources(ctx: FamilyPlanContext): SourcePlan {
   const source = factionStrengthSource(ctx.options);
-  return factionTotalsLinesSources('faction-strength:lines', ctx, source.kind, source.measure);
+  const plan = factionTotalsLinesSources('faction-strength:lines', ctx, source.kind, source.measure);
+  return plan.entries.length ? plan : { ...plan, refused: ctx.countries.reason ?? 'No faction strength is available for this selection.' };
 }
 
 export const factionStrengthLinesDeclaration: TimeChartWidgetDeclaration<FactionTotalsLinesOptions> = {

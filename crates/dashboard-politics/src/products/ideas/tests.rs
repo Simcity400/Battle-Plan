@@ -27,6 +27,7 @@ fn cached_idea_looks_keep_overlay_notes() {
         looks: std::sync::Mutex::new((std::sync::Weak::new(), Vec::new())),
         dates: std::sync::Arc::default(),
         variables: Arc::new(super::KeyedVariables::new(source.replay())),
+        lexical: super::Lexical::for_source(&source),
         presentation: Default::default(),
     };
     let reply = || {

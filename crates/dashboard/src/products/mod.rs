@@ -83,23 +83,19 @@ mod tests {
 
     #[test]
     fn browser_interactive_products_match_service_admission() {
+        use crate::contract_tests::product_keys;
+
         let contract = crate::typescript_contract();
-        let declaration = contract
-            .lines()
-            .find(|line| line.starts_with("export const INTERACTIVE_PRODUCTS"))
-            .expect("browser admission needs the service's product lanes");
-        let replays = contract
-            .lines()
-            .find(|line| line.starts_with("export const REPLAY_PRODUCTS"))
-            .expect("browser admission needs the service's replaying pages");
+        let interactive = product_keys(&contract, "INTERACTIVE_PRODUCTS");
+        let replays = product_keys(&contract, "REPLAY_PRODUCTS");
         for product in PRODUCTS.iter() {
             assert_eq!(
-                declaration.contains(&format!("{:?}", product.key)),
+                interactive.contains(&product.key),
                 product.interactive,
                 "{} admission differs between browser and service",
                 product.key
             );
-            assert_eq!(replays.contains(&format!("{:?}", product.key)), product.replays, "{} replays differently in browser and service", product.key);
+            assert_eq!(replays.contains(&product.key), product.replays, "{} replays differently in browser and service", product.key);
         }
     }
 
