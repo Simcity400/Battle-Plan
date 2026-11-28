@@ -1171,13 +1171,25 @@ struct HeldRegions {
 const HELD_REGIONS: usize = 16;
 
 fn region_history(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, from: i32, reach: i32, cancelled: &AtomicBool, step: Option<&mut at_hour::DatedStep<'_>>) -> io::Result<RegionHistory> {
-    let key = format!("{}|{:?}|{from}", params.branch_id, params.country);
+    let history_key = |start| format!("{}|{:?}|{start}", params.branch_id, params.country);
+    let key = history_key(from);
     let state = source.state::<HeldRegions>();
-    let held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).histories.get(&key).filter(|held| held.reach <= reach).cloned();
+    let (held, next) = {
+        let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let held = state.histories.get(&key).filter(|held| held.reach <= reach);
+        let next = held.filter(|held| held.reach < reach)
+            .and_then(|held| state.histories.get(&history_key(held.reach + 1)))
+            .filter(|day| day.reach == reach);
+        (held.cloned(), next.cloned())
+    };
     let history = match held {
         Some(held) if held.reach == reach => held,
         Some(mut held) => {
-            held.join(RegionHistory::read(source, query, params, held.reach + 1, reach, cancelled, step)?);
+            let next = match next {
+                Some(day) => day,
+                None => RegionHistory::read(source, query, params, held.reach + 1, reach, cancelled, step)?,
+            };
+            held.join(next);
             held
         }
         None => RegionHistory::read(source, query, params, from, reach, cancelled, step)?,
