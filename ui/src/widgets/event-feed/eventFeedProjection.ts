@@ -4,7 +4,7 @@ import { resolveWindow } from '../../dashboard/model.ts';
 import { contentSet } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { identityFlags, identityName, newIdentityBoundary } from '../../families/table/identityCell.ts';
+import { identityFlags, newIdentityBoundary, resolveName } from '../../families/table/identityCell.ts';
 import {
   LOG_TABLE_BASE,
   logCountryCell,
@@ -19,8 +19,8 @@ import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow 
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, validateRowTailReply, type DatedLogRow, type TailReply } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
-import { formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
+import { knownValue, notApplicable, notRecorded, partialValue, type Value } from '../../families/value.ts';
+import { formatRecordedPercent, formatScalar, spokenValue } from '../../families/valueFormat.ts';
 import { EVENT_FEED_ROW_LABELS, type EventFeedFoldRow, type EventFeedItem, type EventFeedLine, type EventFeedMoreRow, type EventFeedPageRow, type EventFeedRow, type ScriptEdge, type ScriptStatus } from '../../generated/dashboard.ts';
 import { choiceNotRecordedText, optionLetter } from '../event-choices/eventChoicesData.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
@@ -37,6 +37,10 @@ export interface EventFeedProjectionOptions {
   readonly artwork: boolean;
   readonly hover?: TooltipTexts;
   readonly expanded?: readonly string[];
+}
+
+export interface FeedDetailSubject extends EventDetailSubject {
+  readonly countryNameHour: number;
 }
 
 const HEAD_LIMIT = 256;
@@ -118,17 +122,15 @@ function eventItemAndSubtext(
   event: EventFeedRow,
   page: FeedPageInfo,
   readView: BoundedReadView,
-): { readonly primary: string | null; readonly secondary?: string; readonly detail?: TableCell; readonly missingReason?: string } {
+): { readonly primary: string | null; readonly secondary?: string; readonly place?: Value<string>; readonly detail?: TableCell; readonly missingReason?: string } {
   const item = effectiveEventItem(event, page.choice);
   const reasons = reasonsOf(item);
   const named = nonBlank(item?.name);
   const label = EVENT_FEED_ROW_LABELS[event.kind] ?? null;
   const chosenOrdinal = parsedOptionOrdinal(event, page.choice);
-  const stateLabel = (stateId: number | null | undefined): string | undefined => {
-    if (stateId == null) return undefined;
-    const res = readView.who('state', String(stateId), event.hour);
-    return res.name.status === 'ready' ? res.name.value : `State ${stateId}`;
-  };
+  const stateName = (stateId: number | null | undefined): Value<string> => stateId == null
+    ? notRecorded('Target state was not recorded')
+    : resolveName(readView, 'state', String(stateId), { atHour: event.hour }).value;
 
   switch (event.kind) {
     case 'scriptEventFired':
@@ -199,7 +201,7 @@ function eventItemAndSubtext(
     case 'guaranteeGranted':
       return { primary: label };
     case 'stateTransferred':
-      return { primary: label, secondary: stateLabel(event.cause?.state) };
+      return { primary: label, place: stateName(event.cause?.state) };
     case 'factionJoined':
     case 'factionLeft':
       return {
@@ -217,7 +219,6 @@ function eventItemAndSubtext(
     case 'nukesIncreased':
       return { primary: label, secondary: event.amount ? `+${event.amount}` : undefined };
     case 'nuclearStrike': {
-      const targetState = stateLabel(event.strike?.state);
       const losses: string[] = [];
       if (event.strike?.manpowerLost != null) losses.push(`${formatScalar(event.strike.manpowerLost, 'integer')} casualties`);
       if (event.strike?.buildingLevels != null) losses.push(`${formatScalar(event.strike.buildingLevels, 'decimal1')} building levels`);
@@ -231,7 +232,7 @@ function eventItemAndSubtext(
           : undefined;
       return {
         primary: label,
-        secondary: targetState,
+        place: stateName(event.strike?.state),
         detail: detailCell,
       };
     }
@@ -250,7 +251,7 @@ function buildFeedTableRow(
   parent?: string,
 ): TableRow {
   const item = effectiveEventItem(event, page.choice);
-  const { primary, secondary, detail, missingReason } = eventItemAndSubtext(event, page, readView);
+  const { primary, secondary, place, detail, missingReason } = eventItemAndSubtext(event, page, readView);
   const reasons = reasonsOf(item);
   const spriteKey = !item?.icon ? KIND_SPRITES[event.kind] : undefined;
   const artHandle = artwork
@@ -285,13 +286,15 @@ function buildFeedTableRow(
   const viewable = VIEWABLE_KINDS.has(event.kind);
   const chosenOrdinal = parsedOptionOrdinal(event, page.choice);
   const chosenHour = page.choice?.row.hour ?? (event.kind === 'eventOptionSelected' ? event.readHour : null);
-  let detailSubject: EventDetailSubject | undefined;
+  let detailSubject: FeedDetailSubject | undefined;
   if (viewable) {
     const recipient = event.kind === 'eventOptionSelected'
       ? (event.participants ? event.participants[0] : (event.tags[0] ?? null))
       : (event.participants ? event.participants[1] : (event.tags[0] ?? null));
     const flag = recipient ? identityFlags(readView, 'country', [recipient], { atHour: event.nameHour, boundary })[0] : undefined;
-    const countryName = recipient ? identityName(readView, 'country', recipient, event.nameHour) : null;
+    const countryName = recipient
+      ? spokenValue(resolveName(readView, 'country', recipient, { atHour: event.nameHour, boundary }).value)
+      : null;
     const awaiting = !page.choice && (page.status === 'awaiting' || page.live);
     const noChoiceReason = chosenOrdinal !== null
       ? null
@@ -310,6 +313,7 @@ function buildFeedTableRow(
       title: item?.name ?? null,
       countryTag: recipient,
       countryName,
+      countryNameHour: event.nameHour,
       flagUrl: flag?.art.status === 'ready' ? flag.art.url : undefined,
       flagPending: flag?.art.status === 'pending',
       item,
@@ -322,11 +326,16 @@ function buildFeedTableRow(
 
   const titleGaps = gapsForField(item?.gaps, 'title');
   const titleLabel = primary !== null ? plainScripted(primary, titleGaps) : (missingReason ?? 'Not recorded');
+  const itemValue = primary === null ? notRecorded(missingReason ?? 'Not recorded')
+    : !place ? scriptedValue(primary, titleGaps)
+      : place.kind === 'known' ? knownValue(`${primary} · ${place.value}`)
+        : partialValue(primary, spokenValue(place));
   const tooltipExtra = (): TooltipExtraRow[] => {
     const out: TooltipExtraRow[] = [
       { label: event.exact ? 'Time' : 'Observed at', value: knownValue(formatDateTime(event.hour)) },
     ];
-    if (secondary) out.push({ label: 'Detail', value: knownValue(plainScripted(secondary)) });
+    if (place) out.push({ label: 'Detail', value: place });
+    else if (secondary) out.push({ label: 'Detail', value: knownValue(plainScripted(secondary)) });
     if (event.cause?.how) out.push({ label: 'Cause', value: knownValue(event.cause.how) });
     if (event.strike) {
       if (event.strike.manpowerLost != null) out.push({ label: 'Casualties', value: knownValue(event.strike.manpowerLost), format: 'integer' });
@@ -371,9 +380,7 @@ function buildFeedTableRow(
           }
         : { value: notApplicable('Game artwork hidden'), blank: true },
       country: logCountryCell(readView, countryEntries, event.nameHour, boundary),
-      item: primary !== null
-        ? { value: scriptedValue(primary, titleGaps), ...(secondary ? { inlineSubtext: secondary } : {}) }
-        : { value: notRecorded(missingReason ?? 'Not recorded') },
+      item: { value: itemValue, ...(secondary ? { inlineSubtext: secondary } : {}) },
       detail: detail ?? { value: notApplicable('No extra detail'), blank: true },
       action: viewable ? { value: knownValue('View'), actionLabel: 'View' } : { value: notApplicable('No event window for this entry'), blank: true },
     },

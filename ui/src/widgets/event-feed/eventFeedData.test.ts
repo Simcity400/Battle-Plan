@@ -10,7 +10,7 @@ import { deriveRowTooltip, deriveTableAudit, deriveTableMirror, resolveTableRows
 import { LOG_TABLE_BASE } from '../../families/table/logHelpers.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import { feedKindItems, validateFeedRow, validateKinds } from './eventFeedData.ts';
-import { eventFeedDeclaration, eventFeedProjection } from './eventFeedProjection.ts';
+import { eventFeedDeclaration, eventFeedProjection, type FeedDetailSubject } from './eventFeedProjection.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import type { EventFeedRow } from '../../generated/dashboard';
 
@@ -41,6 +41,54 @@ test('kind availability requires either a first observation or a named absence',
 const row = (kind: EventFeedRow['kind'], hour: number, tags: string[], more: Partial<EventFeedRow> = {}): EventFeedRow => ({
   id: `native:1:${serial++}`, hour, readHour: hour, nameHour: hour, exact: true, category: 'warsPeace', kind, tags,
   participants: [tags[0] ?? null, tags[1] ?? null], item: null, amount: null, ...more });
+
+test('event feed preserves the dated state and recipient names and their read status', () => {
+  const transfer = row('stateTransferred', 101, [], { cause: { state: 42, notes: [] } });
+  const strike = row('nuclearStrike', 102, [], { strike: { province: 201, state: 42, manpowerLost: null,
+    buildingLevels: null, warSupport: null, units: null, equipmentLost: null, notRecorded: [] } });
+  const firing = row('scriptEventFired', 103, ['AAA', 'BBB'], {
+    nameHour: 102,
+    item: { token: 'synthetic.1', name: 'Dispatch', icon: null, description: null },
+  });
+  const events = [firing, strike, transfer];
+  const head = { branchId: '1', offset: '0', total: '3', live: '0', counts: [],
+    rows: events.map(event => ({ line: 'event', hour: event.hour, observed: event.hour, key: event.id,
+      row: event, choice: null, live: false })),
+    missing: [], nextChange: null, unavailable: [], warnings: [] };
+  const source = buildRowSourceFromHead('state-details', head, undefined, 110, undefined, eventFeedProjection.validateTail)!;
+  for (const status of ['pending', 'absent', 'ready'] as const) {
+    const identity = datedIdentity({});
+    const view = createBoundedReadView({ hour: 110, rows: new Map([['main', source]]), identity: {
+      resolve(kind, key, atHour) {
+        const base = identity.resolve(kind, key, atHour);
+        if (kind === 'country') return { ...base, name: { status: 'absent', reason: 'Recipient name missing in the recording' } };
+        if (kind !== 'state') return base;
+        assert.equal(key, '42');
+        assert.ok(atHour === 101 || atHour === 102);
+        const name = status === 'ready' ? { status, value: atHour === 101 ? 'Old Province' : 'New Province' } as const
+          : status === 'absent' ? { status, reason: 'State name missing in the recording' } as const
+            : { status } as const;
+        return { ...base, name };
+      },
+    } });
+    const model = eventFeedProjection.project(view, { categories: ['warsPeace'], artwork: false });
+    const subject = model.rows.find(entry => entry.key === firing.id)!.meta as FeedDetailSubject;
+    assert.match(subject.countryName ?? '', /Recipient name missing in the recording/);
+    assert.equal(subject.countryNameHour, 102);
+    const flat = resolveTableRows(model, tableSettingsOf(undefined, model.columns, LOG_TABLE_BASE));
+    const mirror = deriveTableMirror(flat, model.columns, false);
+    for (const [event, place] of [[transfer, 'Old Province'], [strike, 'New Province']] as const) {
+      const actual = flat.find(entry => entry.key === event.id)!;
+      assert.ok(actual.kind === 'data');
+      const detail = deriveRowTooltip(actual, model.columns).rows.find(entry => entry.label === 'Detail')!.rawValue;
+      if (status === 'pending') assert.equal(detail?.kind, 'pending');
+      if (status === 'absent') assert.deepEqual(detail, { kind: 'notRecorded', reason: 'State name missing in the recording' });
+      if (status === 'ready') assert.deepEqual(detail, { kind: 'known', value: place });
+      const spoken = mirror.rows.find(entry => entry.key === event.id)!.cells.find(cell => cell.column === 'item')!.spoken;
+      assert.match(spoken, status === 'ready' ? new RegExp(place) : status === 'absent' ? /State name missing/ : /Loading/i);
+    }
+  }
+});
 
 test('R3-S5: event feed tooltip quantities retain their recorded numbers behind rounded detail', () => {
   const event = row('nuclearStrike', 7, ['A01', 'A02'], {

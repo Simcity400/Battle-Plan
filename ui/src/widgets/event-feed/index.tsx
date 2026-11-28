@@ -3,17 +3,19 @@ import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/defini
 import { resolveWindow } from '../../dashboard/model.ts';
 import { useProduct } from '../../dashboard/products.ts';
 import { failureText } from '../../dashboard/queryError.ts';
+import { useCountryNameAt } from '../../dashboard/reachedProduct.ts';
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import { useExpandedGroups } from '../../families/table/ExpandableLogView.tsx';
 import LogKindFilter, { type LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
 import { PickerContext } from '../../families/table/picker.ts';
-import EventDetailWindow, { type EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
+import EventDetailWindow from '../event-choices/EventDetailWindow.tsx';
 import { readableRow, useEventDetail, useTooltipText } from '../event-choices/eventDetail.ts';
 import { withHoverText } from './hoverText.ts';
 import { CATEGORIES } from './definition.ts';
 import EventFeedActivityStrip from './EventFeedActivityStrip.tsx';
 import { feedKindItems, kindsRequest, validateKinds } from './eventFeedData.ts';
+import type { FeedDetailSubject } from './eventFeedProjection.ts';
 
 const isEventRow = (key: string): boolean => readableRow(key) && !key.startsWith('group:') && !key.startsWith('all:') && !key.startsWith('loading:');
 
@@ -22,7 +24,7 @@ function EventFeedView(props: FamilyViewProps) {
   const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
   const scope = track ? `${track.source.id}:${track.source.revision}:${track.branch.id}` : '';
   const groups = useExpandedGroups(scope);
-  const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: EventDetailSubject } | null>(null);
+  const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: FeedDetailSubject } | null>(null);
   const kinds = useProduct(props.runtime.client, track ? kindsRequest(track) : null, props.active, validateKinds, track?.source);
   const [frozenState, setFrozenState] = useState<{ readonly scope: string; readonly hour: number | null }>({ scope: '', hour: null });
   const [installedState, setInstalledState] = useState<{ readonly scope: string; readonly hour: number | null }>({ scope: '', hour: null });
@@ -33,6 +35,11 @@ function EventFeedView(props: FamilyViewProps) {
     setInstalledState(prev => (prev.scope === scope && prev.hour === hour ? prev : { scope, hour }));
   }, [scope]);
   const shown = opened && opened.scope === scope ? opened.subject : null;
+  const recipient = useCountryNameAt(props.runtime.client, track, shown?.countryTag ?? null, shown?.countryNameHour ?? null, shown !== null);
+  const named = shown?.countryTag && recipient.known !== undefined ? {
+    ...shown,
+    countryName: recipient.nameDetail ? `${recipient.name}. ${recipient.nameDetail}` : recipient.name,
+  } : shown;
   const detail = useEventDetail(props.runtime, props.widget.trackIds[0], 'event-feed-tail', shown, shown !== null);
   const hover = useTooltipText(props.runtime, props.widget.trackIds[0], 'event-feed-tail', props.widget.time.mode === 'follow', props.active, isEventRow);
 
@@ -87,7 +94,7 @@ function EventFeedView(props: FamilyViewProps) {
       groups.toggle(action);
       return;
     }
-    const meta = action.meta as EventDetailSubject | null | undefined;
+    const meta = action.meta as FeedDetailSubject | null | undefined;
     if (!meta || typeof meta !== 'object' || typeof meta.key !== 'string') return;
     setOpened({ scope, subject: { ...meta, key: action.subject || meta.key, asOfHour: meta.asOfHour ?? action.hour } });
   }, [scope, groups.toggle]);
@@ -142,7 +149,7 @@ function EventFeedView(props: FamilyViewProps) {
           refusal={status.kind === 'refused' ? status.reason : null}
         /> : undefined}
       /> : null}
-      <EventDetailWindow subject={shown} detail={detail} anchor={anchor} onClose={() => setOpened(null)} />
+      <EventDetailWindow subject={named} detail={detail} anchor={anchor} onClose={() => setOpened(null)} />
     </div>
   );
 }
