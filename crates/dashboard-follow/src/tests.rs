@@ -3204,7 +3204,7 @@ mod paused_reset {
             let push = Arc::new(Push::with_budget(budget.clone()));
             let producer = push.clone();
             let hook: playhead::Hook = Box::new(move |step, _| {
-                if !step.reset() && step.first() <= step.last() {
+                if !step.reset() && step.last() == head + 1 {
                     producer.offer(routed(route, step.last(), 1, 2048));
                 }
             });
@@ -3228,7 +3228,9 @@ mod paused_reset {
             match release {
                 "play" => {
                     playhead.play(60.0);
+                    playhead.wait_for(|| !playhead.lead_held().capped).unwrap();
                     playhead.wait_newest(head + 2).unwrap();
+                    assert_eq!(push.in_flight(), crate::answer::charge(&first) + crate::answer::charge(&current));
                 }
                 "credit" => {
                     push.credit(push.session(), u64::MAX);
