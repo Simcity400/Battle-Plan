@@ -460,12 +460,10 @@ impl Refusals {
     }
 }
 
-fn declared_planes<'a>(roster: &'a mesh::Roster, keys: &BTreeSet<&str>) -> BTreeSet<&'a String> {
+fn declared_planes<'a>(roster: &'a mesh::Roster, keys: &BTreeSet<&str>) -> BTreeSet<&'a str> {
     roster
-        .descriptors
-        .entities
-        .keys()
-        .chain(roster.unreadable_names.keys())
+        .entity_names()
+        .chain(roster.unreadable_names.keys().map(String::as_str))
         .filter(|entity| {
             entity.strip_suffix("_entity").is_some_and(|stem| {
                 keys.contains(stem)
@@ -477,21 +475,23 @@ fn declared_planes<'a>(roster: &'a mesh::Roster, keys: &BTreeSet<&str>) -> BTree
         .collect()
 }
 
-fn plane_library<'a>(
+fn plane_library(
     layers: &ResolvedLayers,
     decode: Decode,
     roster: &mesh::Roster,
-    declared: impl IntoIterator<Item = &'a String>,
+    declared: impl IntoIterator<Item = impl AsRef<str>>,
     warnings: &mut Vec<content_reader_parser::Diagnostic>,
 ) -> io::Result<(ModelLibrary, BTreeMap<String, String>)> {
     let mut unusable = BTreeMap::new();
     let mut names = Vec::new();
+    let job = roster.descriptor_job();
     for entity in declared {
-        match roster.refused_declaration(entity) {
+        let entity = entity.as_ref();
+        match job.refused_declaration(entity) {
             Some(reason) => {
-                unusable.insert(entity.clone(), reason);
+                unusable.insert(entity.to_owned(), reason);
             }
-            None => names.push(entity.clone()),
+            None => names.push(entity.to_owned()),
         }
     }
     if !unusable.is_empty() {
@@ -507,18 +507,18 @@ fn plane_library<'a>(
     let mut library = ModelLibrary::load_with(
         layers,
         decode,
-        &roster.descriptors,
+        job.view(),
         &names,
         warnings,
-        mesh::Roster::refused_declaration,
+        |job, name| job.refused_declaration(name),
     )?;
     let recorded = layers.recorded_descriptor_roster()?;
+    let recorded_job = recorded.as_deref().map(mesh::Roster::descriptor_job);
     let from_recording: Vec<String> = unusable
         .keys()
         .filter(|entity| {
-            recorded.as_ref().is_some_and(|recorded| {
-                recorded.descriptors.entities.contains_key(*entity)
-                    && recorded.refused_declaration(entity).is_none()
+            recorded_job.as_ref().is_some_and(|job| {
+                job.view().has_entity(entity) && job.refused_declaration(entity).is_none()
             })
         })
         .cloned()
@@ -569,10 +569,11 @@ fn resolve_entity(
 }
 
 fn scenario<'a>(
-    descriptors: &'a mesh::Descriptors,
+    descriptors: impl Into<mesh::DescriptorView<'a>>,
     entity: &str,
     state: &str,
 ) -> Result<(&'a mesh::MeshDefinition, &'a mesh::AnimationDefinition, f32), String> {
+    let descriptors = descriptors.into();
     let inherited = descriptors
         .inherit(entity)
         .ok_or("the content declares no such entity")?;
@@ -603,12 +604,13 @@ fn scenario<'a>(
     Ok((definition, animation, state.speed))
 }
 
-fn scenario_source(
+fn scenario_source<'a>(
     layers: &ResolvedLayers,
-    descriptors: &mesh::Descriptors,
+    descriptors: impl Into<mesh::DescriptorView<'a>>,
     entity: &str,
     definition: &mesh::MeshDefinition,
 ) -> Result<viewer_models::mesh_pose::Source, String> {
+    let descriptors = descriptors.into();
     let unreadable =
         |error: io::Error| format!("its mesh file {} does not read: {error}", definition.file);
     let tree = mesh::parse_in(layers, &definition.file).map_err(unreadable)?;
@@ -618,7 +620,7 @@ fn scenario_source(
         binary_locators: viewer_models::mesh_pose::binary_locators(&tree, &skeleton, definition.scale)
             .map_err(unreadable)?,
         entity_locators: viewer_models::mesh_pose::entity_locators(
-            &descriptors.entities[entity].locators,
+            &descriptors.entity(entity).expect("resolved scenario entity").locators,
             &skeleton,
             Some(&definition.name),
         ),
@@ -633,11 +635,15 @@ fn scenario_source(
     })
 }
 
-fn scenario_refusal(roster: &mesh::Roster, entity: &str, state: &str) -> Option<String> {
+fn scenario_refusal(
+    roster: &mesh::Roster,
+    descriptors: mesh::DescriptorView<'_>,
+    entity: &str,
+    state: &str,
+) -> Option<String> {
     if let Some(flaw) = roster.unreadable(entity) {
         return Some(format!("it {flaw}"));
     }
-    let descriptors = &roster.descriptors;
     let inherited = descriptors.inherit(entity)?;
     let mesh = inherited.mesh?;
     if let Some(flaw) = roster.unreadable(mesh) {
@@ -666,9 +672,13 @@ fn state_name(outcome: u8) -> &'static str {
     }
 }
 
-fn scenario_state<'a>(descriptors: &'a mesh::Descriptors, entity: &str, outcome: u8) -> &'a str {
+fn scenario_state<'a>(
+    descriptors: impl Into<mesh::DescriptorView<'a>>,
+    entity: &str,
+    outcome: u8,
+) -> &'a str {
     let name = state_name(outcome);
-    match descriptors.inherit(entity) {
+    match descriptors.into().inherit(entity) {
         Some(inherited) if outcome == 0 && !inherited.states.contains_key(name) => {
             inherited.default_state.unwrap_or(mesh::DEFAULT_STATE)
         }
@@ -892,7 +902,7 @@ fn scenario_tracks(
 
 fn scenario_flown(
     layers: &ResolvedLayers,
-    roster: &mesh::Roster,
+    (roster, descriptors): (&mesh::Roster, mesh::DescriptorView<'_>),
     entity: &str,
     (kind, outcome): (u8, u8),
     bones: &[(u8, String)],
@@ -905,9 +915,8 @@ fn scenario_flown(
             format!("Aircraft scenario {entity} is refused and not flown: {reason}"),
         ));
     };
-    let descriptors = &roster.descriptors;
     let state = scenario_state(descriptors, entity, outcome);
-    if let Some(reason) = scenario_refusal(roster, entity, state) {
+    if let Some(reason) = scenario_refusal(roster, descriptors, entity, state) {
         refuse(reason);
         return None;
     }
@@ -1159,7 +1168,9 @@ impl AircraftAssets {
         let band = layers.graphics_define("aircraft bands", graphics, defines, Band::load);
         let below = layers.without_overlays();
         let below_roster = layers.recorded_descriptor_roster()?;
-        let recorded = below.as_ref().zip(below_roster.as_deref());
+        let job = roster.descriptor_job();
+        let recorded_job = below_roster.as_deref().map(mesh::Roster::descriptor_job);
+        let recorded = below.as_ref().zip(below_roster.as_deref()).zip(recorded_job.as_ref());
         for (key, bones, outcome, kind) in scenarios {
             let entity = format!("{key}_entity");
             let flown = shown_or_recorded(
@@ -1167,13 +1178,13 @@ impl AircraftAssets {
                 &entity,
                 recorded.is_some(),
                 |from_recording, notes| {
-                    let (stack, roster) = match recorded {
-                        Some(recorded) if from_recording => recorded,
-                        _ => (layers, &*roster),
+                    let (stack, roster, job) = match recorded {
+                        Some(((stack, roster), job)) if from_recording => (stack, roster, job),
+                        _ => (layers, &*roster, &job),
                     };
                     scenario_flown(
                         stack,
-                        roster,
+                        (roster, job.view()),
                         &entity,
                         (kind, outcome),
                         &bones,
@@ -1287,7 +1298,7 @@ impl AircraftAssets {
         let baked = (|| {
             #[cfg(test)]
             self.resolve_hooks.bake(entity, tests::ResolvePoint::Bake)?;
-            let baked = plane_library(&self.layers, decode, &self.roster, [&name], &mut warnings)?;
+            let baked = plane_library(&self.layers, decode, &self.roster, [name.as_str()], &mut warnings)?;
             #[cfg(test)]
             self.resolve_hooks
                 .bake(entity, tests::ResolvePoint::Baked)?;
@@ -1994,7 +2005,7 @@ impl LaunchRecords {
             }
         };
         let roster = &sources.assets.roster;
-        if !roster.descriptors.entities.contains_key(&entity)
+        if !roster.has_entity(&entity)
             && !roster.unreadable_names.contains_key(&entity)
         {
             *self
