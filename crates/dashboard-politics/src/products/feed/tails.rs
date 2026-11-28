@@ -1132,7 +1132,20 @@ impl Product for EventFeedActivity {
         if params.from > hour || params.bin_hours < 1 {
             return Err(invalid("Invalid activity span"));
         }
-        let prepared = prepare(source, &query, branch, context, None, (params.countries.as_deref(), params.group.as_ref(), None), cancelled)?;
+        let prepared = Self::prepare(source, &query, context, params, cancelled)?;
+        Self::read(&prepared, &query, params, params.from, hour, cancelled)
+    }
+}
+
+impl EventFeedActivity {
+    fn prepare(source: &Source, query: &Query<'_>, context: &LoadContext, params: &EventFeedActivityParams, cancelled: &AtomicBool) -> io::Result<Prepared> {
+        prepare(source, query, query.timeline.id, context, None, (params.countries.as_deref(), params.group.as_ref(), None), cancelled)
+    }
+
+    fn read(prepared: &Prepared, query: &Query<'_>, params: &EventFeedActivityParams, from: i32, hour: i32, cancelled: &AtomicBool) -> io::Result<EventFeedActivityReply> {
+        if from > hour || params.bin_hours < 1 {
+            return Err(invalid("Invalid activity span"));
+        }
         let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
         let whole = Ask {
             hour,
@@ -1151,14 +1164,14 @@ impl Product for EventFeedActivity {
             chips: &[],
         };
         let mut lines = Vec::with_capacity(params.categories.len());
-        let mut missing = feed.index.coverage(&query.holders, &whole, params.from, hour);
+        let mut missing = feed.index.coverage(&query.holders, &whole, from, hour);
         let base_missing = missing.len();
         for &category in &params.categories {
             dashboard_text::metadata::check_cancel(cancelled)?;
             let kinds = feed_kinds(&[category], params.exclude.as_deref())?;
             let line_ask = Ask { kinds: Some(&kinds), ..whole };
-            let (before, bins) = feed.index.bins(&query.holders, &line_ask, params.from, hour, params.bin_hours)?;
-            let latest_retirement = feed.index.latest_retirement(&query.holders, &line_ask, params.from);
+            let (before, bins) = feed.index.bins(&query.holders, &line_ask, from, hour, params.bin_hours)?;
+            let latest_retirement = feed.index.latest_retirement(&query.holders, &line_ask, from);
             lines.push(EventFeedActivityLine { category, before: before.to_string(), bins, latest_retirement });
             let active_key = |key: &str| match key {
                 "peace" => kinds.contains(&index::kind_code(EventFeedKind::Peace)),
@@ -1169,13 +1182,13 @@ impl Product for EventFeedActivity {
             for family in feed.unrecorded.iter().filter(|f| f.category == category && active_key(f.kind)) {
                 let reason = format!("{} {}.", family.label, family.why);
                 for &(first, last) in &family.spans {
-                    let (a, b) = (first.max(params.from), last.min(hour));
+                    let (a, b) = (first.max(from), last.min(hour));
                     if a <= b { missing.push(dashboard_query::series::MissingSpan { first_hour: a, last_hour: b, reason: reason.clone() }); }
                 }
             }
             for (_, _, _, reason, _, span) in feed.notices.iter().filter(|(cats, key, ..)| cats.contains(&category) && active_key(key)) {
-                let (first, last) = span.unwrap_or((params.from, hour));
-                let (a, b) = (first.max(params.from), last.min(hour));
+                let (first, last) = span.unwrap_or((from, hour));
+                let (a, b) = (first.max(from), last.min(hour));
                 if a <= b { missing.push(dashboard_query::series::MissingSpan { first_hour: a, last_hour: b, reason: reason.clone() }); }
             }
         }
@@ -1192,13 +1205,46 @@ impl Product for EventFeedActivity {
         }
         Ok(EventFeedActivityReply {
             branch_id: params.branch_id.clone(),
-            first_hour: (i64::from(params.from).div_euclid(params.bin_hours) * params.bin_hours) as i32,
+            first_hour: (i64::from(from).div_euclid(params.bin_hours) * params.bin_hours) as i32,
             bin_hours: params.bin_hours,
             lines,
             missing,
             warnings: Vec::new(),
         })
     }
+}
+
+pub fn event_feed_activity_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
+    let mut request = asked.clone();
+    let fields = request.as_object_mut().ok_or("Invalid event activity panel")?;
+    if fields.insert("from".into(), 0.into()).is_some() {
+        return Err("Followed event activity uses the rolling window".into());
+    }
+    fields.entry("hour").or_insert(0.into());
+    let params: EventFeedActivityParams = parse(EventFeedActivity::KEY, &request)?;
+    let branch = branch_id(&params.branch_id).map_err(|error| error.to_string())?;
+    let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
+    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, EventFeedActivity::CONTENT_DEPENDENT, || {
+        EventFeedActivity::prepare(source, &query, load, &params, &AtomicBool::new(false))
+    });
+    let held = Mutex::new((finish, prepared.map_err(|error| error.to_string())?));
+    let owned = Owned::of(&query, source.replay());
+    let (shared, load) = (Arc::clone(source), LoadContext { content: load.content.clone() });
+    Ok(dashboard_base::products::at_hour::interval_panel(source.tables(), move |hour, cancelled| {
+        let query = owned.query();
+        let hour = occurrences::cutoff(&query, Some(hour))?;
+        let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.1.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
+            let (finish, prepared) = dashboard_base::products::Finish::open(&shared, &load, EventFeedActivity::CONTENT_DEPENDENT, || {
+                EventFeedActivity::prepare(&shared, &query, &load, &params, cancelled)
+            });
+            *held = (finish, prepared?);
+        }
+        let from = hour.saturating_sub(60 * 24).div_euclid(24).saturating_mul(24).max(query.timeline.first);
+        let reply = held.0.reply(|| EventFeedActivity::read(&held.1, &query, &params, from, hour, cancelled))?;
+        let rows = reply.lines.iter().map(|line| line.bins.len() as u64).sum();
+        Ok((serde_json::to_value(reply)?, hour..=hour, rows))
+    }))
 }
 
 pub struct EventFeedKinds;

@@ -13,7 +13,7 @@ dashboard_base::register_products! {
     FEED_EVENTFEEDTAIL => crate::products::feed::EventFeedTail; panel(crate::products::feed::event_feed_dated_panel),
     FEED_EVENTCHOICESTAIL => crate::products::feed::EventChoicesTail; panel(crate::products::feed::event_choices_dated_panel),
     FEED_DECISIONSTAIL => crate::products::feed::DecisionsTail; panel(crate::products::feed::decisions_dated_panel),
-    FEED_EVENTFEEDACTIVITY => crate::products::feed::EventFeedActivity,
+    FEED_EVENTFEEDACTIVITY => crate::products::feed::EventFeedActivity; panel(crate::products::feed::event_feed_activity_panel),
     FEED_EVENTFEEDKINDS => crate::products::feed::EventFeedKinds,
     POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN => crate::products::power_ledger::breakdown::PowerSpendingBreakdown; interval(at_hour, |r| r.through),
     POWER_LEDGER_MARKERS_POWERSPENDMARKERS => crate::products::power_ledger::markers::PowerSpendMarkers; interval(at_hour, |r| before(r.next_change)),

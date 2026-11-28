@@ -3,6 +3,8 @@ import type { DashboardClient, ProductRequest } from '../../dashboard/client';
 import type { FamilyViewProps, WidgetRuntime } from '../../dashboard/definitions';
 import { createWidget, type BoundTrack, type CountrySelection } from '../../dashboard/model';
 import { PlaybackController } from '../../dashboard/playback';
+import { datedPanel } from '../../dashboard/follow/messages.fixture.ts';
+import { packet, splitForLanes } from '../../dashboard/follow/split.ts';
 import type { EngineFrame, FrameEngine } from '../../engine/frame';
 import type { FamilyPlanContext } from '../../families/contract';
 import type { CountryGroupReply } from '../../generated/dashboard';
@@ -24,8 +26,10 @@ const groups = { branchId: '1', countryIdentities: identities, humans: members,
   unobserved: { humans: [], factions: [], wars: [], unattributed: [] }, warnings: [], warStarts: [], capitulations: [], identityChanges: [] } as unknown as CountryGroupReply;
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 
-async function run(selection: CountrySelection, integrated: boolean, hours = 0, unknownMembership = false) {
+async function run(selection: CountrySelection, integrated: boolean, hours = 0, unknownMembership = false, hoursPerFrame = 1) {
   const asked: ProductRequest[] = [];
+  let ports: readonly MessagePort[] = [];
+  let follow: { id: number; route: number; query: Record<string, any>; previous?: string } | null = null;
   let now = 1000;
   performance.now = () => now;
   const tasks = new Set<{ phase: string; run: (frame: EngineFrame) => boolean | void }>();
@@ -38,13 +42,39 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
   const source = { id: `strip-${integrated}-${JSON.stringify(selection)}`, revision: '1', path: '',
     metadata: { campaignKey: 'strip', branches: [{ id: '1', firstHour: FIRST, lastHour: LAST, gaps: [] }], playerCountryId: '7' } };
   const track = { id: 'main', roleId: 'primary', label: 'Main', branchIndex: 0, anchorOffset: 0, source, branch: source.metadata.branches[0], axisOffset: 0, selectedSlot: 7 } as unknown as BoundTrack;
-  const client = { available: true, async product(request: ProductRequest) {
+  const activity = (from: number, binHours: number, hour: number) => {
+    const firstHour = Math.floor(from / binHours) * binHours;
+    return { branchId: '1', firstHour, binHours,
+      lines: [{ category: 'politics', before: '0', bins: hour > 143 ? [[Math.floor((hour - firstHour) / binHours), 1]] : [] }],
+      missing: [{ firstHour: 110, lastHour: 119, reason: 'Holder unknown' }, { firstHour: 120, lastHour: 143, reason: 'Holder unknown' }], warnings: [] };
+  };
+  const push = () => {
+    if (!follow || !ports.length) return;
+    const hour = clock.getHour();
+    const data = activity(FIRST, follow.query.binHours, hour);
+    const value = JSON.stringify(data);
+    const bytes = datedPanel(follow.id, hour, follow.previous === value ? undefined : data, clock.getSnapshot().seekSequence, follow.route);
+    follow.previous = value;
+    const split = splitForLanes(bytes, ports.length);
+    split.lanes.forEach((part, lane) => {
+      if (part) ports[lane]!.postMessage(packet('panels', part, undefined), [part.buffer]);
+    });
+  };
+  const client = { available: true, openFollow: async (opened: readonly MessagePort[]) => { ports = opened; }, async product(request: ProductRequest) {
     asked.push(request);
     const params = request.params as Record<string, any>;
     let data: unknown;
-    if (request.product === 'event-feed-activity') data = { branchId: '1', firstHour: Math.floor(params.from / params.binHours) * params.binHours,
-      binHours: params.binHours, lines: [{ category: 'politics', before: '0', bins: [] }],
-      missing: [{ firstHour: 110, lastHour: 119, reason: 'Holder unknown' }, { firstHour: 120, lastHour: 143, reason: 'Holder unknown' }], warnings: [] };
+    if (request.product === 'event-feed-activity') data = activity(params.from, params.binHours, params.hour);
+    else if (request.product === 'follow-clock') data = { available: true };
+    else if (request.product === 'follow' && params.query?.panel === 'event-feed-activity') {
+      follow = { id: params.id, route: params.route, query: params.query };
+      queueMicrotask(push);
+      data = { available: true, route: params.route };
+    }
+    else if (request.product === 'unfollow') {
+      if (follow?.id === params.id) follow = null;
+      data = null;
+    }
     else if (integrated && request.product === 'country-groups') data = unknownMembership ? { ...groups,
       unobserved: Object.fromEntries(['humans', 'factions', 'wars'].map(key => [key, [{ firstHour: 113, lastHour: 115 }]])) } : groups;
     else if (integrated && request.product === 'country-identities') data = { branchId: '1', known: [], countries: identities.map(entry => ({ ...entry, unresolved: [] })), unknown: [], warnings: [] };
@@ -71,15 +101,28 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0, 
   }
   const before = asked.filter(request => request.product === 'event-feed-activity').length;
   clock.setPlaying(true);
-  for (let hour = 0; hour < hours; hour++) {
-    now += 1000;
-    for (const phase of ['clock', 'paint']) for (const task of [...tasks]) if (task.phase === phase) task.run({ now } as EngineFrame);
+  for (let played = 0; played < hours; played += hoursPerFrame) {
+    now += 1000 * Math.min(hoursPerFrame, hours - played);
+    for (const task of [...tasks]) if (task.phase === 'clock') task.run({ now } as EngineFrame);
+    push();
+    for (const task of [...tasks]) if (task.phase === 'paint') task.run({ now } as EngineFrame);
     await frame();
+  }
+  for (let at = 0; at < 100 && hours > 0; at++) {
+    for (const task of [...tasks]) if (task.phase === 'paint') task.run({ now } as EngineFrame);
+    await frame();
+    const count = container.querySelectorAll('.efs-bars > span').length;
+    if (count === Math.floor((clock.getHour() - 96) / 24) + 1) break;
   }
   const result = {
     hour: clock.getSnapshot().hour,
     before, count: asked.filter(request => request.product === 'event-feed-activity').length,
     activities: asked.filter(request => request.product === 'event-feed-activity').map(request => request.params),
+    followed: asked.flatMap(request => {
+      const query = (request.params as { query?: Record<string, unknown> } | undefined)?.query;
+      return request.product === 'follow' && query?.panel === 'event-feed-activity' ? [query] : [];
+    }),
+    bins: container.querySelectorAll('.efs-bars > span').length,
     tails: asked.filter(request => request.product === 'event-feed-tail').map(request => request.params),
     groups: asked.filter(request => request.product === 'country-groups').length,
     strip: container.querySelector('.efs-strip')?.textContent,
