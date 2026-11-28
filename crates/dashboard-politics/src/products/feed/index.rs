@@ -104,6 +104,7 @@ struct Brief {
 
 pub(crate) struct Scanned {
     briefs: Vec<Brief>,
+    pub(super) unique_record_keys: bool,
     native: Vec<Occurrence<Item>>,
     pub war_ends: Vec<NativeWarEnd>,
     pub incomplete: Vec<(i32, u128, FeedEvent)>,
@@ -175,6 +176,7 @@ impl Scanned {
         let message = format!("The event history could not be read: {reason}");
         Self {
             briefs: Vec::new(),
+            unique_record_keys: true,
             native: Vec::new(),
             war_ends: Vec::new(),
             incomplete: Vec::new(),
@@ -383,11 +385,17 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     let mut incomplete = Vec::new();
     let mut windows_unrecorded = Vec::new();
     let mut lifecycles = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut unique_record_keys = true;
     for run in runs {
         dashboard_text::metadata::check_cancel(cancelled)?;
         reader.each(run, |row| {
             if query.timeline.at(row.hour).is_none_or(|stretch| stretch.run != run) {
                 return Ok(());
+            }
+            if unique_record_keys && !seen.insert(row.key) {
+                unique_record_keys = false;
+                seen = std::collections::HashSet::new();
             }
             let event = columns.read(&row)?;
             if event.code == FeedEventRow::READ_INCOMPLETE {
@@ -451,7 +459,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     let breaks = spans(held.clone());
     let decision_lost = incomplete.iter().filter(|(_, _, read)| read.refusals != Some(0)).map(|&(hour, ..)| (hour, hour));
     let decision_breaks = spans(held.into_iter().chain(decision_lost).collect());
-    Ok(Scanned { briefs, native, war_ends, incomplete, windows_unrecorded: reasons, lifecycles, resolved: Mutex::default(), presented: Mutex::default(), titles: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
+    Ok(Scanned { briefs, unique_record_keys, native, war_ends, incomplete, windows_unrecorded: reasons, lifecycles, resolved: Mutex::default(), presented: Mutex::default(), titles: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
 }
 
 fn incomplete_break_reason(read: &FeedEvent) -> String {
@@ -1075,6 +1083,28 @@ impl CardEvents {
 #[cfg(test)]
 thread_local! {
     pub(super) static REQUESTED_EVENT_LOCATORS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+pub(super) fn read_indexed_events(query: &Query<'_>, locators: &[Locator]) -> io::Result<Option<HashMap<u128, FeedEvent>>> {
+    let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
+    let reader = Reader::new(query, declared)?;
+    let columns = Columns::new()?;
+    let mut by_run = BTreeMap::<u32, Vec<(i32, u128)>>::new();
+    for at in locators {
+        by_run.entry(at.run).or_default().push((at.hour, at.key));
+    }
+    let mut out = HashMap::with_capacity(locators.len());
+    for (run, mut points) in by_run {
+        points.sort_unstable();
+        points.dedup();
+        if !reader.visit_indexed_state_records(run, &points, |key, cells| {
+            out.insert(key, columns.read_cells(key, cells)?);
+            Ok(())
+        })? {
+            return Ok(None);
+        }
+    }
+    Ok(Some(out))
 }
 
 pub(crate) fn read_events(query: &Query<'_>, locators: &[Locator]) -> io::Result<HashMap<u128, FeedEvent>> {

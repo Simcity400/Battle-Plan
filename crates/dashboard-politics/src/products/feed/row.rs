@@ -148,39 +148,39 @@ impl Columns {
         Ok(Self { at })
     }
 
-    fn cell<'r>(&self, row: &'r Row, name: usize) -> Held<'r> {
-        match row.cells.get(self.at[name]) {
+    fn cell<'r>(&self, cells: &'r [Cell], name: usize) -> Held<'r> {
+        match cells.get(self.at[name]) {
             Some(Cell::Missing) => Held::Missing,
             Some(Cell::Unrecorded) | None => Held::NotRecorded,
             Some(cell) => Held::Value(cell),
         }
     }
 
-    fn number(&self, row: &Row, name: usize) -> Option<i64> {
-        match self.cell(row, name) {
+    fn number(&self, cells: &[Cell], name: usize) -> Option<i64> {
+        match self.cell(cells, name) {
             Held::Value(Cell::Number(value)) => Some(*value),
             _ => None,
         }
     }
 
-    fn optional(&self, row: &Row, name: usize) -> Option<Option<i64>> {
-        match self.cell(row, name) {
+    fn optional(&self, cells: &[Cell], name: usize) -> Option<Option<i64>> {
+        match self.cell(cells, name) {
             Held::Value(Cell::Number(value)) => Some(Some(*value)),
             Held::Missing => Some(None),
             _ => None,
         }
     }
 
-    fn bytes(&self, row: &Row, name: usize) -> Option<Vec<u8>> {
-        match self.cell(row, name) {
+    fn bytes(&self, cells: &[Cell], name: usize) -> Option<Vec<u8>> {
+        match self.cell(cells, name) {
             Held::Value(Cell::Text(text)) => Some(text.as_bytes().to_vec()),
             Held::Value(Cell::List(bytes)) => Some(bytes.clone()),
             _ => None,
         }
     }
 
-    fn slot(&self, row: &Row, name: usize) -> Slot {
-        match self.number(row, name) {
+    fn slot(&self, cells: &[Cell], name: usize) -> Slot {
+        match self.number(cells, name) {
             Some(slot) if slot as u32 == TagHolderRow::NONE => Slot::None,
             Some(slot) => Slot::Of(slot as u32),
             None => Slot::NotRecorded,
@@ -188,12 +188,16 @@ impl Columns {
     }
 
     pub fn read(&self, row: &Row) -> io::Result<FeedEvent> {
-        let required = |name: usize| self.number(row, name).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("A feed row's {} is not recorded", NAMES[name])));
-        let some = |name: usize| self.optional(row, name).flatten();
+        self.read_cells(row.key, &row.cells)
+    }
+
+    pub(super) fn read_cells(&self, key: u128, cells: &[Cell]) -> io::Result<FeedEvent> {
+        let required = |name: usize| self.number(cells, name).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("A feed row's {} is not recorded", NAMES[name])));
+        let some = |name: usize| self.optional(cells, name).flatten();
         let party = |reference: usize, id: usize, slot: usize| -> io::Result<Party> {
-            Ok(Party { reference: required(reference)? as u32, id: self.number(row, id).map(|id| id as u32), slot: self.slot(row, slot) })
+            Ok(Party { reference: required(reference)? as u32, id: self.number(cells, id).map(|id| id as u32), slot: self.slot(cells, slot) })
         };
-        let cause = match (self.number(row, 11), self.number(row, 12)) {
+        let cause = match (self.number(cells, 11), self.number(cells, 12)) {
             (Some(route), Some(within)) => Some(Cause {
                 route: route as u8,
                 within: within as u8,
@@ -202,32 +206,32 @@ impl Columns {
                 ally: some(15).map(|reference| Party {
                     reference: reference as u32,
                     id: some(16).map(|id| id as u32),
-                    slot: match self.optional(row, 18) {
+                    slot: match self.optional(cells, 18) {
                         Some(Some(slot)) if slot as u32 == TagHolderRow::NONE => Slot::None,
                         Some(Some(slot)) => Slot::Of(slot as u32),
                         _ => Slot::NotRecorded,
                     },
                 }),
                 reason: some(19).map(|reason| reason as u32),
-                flags: self.number(row, 20).unwrap_or(0) as u8,
+                flags: self.number(cells, 20).unwrap_or(0) as u8,
             }),
             _ => None,
         };
-        let scopes = match self.cell(row, 30) {
+        let scopes = match self.cell(cells, 30) {
             Held::Value(Cell::List(bytes)) => Some(scopes(bytes)?),
             _ => None,
         };
-        let costs = [self.optional(row, 34), self.optional(row, 35)];
+        let costs = [self.optional(cells, 34), self.optional(cells, 35)];
         Ok(FeedEvent {
-            generation: (row.key >> 64) as u64,
-            sequence: row.key as u64,
+            generation: (key >> 64) as u64,
+            sequence: key as u64,
             hour: required(0)? as i32,
             read_hour: required(1)? as i32,
             code: required(2)? as u8,
             actor: party(3, 4, 6)?,
             target: party(7, 8, 10)?,
             cause,
-            token: self.bytes(row, 21),
+            token: self.bytes(cells, 21),
             native_event: some(22).zip(some(23)).map(|(kind, id)| (kind as u32, id as u32)),
             instance: some(24).map(|value| value as u32),
             option: some(25).map(|value| value as i32),
@@ -242,10 +246,10 @@ impl Columns {
             coverage: some(36).map(|value| value as u32),
             outstanding: some(37).map(|value| value as u64),
             refusals: some(38).map(|value| value as u32),
-            failure: self.bytes(row, 39).unwrap_or_default(),
+            failure: self.bytes(cells, 39).unwrap_or_default(),
             incomplete: some(41).map(|value| value as u32),
-            window: self.optional(row, 42).map(|code| code.map(|code| code as u32)),
-            presentation: match self.cell(row, 43) {
+            window: self.optional(cells, 42).map(|code| code.map(|code| code as u32)),
+            presentation: match self.cell(cells, 43) {
                 Held::Value(Cell::List(bytes)) => presentation(bytes)?,
                 _ => None,
             },

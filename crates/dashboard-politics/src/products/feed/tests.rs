@@ -2539,7 +2539,11 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
     let panel = event_feed_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-feed-tail", "branchId": "1", "limit": 64, "categories": ["politics"] })).unwrap();
     let exact = panel.exact().unwrap();
     for (idx, hour) in [96, 97, 98, 99, 100, 101, 102, 103, 105, 120, 144, 146, 149, 100, 99, 101].into_iter().enumerate() {
-        let stepped = (exact.advance)(hour, idx == 0, &cancel, None);
+        let (stepped, reads) = replay_recording::cells::count_reads(|| (exact.advance)(hour, idx == 0, &cancel, None));
+        if idx == 3 {
+            let feed = reads.get(&TableId::FeedEvents).expect("the changing page reads its records");
+            assert_eq!((feed.opened, feed.restores), (1, 1), "the followed page reads the indexed observation points");
+        }
         if hour == 102 {
             assert!(!stepped.fresh, "quiet hour 102 reuses cached reply");
         }
