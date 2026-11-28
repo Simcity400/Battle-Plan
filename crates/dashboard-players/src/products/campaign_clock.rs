@@ -93,37 +93,31 @@ impl RecordedCoverage {
             return Ok(Arc::clone(held));
         }
         let replay = source.replay_ref();
+        let mut reader = replay_recording::columnar_frames::CampaignBlocks::new(replay.recording());
         let mut verified: Vec<dashboard_base::span::HourSpan> = Vec::new();
         for block in replay
             .index
             .iter()
             .filter(|block| block.branch == branch && block.first_hour <= block.last_hour)
         {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let read = replay.visit_blocks(
-                &[block],
-                &[replay_data::rows::TableId::Campaign],
-                |_, _, decoded| {
-                    dashboard_text::metadata::check_cancel(cancelled)?;
-                    if decoded
-                        .complete::<replay_data::rows::tables::Campaign>()
-                        .is_ok_and(|rows| rows.len() == 1 && rows[0].id == replay.campaign_id)
-                    {
-                        let hour = decoded.hour;
-                        match verified.last_mut() {
-                            Some(held)
-                                if hour >= held.first_hour
-                                    && i64::from(hour) <= i64::from(held.last_hour) + 1 =>
-                            {
-                                held.last_hour = held.last_hour.max(hour);
-                            }
-                            _ => verified.push(dashboard_base::span::HourSpan {
-                                first_hour: hour,
-                                last_hour: hour,
-                            }),
+            let read = reader.visit_block(
+                block.run,
+                block.branch,
+                block.first_hour..=block.last_hour,
+                &replay.campaign_id,
+                |hour| {
+                    match verified.last_mut() {
+                        Some(held)
+                            if hour >= held.first_hour
+                                && i64::from(hour) <= i64::from(held.last_hour) + 1 =>
+                        {
+                            held.last_hour = held.last_hour.max(hour);
                         }
+                        _ => verified.push(dashboard_base::span::HourSpan {
+                            first_hour: hour,
+                            last_hour: hour,
+                        }),
                     }
-                    Ok(true)
                 },
                 || dashboard_text::metadata::check_cancel(cancelled),
             );
@@ -401,6 +395,114 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn campaign_clock_reuses_healthy_runs_and_matches_isolated_blocks() {
+        use dashboard_base::{SourceKey, span::HourSpan, test_fixtures};
+        use replay::campaign::Replay;
+        use replay_data::rows::{CampaignRow, TableId, TableRows, tables};
+        use replay_frame::frame::TableView;
+        use replay_recording::cells::count_reads;
+
+        let (first, checkpoint_hour, before_gap, after_gap, last) = (100, 4419, 5144, 5154, 5158);
+        let make = |foreign: Option<(i32, i32)>| {
+            let frames = (first..=before_gap).chain(after_gap..=last).map(|hour| {
+                let mut frame = test_fixtures::source(4, hour, Some(1));
+                frame.metrics.total_ns = hour as u64;
+                if foreign.is_some_and(|(start, end)| (start..=end).contains(&hour) || hour == checkpoint_hour) {
+                    *frame.tables[TableId::Campaign.index()] = TableView::Complete(TableRows::Campaign(vec![
+                        CampaignRow { id: b"foreign campaign".to_vec() },
+                    ]));
+                }
+                frame
+            }).collect();
+            let mut input = test_fixtures::records(4, frames);
+            if let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] {
+                session.qpc_frequency = 1;
+            }
+            let spans = (first..=last).map(|hour| {
+                let from = (hour - first) as u64 * 60;
+                span(from, from + 60, hour, false)
+            }).collect();
+            input.push(replay_capture_spool::spool::Record::Control(packet(4, 1, spans, |_| {})));
+            Replay::from_records(recorder_derive::writers(), test_fixtures::CAMPAIGN.into(), &[input]).unwrap()
+        };
+        let healthy = make(None);
+        let middle = *healthy.index.iter().find(|block| block.run == 0 && block.page == 1).unwrap();
+        let clock = healthy.recording().head(middle.run, middle.page).unwrap().clock;
+        let mut bytes = healthy.bytes().to_vec();
+        bytes[(clock.offset + u64::from(clock.stored) / 2) as usize] ^= 0x40;
+        let damaged_clock = Replay::open(bytes).unwrap();
+        let foreign = make(Some((middle.first_hour, middle.last_hour)));
+        let recording = foreign.recording();
+        let campaign = TableId::Campaign.index();
+        assert_eq!(foreign.block_at(4, checkpoint_hour).unwrap().last_hour, checkpoint_hour);
+        let open = recording.table_entry(0, 0, campaign).unwrap();
+        let first_restore = open.unit.first.as_ref().unwrap();
+        let checkpoint = recording.table_entry(0, 5, campaign).unwrap();
+        let checkpoint = checkpoint.unit.restore.as_ref().unwrap();
+        let stored = checkpoint.streams.iter().flat_map(|(_, chunks)| chunks)
+            .map(|chunk| &chunk.frame)
+            .find(|frame| first_restore.streams.iter().flat_map(|(_, chunks)| chunks)
+                .all(|chunk| chunk.frame.offset != frame.offset))
+            .expect("a checkpoint-only Campaign restore payload");
+        let mut bytes = foreign.bytes().to_vec();
+        bytes[(stored.offset + u64::from(stored.stored) / 2) as usize] ^= 0x40;
+        let damaged_restore = Replay::open(bytes).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let load = LoadContext { content: None };
+        for (name, replay, missing_middle, foreign_checkpoint, missing_tail, expected_opens) in [
+            ("gap", healthy, false, false, false, 2),
+            ("damaged clock", damaged_clock, true, false, false, 3),
+            ("foreign", foreign, true, true, false, 2),
+            ("damaged restore", damaged_restore, true, true, true, 3),
+        ] {
+            let replay = replay.into_timelines(&Default::default()).unwrap();
+            let source = Source::from_replay(SourceKey { source_id: name.into(), revision: "1".into() },
+                "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap();
+            let replay = source.replay_ref();
+            let mut verified = Vec::new();
+            for block in replay.index.iter().filter(|block| block.branch == 4) {
+                let _ = replay.visit_blocks(&[block], &[TableId::Campaign], |_, _, frame| {
+                    if frame.complete::<tables::Campaign>().is_ok_and(|rows| rows.len() == 1 && rows[0].id == replay.campaign_id) {
+                        verified.push(HourSpan { first_hour: frame.hour, last_hour: frame.hour });
+                    }
+                    Ok(true)
+                }, || Ok(()));
+            }
+            let spans = dashboard_base::ranking::joined_spans(verified, i32::MIN, i32::MAX);
+            let metadata = source.metadata().unwrap();
+            let gaps: Vec<_> = metadata.branches.iter().find(|branch| branch.id == "4").unwrap()
+                .gaps.iter().map(|gap| (gap.first_hour, gap.last_hour)).collect();
+            let oracle = RecordedCoverage { spans: subtract_gaps(spans, &gaps) };
+            let (coverage, reads) = count_reads(|| RecordedCoverage::for_branch(&source, 4, &cancelled));
+            let coverage = coverage.unwrap();
+            assert_eq!(reads[&TableId::Campaign].opened, expected_opens, "{name} reader opens");
+            assert_eq!(coverage.spans, oracle.spans, "{name} covered hours");
+            let index = player_apm::index(&source, 4, &cancelled).unwrap();
+            for (start, end, complete) in [
+                (first, middle.first_hour - 1, true),
+                (middle.first_hour, middle.last_hour, !missing_middle),
+                (middle.last_hour + 1, checkpoint_hour - 1, true),
+                (checkpoint_hour, checkpoint_hour, !foreign_checkpoint),
+                (checkpoint_hour + 1, before_gap, !missing_tail),
+                (before_gap, after_gap, false),
+                (after_gap, last, true),
+                (first, last, false),
+            ] {
+                let params = CampaignClockParams { branch_id: "4".into(), first_hour: start, last_hour: end };
+                let isolated = query(&index, &oracle, &params, &cancelled).unwrap();
+                let exact = CampaignClock::load(&source, &params, &load, &cancelled).unwrap();
+                assert_eq!(exact, isolated, "{name} {start}..{end}");
+                assert_eq!(exact.complete, complete, "{name} {start}..{end}");
+                assert_eq!(exact.warnings, if complete { vec![] } else { vec![INCOMPLETE_WARNING.to_owned()] });
+            }
+            let head = player_apm::head::ClockHead::from_source(&source,
+                player_apm::head::ClockHeadParams { branch_id: "4".into(), first_hour: first, last_hour: last }, &cancelled).unwrap();
+            let exact = CampaignClock::load(&source, &CampaignClockParams { branch_id: "4".into(), first_hour: first, last_hour: last }, &load, &cancelled).unwrap();
+            assert_eq!(head.reply_at(last).unwrap(), exact, "{name} follow reply");
+        }
     }
 
     #[test]

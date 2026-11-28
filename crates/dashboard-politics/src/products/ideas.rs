@@ -798,6 +798,12 @@ pub(crate) struct Holding {
     pub end: HoldingEnd,
 }
 
+impl Holding {
+    fn last_at(&self, hour: i32) -> i32 {
+        if self.end == HoldingEnd::Held { hour } else { self.last_hour }
+    }
+}
+
 type HoldingKey<'a> = (&'a str, Option<&'a str>, Option<(u32, &'a str, &'a str)>);
 
 fn holding_key(span: &IdeaSpan) -> HoldingKey<'_> {
@@ -1043,13 +1049,14 @@ fn present_new(
             })
         })
     };
-    for holding in ideas.at(hour) {
+    let held_structure = kept.holdings(ideas, hour);
+    for holding in held_structure.iter() {
         check_cancel(cancelled)?;
         let span = &ideas.spans[holding.span];
         let identity = ideas.identity_starts.partition_point(|start| *start <= span.first_hour).checked_sub(1);
         let named = identity.and_then(|identity| read.naming.get(identity)).unwrap_or(&unnamed);
         let held = span.character.as_ref().map(|holder| ((!holder.token.is_empty()).then_some(holder.token.as_str()), holder.name.as_str()));
-        let at_hour = if holding.end == HoldingEnd::Held { hour } else { holding.last_hour };
+        let at_hour = holding.last_at(hour);
         let holding_tag = query.holders.tag_at(&asked.params.country, at_hour).unwrap_or(tag);
         let is_scripted = content.idea_is_scripted(&span.token, held.and_then(|(s, _)| s), named.for_tag(holding_tag), held.map(|(_, saved)| saved));
         let eval_hour = is_scripted.then_some(at_hour);
@@ -1089,7 +1096,7 @@ fn present_new(
         holdings.push(IdeaHolding {
             token: span.token.clone(),
             first_hour: holding.first_hour,
-            last_hour: holding.last_hour,
+            last_hour: at_hour,
             start: holding.start,
             end: holding.end,
             slot: span.slot.clone(),
@@ -1188,15 +1195,36 @@ struct Exact {
     bytes: Box<[u8]>,
 }
 
+struct HoldingPlan {
+    hour: i32,
+    through: i32,
+    holdings: Arc<[Holding]>,
+}
+
 #[derive(Default)]
 struct Presentation {
     content: Weak<PoliticsContent>,
     exact: Option<Exact>,
+    holdings: Option<HoldingPlan>,
     past: VecDeque<(HistoricalKey, Box<[u8]>)>,
     bytes: usize,
 }
 
 impl Presentation {
+    fn holdings(&mut self, ideas: &Ideas, hour: i32) -> Arc<[Holding]> {
+        if let Some(held) = &mut self.holdings
+            && (held.hour..=held.through).contains(&hour)
+        {
+            held.hour = hour;
+            return Arc::clone(&held.holdings);
+        }
+        let holdings: Arc<[Holding]> = ideas.at(hour).into();
+        self.holdings = (size_of_val(&*holdings) + 2 * size_of::<usize>() <= PRESENTATION_BYTES).then(|| HoldingPlan {
+            hour, through: ideas.next_change(hour).map_or(i32::MAX, |next| next - 1), holdings: Arc::clone(&holdings),
+        });
+        holdings
+    }
+
     fn past(&mut self, key: HistoricalKey, make: impl FnOnce() -> Looked) -> io::Result<Looked> {
         if let Some((_, bytes)) = self.past.iter().find(|(held, _)| *held == key) {
             let (look, noted): (Looked, catalogue::OwnRefusals) = serde_json::from_slice(bytes)?;
