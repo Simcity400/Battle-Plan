@@ -1666,14 +1666,16 @@ fn a_same_hour_restore_recomposes_only_changed_inputs_and_their_dependents() {
         let expected: &[&str] = if changed { &["source", "downstream"] } else { &[] };
         assert_eq!(&calls()[opened..], expected);
 
-        let epoch = side.epoch;
-        let before_seek = calls().len();
-        entry.playhead().seek(2);
-        side.catch_up(2).unwrap();
-        assert_ne!(side.epoch, epoch);
-        let mut sought = calls()[before_seek..].to_vec();
-        sought.sort_unstable();
-        assert_eq!(sought, ["downstream", "independent", "source"]);
+        for hour in [0, 2] {
+            let epoch = side.epoch;
+            let before_seek = calls().len();
+            entry.playhead().seek(hour);
+            side.catch_up(hour).unwrap();
+            assert_ne!(side.epoch, epoch);
+            let mut sought = calls()[before_seek..].to_vec();
+            sought.sort_unstable();
+            assert_eq!(sought, ["downstream", "independent", "source"]);
+        }
     }
 }
 
