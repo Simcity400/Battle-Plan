@@ -390,6 +390,7 @@ pub struct Sprites {
     pub cursor_offset: Option<[i32; 2]>,
     pub selection_offset: Option<[i32; 2]>,
     pub refusals: Vec<Refusal>,
+    pub overlay_fallback: Option<String>,
 }
 
 impl Sprites {
@@ -481,7 +482,7 @@ pub fn read_object_layers(layers: &ResolvedLayers) -> io::Result<Vec<SpriteFile>
 
 fn read_paths(layers: &ResolvedLayers, order: Vec<Vec<u8>>) -> io::Result<Vec<SpriteFile>> {
     DynamicTokens::read(layers)?;
-    content_reader_layers::parallel::map(&order, |bytes| {
+    let files = content_reader_layers::parallel::map(&order, |bytes| {
         let path = String::from_utf8_lossy(bytes).into_owned();
         let file = layers.product("interface file", 2, bytes, |layers| {
             let dynamic = DynamicTokens::read(layers)?;
@@ -493,8 +494,8 @@ fn read_paths(layers: &ResolvedLayers, order: Vec<Vec<u8>>) -> io::Result<Vec<Sp
             {
                 let recorded_file = read_sprites_with(&recorded_bytes, &dynamic);
                 if refusals_of(&recorded_file).is_none() {
-                    layers.note_overlay_refusal(format!("interface file {path} ({refusal})"));
                     file = recorded_file;
+                    file.overlay_fallback = Some(format!("interface file {path} ({refusal})"));
                 }
             }
             for refusal in file.refusals.iter_mut()
@@ -509,8 +510,15 @@ fn read_paths(layers: &ResolvedLayers, order: Vec<Vec<u8>>) -> io::Result<Vec<Sp
             }
             Ok(file)
         })?;
+        Ok::<_, io::Error>((path, file))
+    });
+    files.into_iter().map(|file| {
+        let (path, file) = file?;
+        if let Some(refusal) = &file.overlay_fallback {
+            layers.note_overlay_refusal(refusal.clone());
+        }
         Ok((path, file))
-    }).into_iter().collect()
+    }).collect()
 }
 
 fn refusals_of(file: &Sprites) -> Option<String> {

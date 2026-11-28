@@ -874,7 +874,7 @@ pub fn parse(
 }
 
 pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
-    let database = crate::equipment::Database::load(layers)?;
+    let database = crate::equipment::Database::shared(layers)?;
     let types: std::collections::BTreeSet<Vec<u8>> = database
         .equipment
         .iter()
