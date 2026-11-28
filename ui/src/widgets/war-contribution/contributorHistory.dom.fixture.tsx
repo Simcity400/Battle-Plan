@@ -34,6 +34,13 @@ const source = { id: 'fixture', revision: '1', path: '', metadata: { campaignKey
 const track = { id: 'main', roleId: 'primary', label: 'Main', branchIndex: 0, anchorOffset: 0, source, branch, axisOffset: 0, selectedSlot: 0 } as unknown as BoundTrack;
 const calls: { call: ProductRequest; signal: AbortSignal; answer: (data: WarContributionHistoryReply) => void }[] = [];
 const snapshotHours: number[] = [];
+const warViewpoints: unknown[] = [];
+const contributionViewpoints: unknown[] = [];
+const countries = tags.map((tag, slot) => ({ tag, identities: [{ slot, countryId: slot + 1, firstHour, lastHour: branch.lastHour }], unresolved: [] }));
+let resolveCountries!: () => void;
+const countryGate = new Promise<void>(resolve => { resolveCountries = resolve; });
+let countryRequested!: () => void;
+const countryRead = new Promise<void>(resolve => { countryRequested = resolve; });
 const names = ['Accord', 'Beryl', 'Cinder', 'Dale', 'Elm', 'Fern', 'Grove'];
 let answerNames!: () => void;
 const nameGate = new Promise<void>(resolve => { answerNames = resolve; });
@@ -47,13 +54,23 @@ OffscreenCanvasRenderingContext2D.prototype.fillText = function (text, x, y, max
 const client = { available: true, async product(call: ProductRequest, signal: AbortSignal) {
   const reply = (data: unknown) => ({ sourceId: call.sourceId, revision: call.revision, product: call.product, data });
   if (call.product === 'war-contribution-history') return new Promise(resolve => calls.push({ call, signal, answer: data => resolve(reply(data)) }));
-  if (call.product === 'wars') return reply({ branchId: branch.id, available: true, warnings: [], countryNames: [], unobserved: branch.gaps, capitulationsUnobserved: [], viewpoints: [], wars: [war] });
+  if (call.product === 'wars') {
+    warViewpoints.push(call.params.viewpoint);
+    return reply({ branchId: branch.id, available: true, warnings: [], countryNames: [], unobserved: branch.gaps, capitulationsUnobserved: [], viewpoints: [], wars: [war] });
+  }
   if (call.product === 'war-contributions') {
     const hour = (call.params as { hour: number }).hour;
     snapshotHours.push(hour);
+    contributionViewpoints.push(call.params.viewpoint);
     return reply({ branchId: branch.id, available: true, hour, warnings: [], missing: null, contributions: [snapshot] });
   }
-  if (call.product === 'country-identities') return reply({ branchId: branch.id, known: [], countries: tags.map((tag, slot) => ({ tag, identities: [{ slot, countryId: slot + 1, firstHour, lastHour: branch.lastHour }], unresolved: [] })), unknown: [], warnings: [] });
+  if (call.product === 'country-identities') {
+    countryRequested();
+    await countryGate;
+    return reply({ branchId: branch.id, known: [], countries, unknown: [], warnings: [] });
+  }
+  if (call.product === 'country-groups') return reply({ branchId: branch.id, humans: [], factions: [], wars: [], warStarts: [],
+    capitulations: [], identityChanges: [], countryIdentities: countries, unobserved: { humans: [], factions: [], wars: [], unattributed: [] }, warnings: [] });
   if (call.product === 'country-facts') {
     await nameGate;
     return reply({ branchId: branch.id, known: [[firstHour, branch.lastHour]], names, reasons: ['Fixture flag unavailable'], flags: [],
@@ -71,9 +88,10 @@ container.style.cssText = 'width: 1000px; height: 500px;';
 const root = createRoot(container);
 let pick = '';
 
-function Fixture({ view }: { view: 'measure' | 'sides' }) {
+function Fixture({ view, tag }: { view: 'measure' | 'sides'; tag?: string }) {
   const [measure, setMeasure] = useState('casualties');
-  return <><Widget.render {...{ widget, view, runtime, active: true, options: { measure },
+  const selected = tag ? { ...widget, countries: { kind: 'tags', tags: [tag] } } : widget;
+  return <><Widget.render {...{ widget: selected, view, runtime, active: true, options: { measure },
     setOption: (_key: string, next: string) => { pick = next; setMeasure(next); },
     manifestDeclaration: view === 'measure' ? warContributionMeasureDeclaration : warContributionSidesDeclaration } as unknown as FamilyViewProps} /><TooltipLayer /></>;
 }
@@ -87,8 +105,16 @@ function detail() { return document.querySelector<HTMLElement>('.war-history:pop
 const totals = (amount: string) => measureKeys.map(() => [[firstHour, amount]]) as WarContributionHistoryReply['sides'][number]['totals'];
 
 Object.assign(window, { warHistoryFixture: {
-  async mount(view: 'measure' | 'sides') {
-    flushSync(() => root.render(<StrictMode><Fixture key={view} view={view} /></StrictMode>));
+  async mountWaitingForCountry() {
+    flushSync(() => root.render(<StrictMode><Fixture key="sides" view="sides" /></StrictMode>));
+    await countryRead;
+    await frame();
+    return [...warViewpoints];
+  },
+  resolveCountries,
+  viewpoints: () => ({ wars: [...warViewpoints], contributions: [...contributionViewpoints] }),
+  async mount(view: 'measure' | 'sides', tag?: string) {
+    flushSync(() => root.render(<StrictMode><Fixture key={tag ?? view} view={view} tag={tag} /></StrictMode>));
     await wait(() => !!container.querySelector('[data-row-key="viewpoint:AAA"]'));
   },
   async activateTable(key: string) {

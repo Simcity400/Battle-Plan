@@ -38,6 +38,61 @@ pub(super) fn count_observation() {
 }
 
 #[test]
+fn requests_join_the_same_viewpoint_and_retry_a_failed_walk() {
+    use dashboard_base::{SourceKey, test_fixtures::{CAMPAIGN, records}};
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![recorded(120)])])
+        .unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(
+        SourceKey { source_id: "war-preparation".into(), revision: "1".into() },
+        "memory.battleplan".into(), Arc::new(replay), &AtomicBool::new(false),
+    ).unwrap();
+    let viewpoint = (1, Some(Country::from("ONE")));
+    let context = LoadContext { content: None };
+    let (first, start) = build_for(&source, &context, &viewpoint, &None).unwrap();
+    assert!(start);
+    let (other, start) = build_for(&source, &context, &viewpoint, &None).unwrap();
+    assert!(!start && Arc::ptr_eq(&first, &other));
+    let (recorded, start) = build_for(&source, &context, &(1, None), &None).unwrap();
+    assert!(start && !Arc::ptr_eq(&first, &recorded));
+    first.ready.publish(Err(io::Error::other("Synthetic walk failure")));
+    assert_eq!(other.ready.wait().unwrap_err().to_string(), "Synthetic walk failure");
+    let (retry, start) = build_for(&source, &context, &viewpoint, &None).unwrap();
+    assert!(start && !Arc::ptr_eq(&other, &retry));
+}
+
+#[test]
+fn replacing_the_effective_catalogue_retires_its_pending_walk() {
+    use dashboard_base::{source::Work, test_fixtures::visual_mods};
+    let game = visual_mods::Machine::new("war_cache_refresh");
+    let (source, content) = game.open_frames(vec![recorded(120)]);
+    let unbound = LoadContext { content: source.admit(Work::Recorded) };
+    assert!(unbound.content.is_none());
+    source.bind(Some((&content.options, content.allow_unverified)), Default::default());
+    let shown = LoadContext { content: source.admit_resolved(Work::Ahead) };
+    let recorded = LoadContext { content: source.admit(Work::Recorded) };
+    let key = (1, Some(Country::Slot(1)));
+    let first = catalogue_of(&source, &recorded).unwrap();
+    let (walk, start) = build_for(&source, &recorded, &key, &first).unwrap();
+    assert!(start);
+    let (same, start) = build_for(&source, &shown, &key, &catalogue_of(&source, &shown).unwrap()).unwrap();
+    assert!(!start && Arc::ptr_eq(&walk, &same));
+
+    let old = source.content(&content.options).unwrap();
+    source.refresh_content(&content.options, &old).unwrap();
+    let current = catalogue_of(&source, &shown).unwrap();
+    let (refreshed, start) = build_for(&source, &shown, &key, &current).unwrap();
+    assert!(start && !Arc::ptr_eq(&walk, &refreshed));
+    assert_eq!(walk.ready.result().unwrap().unwrap_err().to_string(), "War catalogue changed");
+    for (context, previous) in [(&recorded, &first), (&unbound, &None)] {
+        let error = build_for(&source, context, &key, previous).err().unwrap();
+        assert_eq!(dashboard_core::refusal(&error), Some("War catalogue changed"));
+    }
+    assert!(refreshed.ready.result().is_none());
+    let (same, start) = build_for(&source, &shown, &key, &current).unwrap();
+    assert!(!start && Arc::ptr_eq(&refreshed, &same));
+}
+
+#[test]
 fn the_first_timeline_reply_reuses_a_war_until_scores_change_its_representative() {
     use dashboard_base::{SourceKey, test_fixtures::{CAMPAIGN, records}};
     use replay::campaign::Replay;
@@ -139,7 +194,7 @@ fn the_views_share_one_walk_and_group_only_at_relevant_changes() {
     let country = Country::from("ONE");
     let wars = WarsParams { branch_id: "1".into(), viewpoint: Some(country.clone()) };
     let timeline = WarTimelineParams { branch_id: "1".into(), viewpoint: Some(country.clone()), hour: 124 };
-    let losses = CasualtyBreakdownParams { branch_id: "1".into(), country, hour: 124 };
+    let losses = CasualtyBreakdownParams { branch_id: "1".into(), country: country.clone(), hour: 124 };
     WALKS.set(0);
     GROUPINGS.with_borrow_mut(Vec::clear);
     let whole = Wars::load(&source, &wars, &context, &cancelled).unwrap();
@@ -152,8 +207,20 @@ fn the_views_share_one_walk_and_group_only_at_relevant_changes() {
         let observed: Vec<_> = reply.wars.iter().flat_map(|war| &war.observations).filter(|seen| seen.last_hour == hour).collect();
         assert!(!observed.is_empty() && observed.iter().all(|seen| seen.representative.is_some() == has_representative));
     }
-    let casualties = CasualtyBreakdown::load(&source, &losses, &context, &cancelled).unwrap();
-    assert!(casualties.breakdown.parts.iter().any(|part| whole.wars.iter().any(|war| part.key == war.id)));
+    let note = "Fixture war name artwork fell back";
+    let (_, diagnostics) = catalogue::capture_isolated(|| {
+        content_reader_layers::content::diagnostics::Diagnostics::note(note.into());
+    });
+    let build = Arc::<Build>::default();
+    assert!(build.reply.set((Arc::new(whole.clone()), diagnostics)).is_ok());
+    build.ready.publish(Ok(()));
+    source.state::<Walks>().lock().unwrap().0.of_optional(None).1.insert((1, Some(country)), build);
+    let finish = dashboard_base::products::Finish::new(&source, &context, true);
+    for _ in 0..2 {
+        let casualties = finish.reply(|| CasualtyBreakdown::load(&source, &losses, &context, &cancelled)).unwrap();
+        assert!(casualties.breakdown.parts.iter().any(|part| whole.wars.iter().any(|war| part.key == war.id)));
+        assert!(casualties.warnings.iter().any(|warning| warning.contains(note)), "{:?}", casualties.warnings);
+    }
     assert_eq!(WALKS.get(), 1);
     assert_eq!(GROUPINGS.with_borrow_mut(std::mem::take), [120, 122, 123, 124]);
 }
@@ -433,7 +500,7 @@ fn contribution_history_keeps_joins_departures_capitulation_and_unread_inputs_di
         SourceKey { source_id: "contribution-history".into(), revision: "1".into() },
         "memory.battleplan".into(), Arc::new(replay), &cancelled,
     ).unwrap();
-    let wars = walked(&source, 1, None, None, &cancelled).unwrap();
+    let wars = walked(&source, 1, None, &LoadContext { content: None }, &cancelled).unwrap();
     let war = &wars.wars[0];
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let reply = history::read(&source, &query, &wars, war, 106, Ok(FACTORS), &cancelled).unwrap();

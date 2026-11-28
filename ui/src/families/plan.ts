@@ -423,11 +423,13 @@ export type CountryPolicy =
 export interface AuxProductSpec<TAux = unknown> {
   readonly product: DeclaredProduct;
   readonly label: string;
+  readonly loadingLabel?: string;
   readonly params: (
     track: BoundTrack,
     options: Readonly<Record<string, OptionValue>>,
     country: string | null,
     subject: string | null,
+    choice?: string | null,
   ) => Record<string, unknown> | null;
   readonly validate: (raw: unknown) => TAux;
   readonly when?: (options: Readonly<Record<string, OptionValue>>) => boolean;
@@ -443,6 +445,7 @@ export interface FamilyPlanContext<TAux = unknown> {
   readonly aux: TAux | undefined;
   readonly countryTag: string | null;
   readonly countrySubject: string | null;
+  readonly countryChoice?: string | null;
   readonly countryName: string;
   readonly countries: DeclaredCountryState;
   readonly gateSpan: (first: number, last: number) => BoundWindow | null;

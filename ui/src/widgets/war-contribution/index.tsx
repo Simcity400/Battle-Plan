@@ -14,7 +14,7 @@ import { watchBoundary } from '../../dashboard/widgetTime';
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry';
 import { countryTagKey, useIdentityAtHead, useIdentityScope, type CountryIdentityResult } from '../../families/identity/react.ts';
-import { observationAt, validateWarsReply } from '../wars/warsData.ts';
+import { observationAt, validateWarsReply, warViewpoint } from '../wars/warsData.ts';
 import ContributorWindow, { type OpenedContributor } from './ContributorWindow.tsx';
 import { DEFAULT_MEASURE, MEASURE_LIST } from './definition.ts';
 import { WAR_NOT_STARTED, WAR_UNAVAILABLE, chosenWar, createWarChipTracker, readHourFor, warChipLeaderHour } from './warContributionData.ts';
@@ -28,8 +28,8 @@ import './warContribution.css';
 function WarContributionView(props: FamilyViewProps) {
   const { setOption, manifestDeclaration, widget, runtime, active, options } = props;
   const { track, within, country } = useGate(runtime, widget, undefined, active, { country: { stored: options.country } });
-  const viewpoint = country?.tag ?? null;
-  const wars = useProduct(runtime.client, track && viewpoint ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+  const viewpoint = warViewpoint(country?.tag ?? null, country?.chosen);
+  const wars = useProduct(runtime.client, track && viewpoint !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
     product: 'wars', params: { branchId: track.branch.id, viewpoint } }) : null, active, validateWarsReply, track?.source).data;
   const saved = storedWar(options);
   const scope = JSON.stringify([track?.id, track?.source.id, track?.source.revision, track?.branch.id, country?.chosen, options.country, saved]);
@@ -40,7 +40,7 @@ function WarContributionView(props: FamilyViewProps) {
   const onActivate = (action: InstalledAction) => {
     const pick = (action.meta as { readonly pick?: string } | undefined)?.pick;
     if (pick) { setOption?.('measure', pick); return; }
-    if (!track || !wars || !viewpoint || action.target.kind !== 'row') return;
+    if (!track || !wars || viewpoint === null || action.target.kind !== 'row') return;
     const hit = /^(?:(viewpoint|opposing):([^:]+)|total:(viewpoint|opposing))$/.exec(action.target.key);
     const war = hit && chosenWar(wars, saved, action.hour);
     if (!hit || !war) return;
