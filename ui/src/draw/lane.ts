@@ -2082,6 +2082,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (this.serving) this.acks.push({ installed: request.installed, refused: request.refused });
       else this.applyAcks(request.installed, request.refused);
     }
+    if (request.speed === 0) for (const id of this.pausedBars) this.dirtyWidgets.add(id);
     const bare: FrameRequest = { ...request, installed: [], refused: [] };
     this.armPlayback();
     this.request = bare;
@@ -2845,14 +2846,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       return { widget, selected, motion: shown && !widget.forceFull && !slotDirty, target, refresh,
         pause: pause ? (unchanged ? 'only' as const : 'exact' as const) : undefined };
     };
-    const pendingBars = new Set<number>(request.speed === 0 ? this.pausedBars : undefined);
+    const pendingBars = new Set<number>();
     for (const wid of this.playbackOwners) {
       const widget = this.widgets.get(wid);
-      if (widget && this.restorePlayback(widget, request)) pendingBars.add(wid);
+      if (widget && !this.pausedBars.has(wid) && this.restorePlayback(widget, request)) pendingBars.add(wid);
     }
     const due: NonNullable<ReturnType<typeof nextCandidate>>[] = [];
     for (const wid of candidates) {
-      if (pendingBars.has(wid) || this.playbackOwners.has(wid)) { pendingBars.add(wid); continue; }
+      if (this.pausedBars.has(wid) || this.playbackOwners.has(wid)) { pendingBars.add(wid); continue; }
       const candidate = nextCandidate(wid);
       if (candidate) due.push(candidate);
     }
@@ -2914,7 +2915,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           continue;
         }
         const initialOpen = this.isOpenFollowed(widget, selected) ? 'followed' : this.isOpenPanel(widget, selected) ? 'panel' : undefined;
-        const playbackOwnsPixels = this.ownsPlayback(widget, request.seek, request.speed > 0);
+        let playbackOwnsPixels = this.ownsPlayback(widget, request.seek, request.speed > 0);
         const restorePlayback = this.restorePlayback(widget, request);
         const slotDirty = restorePlayback || (!playbackOwnsPixels && this.isDirectSlotDirty(widget.id));
         const redate = !refresh && !motion && !widget.motion && !widget.forceFull && !slotDirty && widget.installed
@@ -2936,6 +2937,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           continue;
         }
         let activeSelected = selected;
+        let paintTarget = target;
         let painted: Painted = { surfaces: [], fields: {}, motion: false };
         let mode: Entry['mode'] = 'picture', reason: string | undefined, failureOrigin: FailureOrigin | undefined;
         let failedLocally = false;
@@ -2944,8 +2946,15 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         let drewDirect = false;
         const actual = this.targetOf(widget, request.now);
         if (restorePlayback && activeSelected.window[0] > actual) {
-          const visible = this.select(widget, actual);
-          this.settleKept(widget, request, start, visible && !this.willPageRefuseDirect(widget, visible, actual, request) ? visible : undefined);
+          const atNow = this.select(widget, actual);
+          const visible = atNow && !this.willPageRefuseDirect(widget, atNow, actual, request) ? atNow : undefined;
+          this.settleKept(widget, request, start, visible);
+          playbackOwnsPixels = this.ownsPlayback(widget, request.seek, request.speed > 0);
+          if (playbackOwnsPixels) {
+            if (!visible) continue;
+            activeSelected = visible;
+            paintTarget = actual;
+          }
         }
         for (let pass = 0; pass < 4; pass++) {
           try {
@@ -2992,15 +3001,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
               }
               break;
             }
-            if (playbackOwnsPixels && painted.repainted) {
-              unpresentedDirect.add(widget.id);
-              drewDirect = true;
-            }
-            if (sharedArg && !staged && (!playbackOwnsPixels || painted.repainted)) {
+            if (sharedArg && !staged && !playbackOwnsPixels) {
               sharedArg.lane.dirtySlots.delete(widget.id);
               this.stagedViews.delete(widget.id);
             }
-            if (wc && !sharedArg && (!playbackOwnsPixels || painted.repainted)) this.dirtyWorkerCanvases.delete(widget.id);
+            if (wc && !sharedArg && !playbackOwnsPixels) this.dirtyWorkerCanvases.delete(widget.id);
             mode = painted.mode ?? 'picture'; reason = painted.reason; failureOrigin = undefined;
             if (painted.mode === undefined && refusals.length && refusals.every(refusal => refusal !== null)) { mode = 'refused'; reason = [...new Set(refusals)].join('; '); }
             else if (mode === 'picture' && refusals.some(refusal => refusal !== null))
@@ -3021,8 +3026,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
             if (clampedHi < activeSelected.window[1]) {
               activeSelected = { ...activeSelected, window: [activeSelected.window[0], clampedHi] };
             }
-            if (target > activeSelected.window[1] && pass < 3) {
-              const nextSelected = this.select(widget, target);
+            if (paintTarget > activeSelected.window[1] && pass < 3) {
+              const nextSelected = this.select(widget, paintTarget);
               if (nextSelected && nextSelected.window[0] > activeSelected.window[0]) {
                 activeSelected = nextSelected;
                 continue;
@@ -3078,7 +3083,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         const parts: (B | typeof SAME | null)[] = [];
         const emitted = mode === 'picture' ? painted : { ...painted, surfaces: [] };
         if (refresh && widget.inflight) widget.forceFull = true;
-        const entry = this.entry(widget, activeSelected, emitted, mode, reason, parts, request.seek, paintMs, open, failureOrigin, pixels !== undefined, playbackOwnsPixels && !drewDirect);
+        const entry = this.entry(widget, activeSelected, emitted, mode, reason, parts, request.seek, paintMs, open, failureOrigin, pixels !== undefined, playbackOwnsPixels);
         if (staged && pixels) {
           let pictures = this.staged.get(widget.id);
           if (!pictures) this.staged.set(widget.id, pictures = new Map());
@@ -3096,6 +3101,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         made.push({ widget, selected: activeSelected });
         surfaces.push(parts);
       }
+      for (const wid of pendingBars) this.dirtyWidgets.add(wid);
       const resets: [number, number][] = [];
       const toldMoved: [number, number | undefined][] = [];
       let moved = false;
@@ -3200,7 +3206,6 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         if (this.isDirectTarget(wid)) this.markDirectDirty(wid);
       }
     }
-    for (const wid of pendingBars) this.dirtyWidgets.add(wid);
     this.prune(request.now);
     for (const id of this.facts.drain()) this.gone.add(id);
     const bytes = this.freed + this.releasedFacts();

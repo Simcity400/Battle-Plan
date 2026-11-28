@@ -581,6 +581,25 @@ describe('Ordered bar playback', () => {
     assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '60'));
   }));
 
+  it('publishes the visible hour when a supply update restores playback ownership during look-ahead', async () => withLane(async f => {
+    f.record(100, { value: 30 });
+    f.record(101, { value: 60 });
+    f.record(102, { value: 100 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const unit = f.barWidth() / 30;
+    await f.request(100, 1, 1, true);
+    f.lane.supply(1, { statics: {} });
+    f.clock(101.5, 1);
+    await f.request(101, 1, 1, false, false, 102);
+    const entry = f.presented.at(-1)?.entries[0];
+    assert.equal(entry?.lo, 101);
+    assert.equal(entry?.repainted, undefined);
+    assert.ok(Math.abs(f.barWidth() / unit - 60) < .01);
+    f.tick(0);
+    assert.ok(Math.abs(f.barWidth() / unit - 80) < .01);
+  }));
+
   it('hands a staged slot to playback at the accepted hour', async () => withLane(async f => {
     f.record(124, { value: 60 });
     f.record(147);
@@ -1195,6 +1214,31 @@ describe('Ordered bar playback', () => {
       await f.drain();
     }
     assert.deepEqual(f.painted, [4, 1, 2, 3]);
+  }, 10));
+
+  it('gives a ready pause its turn even when uncovered bars use the earlier budget slices', async () => withLane(async f => {
+    f.mount(3);
+    for (const id of [1, 2]) f.lane.supply(id, { dated: { h: 102, c: 102 } });
+    f.record(100, { value: 100 });
+    f.record(101, { value: 200 });
+    f.clock(100.5, 1);
+    await f.request(100, 1);
+    f.tick(0);
+    assert.deepEqual(f.sampled, [3]);
+    f.painted.length = 0;
+    f.spendOnFactSelection(11);
+    f.clock(101, 0);
+    await f.request(101);
+    for (let i = 0; i < 3; i++) {
+      f.tick(16);
+      await f.drain();
+    }
+    assert.deepEqual(f.painted, [3]);
+    assert.ok(f.operations().some(op => op.op === 'fillText' && op.args[0] === '200'));
+    const served = f.served.length;
+    f.tick(16);
+    await f.drain();
+    assert.equal(f.served.length, served, 'uncovered bars retry when data or another request arrives');
   }, 10));
 
   it('gives a sibling its ordinary paint before selecting bars due on the first Play request', async () => withLane(async f => {
