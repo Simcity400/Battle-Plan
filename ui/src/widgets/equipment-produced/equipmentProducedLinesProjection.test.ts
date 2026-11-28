@@ -2,10 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
-import type { FollowQuery } from '../../dashboard/regionTime.ts';
+import type { ProductRequest } from '../../dashboard/client.ts';
+import type { FollowQuery, GatedHour } from '../../dashboard/regionTime.ts';
+import { TileCache } from '../../dashboard/tiles/cache.ts';
+import { TILE_BINS } from '../../dashboard/tiles/tile.ts';
+import { TileView } from '../../dashboard/tiles/view.ts';
 import { createBoundedReadView, createBoundedSlice, displayedHour } from '../../families/boundedView.ts';
 import { compileFollowPlan, hoverAsks, readPlanExact, readsWithoutFollow } from '../../families/broker.ts';
 import { planFamilySources } from '../../families/host/planSources.ts';
+import { chartTileLane } from '../../families/host/tiledState.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/plan.ts';
 import { ReadTarget, unitEntries } from '../../families/readUnits.ts';
 import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
@@ -292,6 +297,59 @@ test('equipment-produced lines keys by slot, keeps missing readings with their r
   assert.equal(mixed.hoverDetail?.itemsBySeries?.get(ger)?.[0]?.value, '8');
   assert.match(mixed.hoverDetail?.itemsBySeries?.get('DEU')?.[0]?.missingReason ?? '', /before this country/);
   assert.deepEqual(ic.auditRows?.map(row => row.value), ['1.23456'], 'and so does the audit');
+});
+
+test('played equipment produced history uses the followed ranking and asks only for new keys', async () => {
+  const ctx = makeCtx();
+  const plan = equipmentProducedLinesDeclaration.sources(ctx, { following: true, staticSpan: null });
+  const entry = plan.entries.find(entry => entry.name === 'main')!;
+  assert.equal(entry.read.shape, 'pixel-binned');
+  if (entry.read.shape !== 'pixel-binned') return;
+  const requests: { countries?: number[]; top?: number; hour?: number }[] = [];
+  const client = {
+    product: async (request: ProductRequest) => {
+      const params = request.params as { countries?: number[]; top?: number; hour?: number; binHours: number; index: number };
+      requests.push(params);
+      const countries = params.countries ?? [7, 8];
+      const firstHour = params.index * TILE_BINS * params.binHours;
+      return { ...request, data: {
+        branchId: '1', measure: 'day', decimals: 0, binHours: params.binHours, index: params.index, firstHour,
+        immutable: true, filled: firstHour + TILE_BINS * params.binHours - 1, rawValues: true, hourBytes: 0,
+        ...(params.hour === undefined ? {} : { ranking: { hour: params.hour, from: params.hour, until: params.hour, refused: null } }),
+        lines: countries.map(country => ({ country, missing: [], parts: [] })), bins: new Uint8Array(countries.length * TILE_BINS),
+      } };
+    },
+  } as never;
+  const lane = chartTileLane(client, { ...entry, read: entry.read }, ctx.branch.lastHour, ctx.gateSpan, hour => hour as GatedHour);
+  assert.ok(lane);
+  const tiles = new TileView(new TileCache(), lane, () => {});
+  tiles.setView({ from: 290, to: 345, end: 345, width: 100 });
+  const options = equipmentProducedLinesDeclaration.projectionOptions(ctx, { extent: [100, 600], surface: '#111111' });
+  for (const [index, countries] of [[7, 8], [8, 7], [8, 9], [], []].entries()) {
+    const hour = 300 + 10 * index;
+    const refused = index === 4 ? 'Production ranking is unavailable' : null;
+    const head: EquipmentProducedRaceReply = {
+      branchId: '1', hour, firstHour: hour, lastHour: hour + 9, count: 'units', measure: 'day', decimals: 0,
+      types: ['infantry_equipment'], readHour: hour, observationHour: 100, missing: refused, warnings: [],
+      rows: countries.map(country => ({ country, counted: country, tag: String(country), value: 10, unknown: null })),
+    };
+    const view = createBoundedReadView({ hour: displayedHour(hour), panels: new Map([['head', head]]) });
+    const rank = equipmentProducedLinesProjection.project(view, options).followedTileRanks?.head;
+    const tags = countries.map(countryKey);
+    assert.deepEqual(rank, { tags, refused });
+    tiles.setHour(hour, true);
+    tiles.setFollowedRank(hour, { ...rank!, hour, from: head.firstHour, until: head.lastHour });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(tiles.settled, true);
+    assert.ok(tiles.current);
+    assert.deepEqual([...tiles.current.keys()], tags);
+  }
+  assert.equal(requests.filter(request => request.top !== undefined).length, 0);
+  assert.deepEqual(requests.map(request => request.countries), [[7, 8], [9]]);
+  tiles.setHour(350, false);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(requests.filter(request => request.top !== undefined).map(({ top, hour }) => ({ top, hour })), [{ top: 10, hour: 350 }]);
+  tiles.close();
 });
 
 test('the exact audit reads the dated head, so a correct picture has an exact read to agree with', async () => {
