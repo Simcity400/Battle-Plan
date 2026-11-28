@@ -3624,7 +3624,10 @@ fn strait_assets() -> RaidAssets {
             .insert(id, next.into_iter().map(|n| (n, Some(50_000))).collect());
     }
     let mut assets = assets();
-    assets.geometry.land = BTreeSet::from([1, 3]);
+    assets.geometry = Arc::new(ProvinceGeometry {
+        land: BTreeSet::from([1, 3]),
+        ..assets.geometry.as_ref().clone()
+    });
     assets.paths = Ok(paths::PathSearch::new(graph));
     assets
 }

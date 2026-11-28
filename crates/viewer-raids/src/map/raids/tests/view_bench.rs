@@ -116,7 +116,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
     assets.moves = Ok(content_reader_unit_path::unit_path::MoveGraph::new(
         &graph, &geometry,
     ));
-    assets.geometry = geometry;
+    assets.geometry = Arc::new(geometry);
     assets.paths = Ok(paths::PathSearch::new(graph));
     assets.defines.base_max_command_power = 100 * 100_000;
     assets.catalog = Catalog {
