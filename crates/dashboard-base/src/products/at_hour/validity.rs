@@ -11,6 +11,9 @@ const MAX_CACHED_TABLE_DATES: usize = 256;
 
 mod variable;
 use variable::VariableDates;
+mod prepared;
+pub use prepared::DateSelection;
+use prepared::PreparedDates;
 
 thread_local! {
     static READ_DATES: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
@@ -212,22 +215,32 @@ pub struct ReadDates {
     links: Option<OwnerHistory>,
     countries: Option<OwnerHistory>,
     variables: Option<Arc<Mutex<VariableDates>>>,
+    prepared: Option<(&'static [DateSelection], Arc<Mutex<PreparedDates>>)>,
 }
 
 #[derive(Default)]
-struct ScriptedReadDates(Arc<Mutex<ReadDates>>);
+struct ScriptedReadDates(BTreeMap<&'static [DateSelection], Arc<Mutex<ReadDates>>>);
 
 impl ReadDates {
     pub fn prepare_scripted(source: &Source, run: u32) -> io::Result<Option<Arc<crate::products::read_ahead::Preparation>>> {
         VariableDates::prepare(&source.state::<VariableDates>(), source.replay(), run)
     }
 
-    pub fn for_scripted_source(source: &Source) -> Arc<Mutex<Self>> {
+    pub fn prepare_selected(source: &Source, run: u32, span: (i32, i32), specs: &'static [DateSelection]) -> io::Result<Option<Arc<crate::products::read_ahead::Preparation>>> {
+        let replay = source.replay();
+        let recorded = replay.recording().run(run)?;
+        if span == (recorded.first_hour, recorded.last_hour()) {
+            PreparedDates::prepare(source, run, specs)
+        } else {
+            Self::prepare_scripted(source, run)
+        }
+    }
+
+    pub fn for_selected_source(source: &Source, specs: &'static [DateSelection]) -> Arc<Mutex<Self>> {
         let kept = source.state::<ScriptedReadDates>();
-        let dates = Arc::clone(&kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0);
-        dates.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-            .variables.get_or_insert_with(|| source.state::<VariableDates>());
-        dates
+        Arc::clone(kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.entry(specs).or_insert_with(|| Arc::new(Mutex::new(Self {
+            variables: Some(source.state::<VariableDates>()), prepared: Some((specs, source.state::<PreparedDates>())), ..Self::default()
+        }))))
     }
 
     fn insert_dates(&mut self, table: TableId, selection: Selection, dates: Vec<i32>) {
@@ -319,12 +332,18 @@ impl ReadDates {
                 }
             }
         }
+        let prepared = self.prepared.as_ref().and_then(|(specs, prepared)| {
+            prepared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(run, (first, last), specs)
+        });
         let mut uncached = Vec::new();
         for (table, mut selection) in tables {
             selection.normalize();
             let key = (table, selection);
-            if let Some(dates) = self.tables.get(&key) {
-                if let Some(&next) = dates.get(dates.partition_point(|&at| at <= hour)) {
+            let next = self.tables.get(&key)
+                .map(|dates| dates.get(dates.partition_point(|&at| at <= hour)).copied())
+                .or_else(|| prepared.as_ref()?.next(table, &key.1, hour));
+            if let Some(next) = next {
+                if let Some(next) = next {
                     through = through.min(next - 1);
                     if through == hour {
                         return Ok(hour);

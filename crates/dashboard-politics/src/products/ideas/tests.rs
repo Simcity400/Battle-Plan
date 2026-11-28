@@ -349,6 +349,7 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
                 TableRows::ActiveIdeas(active),
             );
             set(&mut frame, TableId::HiredAdvisors, TableRows::HiredAdvisors(Vec::new()));
+            set(&mut frame, TableId::AdvisorTokens, TableRows::AdvisorTokens(Vec::new()));
             set(&mut frame, TableId::Characters, TableRows::Characters(Vec::new()));
             set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(Vec::new()));
             frame
@@ -358,13 +359,16 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
         .unwrap()
         .into_timelines(&Default::default())
         .unwrap();
-    let source = Source::from_replay(
+    let open = |replay| Source::from_replay(
         dashboard_base::SourceKey { source_id: "scripted-ideas".into(), revision: "1".into() },
         "synthetic.battleplan".into(),
-        Arc::new(replay),
+        replay,
         &AtomicBool::new(false),
     )
     .unwrap();
+    let replay = Arc::new(replay);
+    let legacy = open(Arc::clone(&replay));
+    let source = open(replay);
     let (cat, _dir) = dashboard_base::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/synth.lua",
@@ -375,7 +379,7 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
             concat!(
                 "defined_text = {\n",
                 "  name = synth_level_loc\n",
-                "  text = { trigger = { check_variable = { synth_level > 1 } } localization_key = SYNTH_HIGH }\n",
+                "  text = { trigger = { has_idea = synth_dynamic check_variable = { synth_level > 1 } } localization_key = SYNTH_HIGH }\n",
                 "  text = { localization_key = SYNTH_LOW }\n",
                 "}\n",
             ),
@@ -414,21 +418,32 @@ fn scripted_idea_names_descriptions_and_tooltips_update_at_the_exact_variable_ch
     ]);
     let content = Arc::new(dashboard_base::products::politics_content::PoliticsContent::load(Arc::new(cat)).unwrap());
     let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let legacy = super::history(&legacy, 1, &"AAA".into()).unwrap();
     let read = super::history(&source, 1, &"AAA".into()).unwrap();
-    let reply_at = |hour: i32| {
+    let stretch = query.timeline.at(100).unwrap();
+    if let Some(ready) = super::ReadDates::prepare_selected(&source, stretch.run, (stretch.first, stretch.last), super::DATE_SELECTIONS).unwrap() {
+        ready.wait().unwrap();
+    }
+    let reply_for = |read: &super::Read, hour: i32| {
         let params = super::IdeaHistoryParams { branch_id: "1".into(), country: "AAA".into(), hour };
         let asked = super::Asked { params: &params, tag: "AAA", hour, unrecorded: None };
         let mut noted = dashboard_base::catalogue::OwnRefusals::default();
         dashboard_base::catalogue::own_refusals(&mut noted, || {
-            let reply = super::present(&query, &content, &asked, &read, None, &AtomicBool::new(false)).unwrap();
+            let reply = super::present(&query, &content, &asked, read, None, &AtomicBool::new(false)).unwrap();
             assert!(reply.categories.iter().any(|category| category.token == "synth_category"));
             assert!(!reply.warnings.iter().any(|line| line.contains("0x14")));
             assert!(content.catalogue.refusal_lines().iter().any(|line| line.contains("0x14")));
             reply
         })
     };
+    let reply_at = |hour| reply_for(&read, hour);
 
-    let r100 = reply_at(100);
+    let (_, legacy_reads) = replay_recording::cells::count_reads(|| reply_for(&legacy, 100));
+    let (r100, proof_reads) = replay_recording::cells::count_reads(|| reply_at(100));
+    for table in [TableId::ActiveIdeas, TableId::AdvisorTokens] {
+        assert!(legacy_reads.get(&table).is_some_and(|reads| reads.stretches > 0));
+        assert_eq!(proof_reads.get(&table).map_or(0, |reads| reads.stretches), 0, "{table:?} used a legacy proof scan");
+    }
     let dyn_100 = r100.looks.iter().find(|l| l.info.token == "synth_dynamic").unwrap();
     assert_eq!(dyn_100.artwork.name.as_deref(), Some("Level Low"));
     assert_eq!(dyn_100.artwork.description.as_deref(), Some("Alpha brief"));

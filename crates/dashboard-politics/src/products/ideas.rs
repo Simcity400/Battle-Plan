@@ -2,7 +2,7 @@
 use dashboard_base::products::Country;
 use dashboard_base::products::{
     LoadContext, Product,
-    at_hour::ReadDates,
+    at_hour::{DateSelection, ReadDates},
     check_reply_budget,
     idea_format::{self, LocalisedText, ModifierFormat},
     politics_content::{PoliticsContent, politics_content},
@@ -24,7 +24,7 @@ use content_reader_key_names::characters::BuiltTemplate;
 use content_reader_parser::coverage::Gap;
 use content_reader_script::modifiers::{Modifier, Modifiers};
 use replay_lanes::lanes::{self, Cell, History, Keys};
-use replay_data::rows::{CharacterRow, LexicalTokenRow, ModifierDefinitionRow, TableId, tables};
+use replay_data::rows::{self, CharacterRow, LexicalTokenRow, ModifierDefinitionRow, TableId, mask, tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -1358,7 +1358,7 @@ pub(crate) fn history(source: &Source, branch: u64, tag: &Country) -> io::Result
         .map(|(&hour, &(_, _, id))| naming_at(&mut frames, hour, id))
         .collect::<io::Result<Vec<_>>>()?;
     let variables = KeyedVariables::for_source(source);
-    let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())), dates: ReadDates::for_scripted_source(source),
+    let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())), dates: ReadDates::for_selected_source(source, DATE_SELECTIONS),
         variables, lexical: Lexical::for_source(source), companions: CompanionTables::for_source(source),
         presentation: Mutex::default() });
     *held = Some(Arc::clone(&read));
@@ -1483,6 +1483,18 @@ pub(crate) fn load_for_markers(
 
 pub struct IdeaHistory;
 
+const DATE_SELECTIONS: &[DateSelection] = &[
+    DateSelection { table: TableId::ActiveIdeas, fields: mask::<rows::ActiveIdeaRow>(&["token"]), shift: Some(32) },
+    DateSelection { table: TableId::ScriptVariables, fields: mask::<rows::ScriptVariablesRow>(&["entries"]), shift: Some(0) },
+    DateSelection { table: TableId::HiredAdvisors, fields: mask::<rows::HiredAdvisorRow>(&["idea"]), shift: Some(32) },
+    DateSelection { table: TableId::CountryCharacters, fields: mask::<rows::CountryCharacterRow>(&["character"]), shift: None },
+    DateSelection { table: TableId::AdvisorTokens, fields: mask::<rows::AdvisorTokenRow>(&["token"]), shift: None },
+    DateSelection { table: TableId::CountryAppearance, fields: mask::<rows::CountryAppearanceRow>(&["cosmetic_tag", "name_tag", "leader_ideology", "overlord"]), shift: None },
+    DateSelection { table: TableId::FactionAdvisors, fields: mask::<rows::FactionAdvisorRow>(&["token"]), shift: None },
+    DateSelection { table: TableId::CountryRetiredCharacters, fields: mask::<rows::CountryCharacterRow>(&["character"]), shift: None },
+    DateSelection { table: TableId::ReservedCountryNaming, fields: mask::<rows::ReservedCountryNamingRow>(&["tag", "name_tag", "cosmetic_tag", "leader_ideology", "group", "overlord", "autonomy", "built"]), shift: None },
+];
+
 impl Product for IdeaHistory {
     const KEY: &'static str = "idea-history";
     const CONTENT_DEPENDENT: bool = true;
@@ -1497,7 +1509,7 @@ impl Product for IdeaHistory {
         {
             KeyedVariables::for_source(source).prepare_country(span.run, id);
         }
-        ReadDates::prepare_scripted(source, span.run)
+        ReadDates::prepare_selected(source, span.run, (span.first, span.last), DATE_SELECTIONS)
     });
     type Params = IdeaHistoryParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read];
