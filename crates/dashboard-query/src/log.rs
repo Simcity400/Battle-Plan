@@ -941,6 +941,10 @@ impl<'q, 'a> Reader<'q, 'a> {
     }
 
     fn materialize(&self, run: u32, entries: &[BucketEntry]) -> io::Result<Vec<Row>> {
+        self.materialize_with(run, entries, &self.cursor)
+    }
+
+    fn materialize_with(&self, run: u32, entries: &[BucketEntry], retained: &Mutex<Option<(u32, TableReader)>>) -> io::Result<Vec<Row>> {
         if entries.is_empty() {
             return Ok(Vec::new());
         }
@@ -988,7 +992,7 @@ impl<'q, 'a> Reader<'q, 'a> {
             }
             return Ok(out);
         }
-        let mut cursor = self.cursor.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cursor = retained.lock().unwrap_or_else(PoisonError::into_inner);
         let mut reader = match cursor.take() {
             Some((held, reader)) if held == run => reader,
             _ => {

@@ -4,6 +4,8 @@ use crate::{
     identity::{Country, Holder, Holders, TAG_UNLINKED},
     series::MissingSpan,
 };
+use replay::campaign::Replay;
+use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -22,10 +24,25 @@ pub const MEMBERSHIP_UNKNOWN: &str = "Group membership is unavailable at this ti
 
 const KEPT_SIGNATURES: usize = 16;
 
+pub struct IndexedStateRecords {
+    replay: Arc<Replay>,
+    table: TableId,
+    reader: Mutex<Option<(u32, super::TableReader)>>,
+}
+
+impl IndexedStateRecords {
+    pub fn new(replay: Arc<Replay>, table: TableId) -> Self {
+        Self { replay, table, reader: Mutex::default() }
+    }
+}
+
 impl super::Reader<'_, '_> {
     pub fn visit_indexed_state_records(
-        &self, run: u32, points: &[(i32, u128)], mut visit: impl FnMut(u128, &[super::Cell]) -> io::Result<()>,
+        &self, retained: &IndexedStateRecords, run: u32, points: &[(i32, u128)], mut visit: impl FnMut(u128, &[super::Cell]) -> io::Result<()>,
     ) -> io::Result<bool> {
+        if !std::ptr::eq(self.query.replay, retained.replay.as_ref()) || self.log.table != retained.table {
+            return Err(invalid("The indexed event reader is for a different recording or table"));
+        }
         if points.is_empty() {
             return Ok(true);
         }
@@ -34,7 +51,7 @@ impl super::Reader<'_, '_> {
             return Ok(false);
         }
         let entries = points.iter().map(|&(hour, key)| super::BucketEntry { hour, key, facet: 0, log_ordinal: None }).collect::<Vec<_>>();
-        for row in self.materialize(run, &entries)? {
+        for row in self.materialize_with(run, &entries, &retained.reader)? {
             visit(row.key, &row.cells)?;
         }
         Ok(true)

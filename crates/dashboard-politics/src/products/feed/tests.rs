@@ -1680,7 +1680,7 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
         .rows
         .into_iter()
         .map(|line| match line {
-            super::EventFeedLine::Event(row) => row.key,
+            super::EventFeedLine::Event(row) => row.key.clone(),
             other => panic!("expected event line, got {other:?}"),
         })
         .collect();
@@ -2539,13 +2539,17 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
     let panel = event_feed_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-feed-tail", "branchId": "1", "limit": 64, "categories": ["politics"] })).unwrap();
     let exact = panel.exact().unwrap();
     for (idx, hour) in [96, 97, 98, 99, 100, 101, 102, 103, 105, 120, 144, 146, 149, 100, 99, 101].into_iter().enumerate() {
+        super::index::REQUESTED_EVENT_LOCATORS.set(0);
         let (stepped, reads) = replay_recording::cells::count_reads(|| (exact.advance)(hour, idx == 0, &cancel, None));
+        let visited = super::index::REQUESTED_EVENT_LOCATORS.get();
         if idx == 3 {
-            let feed = reads.get(&TableId::FeedEvents).expect("the changing page reads its records");
-            assert_eq!((feed.opened, feed.restores), (1, 1), "the followed page reads the indexed observation points");
+            assert_eq!(visited, 1, "only the new fourth event is read");
+            let opened = reads.get(&TableId::FeedEvents).map_or(0, |feed| feed.opened);
+            assert_eq!(opened, 0, "the next page reuses the indexed observation reader");
         }
         if hour == 102 {
             assert!(!stepped.fresh, "quiet hour 102 reuses cached reply");
+            assert_eq!(visited, 0, "confirming a quiet projection reads no records");
         }
         if idx == 4 {
             assert!(stepped.fresh, "5th event at hour 100 triggers fresh folded reply");

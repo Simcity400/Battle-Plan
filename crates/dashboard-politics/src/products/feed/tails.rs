@@ -1,16 +1,19 @@
+mod page;
+
+use page::{FeedPage, ProjectedLine, StagedPage};
 
 use super::{
     EventFeedCategory, EventFeedKind, EventFeedRow, EventFeedUnavailable, Names, Notices, Presenter, branch, content_from, content_refusals, families, invalid,
     cards::{List, ScriptEdge, ScriptOccurrence, edge},
     fold::{self, PlannedLine},
     index::{self, Feed, Item, Locator, ScriptStatus, Scanned, TitleKeys, kind_code},
-    present_all,
+    present_all, present_rows,
     row::FeedEvent,
     text::{KeptNaming, kept_naming},
 };
 use dashboard_base::{
     Source,
-    catalogue::Catalogue,
+    catalogue::{self, Catalogue},
     products::{
         LoadContext, Product,
         occurrences::{self, OccurrenceCount, OccurrenceReply, OccurrenceSort},
@@ -20,15 +23,15 @@ use dashboard_follow::panel::Panel;
 use dashboard_query::{
     Query,
     identity::{Country, Holders},
-    log::occurrence::{Answer, Ask, Chip, DatedCursor, Index, Order, PlacedGap, Selection, Shown},
+    log::occurrence::{Answer, Ask, Chip, DatedCursor, Index, IndexedStateRecords, Order, PlacedGap, Selection, Shown},
     series::ranked::GroupSelection,
     timeline::Timeline,
 };
-use dashboard_world::products::{place_name_runs::{self, PlacePoint, names_at}, place_names::Name};
+use dashboard_world::products::place_name_runs::{self, PlacePoint, RowNames};
 use replay::campaign::Replay;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
@@ -305,8 +308,8 @@ pub struct EventFeedMoreRow {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(tag = "line", rename_all = "camelCase")]
 pub enum EventFeedLine {
-    Event(Box<EventFeedPageRow>),
-    Fold(Box<EventFeedFoldRow>),
+    Event(Arc<EventFeedPageRow>),
+    Fold(Arc<EventFeedFoldRow>),
     More(EventFeedMoreRow),
 }
 
@@ -409,7 +412,7 @@ struct Prepared {
     losses: Vec<(i32, i32)>,
     content: Arc<Result<Arc<Catalogue>, String>>,
     kept: Arc<Mutex<KeptNaming>>,
-    places: Mutex<BTreeMap<PlacePoint, Name>>,
+    places: Mutex<RowNames>,
 }
 
 fn branch_id(text: &str) -> io::Result<u64> {
@@ -486,13 +489,17 @@ fn locators(index: &Index<Item>, answer: &Answer, hour: i32) -> Vec<Locator> {
     out
 }
 
-fn planned_locators(index: &Index<Item>, planned: &[PlannedLine], hour: i32) -> Vec<Locator> {
+fn planned_locators(index: &Index<Item>, planned: &[PlannedLine], hour: i32, indexed: Option<&Scanned>) -> Vec<Locator> {
     let mut out = Vec::new();
     for line in planned {
         match line {
             PlannedLine::Event { at, .. } => if let Item::Log { head, edges, .. } = &index.get(*at).payload {
                 out.push(*head);
-                out.extend(edges.iter().copied().filter(|edge| edge.hour <= hour));
+                if let Some(scanned) = indexed {
+                    out.extend(scanned.visible_choice(edges, hour));
+                } else {
+                    out.extend(edges.iter().copied().filter(|edge| edge.hour <= hour));
+                }
             },
             PlannedLine::Fold { first_at, .. } => if let Item::Log { head, .. } = &index.get(*first_at).payload { out.push(*head); },
             PlannedLine::More { .. } => {}
@@ -539,7 +546,21 @@ fn notices_for(prepared: &Prepared, unattributed: u64, windows: bool, from: i32,
     }
 }
 
-type DatedFeed = (DatedCursor<Item>, fold::Pages);
+struct FollowedFeed {
+    dated: Option<(DatedCursor<Item>, fold::Pages)>,
+    page: FeedPage,
+    records: IndexedStateRecords,
+}
+
+impl FollowedFeed {
+    fn new(source: &Source) -> Self {
+        Self {
+            dated: None,
+            page: FeedPage::default(),
+            records: IndexedStateRecords::new(source.replay(), replay_data::rows::TableId::FeedEvents),
+        }
+    }
+}
 
 fn place_point(row: &EventFeedRow) -> Option<PlacePoint> {
     let state = match row.kind {
@@ -560,22 +581,22 @@ fn attach_place_names(source: &Source, query: &Query<'_>, load: &LoadContext, pr
         _ => None,
     }).collect();
     let mut held = prepared.places.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    held.retain(|point, _| points.contains(point));
-    let needed = points.into_iter().filter(|point| !held.contains_key(point)).collect();
-    held.extend(names_at(source, query, load, &needed, cancelled)?);
+    held.update(source, query, load, points, cancelled)?;
     for line in rows {
         let EventFeedLine::Event(row) = line else { continue };
-        if let Some(name) = point(row).and_then(|point| held.get(&point)) {
+        if let Some(name) = point(row).and_then(|point| held.get(&point))
+            && (row.place_name != name.name || row.place_missing != name.missing)
+        {
+            let row = Arc::make_mut(row);
             row.place_name.clone_from(&name.name);
             row.place_missing.clone_from(&name.missing);
         }
     }
-    let text_bytes: usize = held.values().map(|name| name.name.as_ref().map_or(0, String::capacity) + name.missing.as_ref().map_or(0, String::capacity)).sum();
-    if text_bytes > dashboard_base::products::MAX_PRODUCT_REPLY_BYTES { held.clear(); }
+    held.trim();
     Ok(())
 }
 
-fn load_feed_at(prepared: &Prepared, query: &Query<'_>, (source, load): (&Source, &LoadContext), params: &EventFeedTailParams, hour: i32, followed: Option<&mut Option<DatedFeed>>, cancelled: &AtomicBool) -> io::Result<EventFeedTailReply> {
+fn load_feed_at(prepared: &Prepared, query: &Query<'_>, (source, load): (&Source, &LoadContext), params: &EventFeedTailParams, hour: i32, mut followed: Option<&mut FollowedFeed>, cancelled: &AtomicBool) -> io::Result<EventFeedTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
     let index = prepared.index.as_ref();
@@ -619,7 +640,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, (source, load): (&Source
             chips: &[],
         };
         let (folded, live, unattributed, mut next) = if let Order::Date(direction) = order {
-            if let Some(held) = followed {
+            if let Some(held) = followed.as_mut().map(|held| &mut held.dated) {
                 if held.is_none() {
                     *held = Some((prepared.index.dated_cursor(&query.holders, &ask)?, fold::Pages::new(feed)));
                 }
@@ -648,11 +669,18 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, (source, load): (&Source
         }
         (folded.total, folded.offset, live, unattributed, folded.gaps, next, folded.lines)
     };
-    let locators = planned_locators(index, &planned, hour);
-    let indexed = if indexed_records { index::read_indexed_events(query, &locators)? } else { None };
-    let read = match indexed {
-        Some(read) => read,
-        None => index::read_events(query, &locators)?,
+    let (cache, records) = followed.map_or((None, None), |held| {
+        ((!opened && indexed_records).then_some(&mut held.page), indexed_records.then_some(&held.records))
+    });
+    let (mut staged, planned) = StagedPage::new(cache, prepared, hour, planned);
+    let locators = planned_locators(index, &planned, hour, records.map(|_| prepared.scanned.as_ref()));
+    let read = match (locators.is_empty(), records) {
+        (true, _) => std::collections::HashMap::new(),
+        (false, None) => index::read_events(query, &locators)?,
+        (false, Some(retained)) => match index::read_indexed_events(query, &locators, retained)? {
+            Some(read) => read,
+            None => index::read_events(query, &planned_locators(index, &planned, hour, None))?,
+        },
     };
     let names = Names::new(&query.holders);
     let mut notices = Notices::default();
@@ -693,91 +721,101 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, (source, load): (&Source
             .flatten();
         shapes.push(Some((head_at, choice)));
     }
-    let mut presented = present_all(query, &prepared.scanned, &events, &names, &presenter, &mut notices, cancelled)?;
+    let (mut presented, mut evidence): (Vec<_>, Vec<_>) = present_rows(query, &prepared.scanned, &events, &names, &presenter, cancelled)?
+        .rows.into_iter().zip(events.iter()).map(|(held, event)| {
+            let (row, source) = held.map_or((None, None), |(row, source)| (row, Some((event.hour, source))));
+            (row, source)
+        }).unzip();
     if !opened {
         listed(&mut presented, false, true);
     }
-    let mut art_warnings = BTreeMap::new();
-    let mut rows: Vec<_> = planned
+    let projected = planned
         .into_iter()
         .zip(shapes)
-        .map(|(line, shape)| match line {
-            PlannedLine::Event { at, parent } => {
-                let occurrence = index.get(at);
-                let (key, mut row, mut choice) = match (&occurrence.payload, shape) {
-                    (Item::Family(family), _) => (family.row.id.clone(), Some(family.shown(&mut art_warnings)), None),
-                    (Item::Log { .. }, Some((head_at, choice))) => {
-                        let row = presented[head_at].take();
-                        let choice = choice.and_then(|at| presented[at].take().map(|row| edge(events[at], row, prepared.scanned.partial_read(events[at].read_hour))));
-                        (events[head_at].id(), row, choice)
-                    }
-                    _ => unreachable!(),
-                };
-                if !opened {
-                    let chosen = choice.as_ref().and_then(|choice| choice.option).or_else(|| row.as_ref().and_then(|row| row.cause.as_ref()).and_then(|cause| cause.selected_option));
-                    if let Some(item) = row.as_mut().and_then(|row| row.item.as_mut()) {
-                        chosen_names(item, chosen);
-                    }
-                    let listed_options = row.as_ref().and_then(|row| row.item.as_ref()).is_some_and(|item| item.options.as_ref().is_some_and(|options| !options.is_empty()));
-                    if let Some(choice) = choice.as_mut() {
-                        choice.row.cause = None;
-                        choice.row.window = None;
-                        if listed_options {
-                            choice.row.item = None;
+        .map(|(line, shape)| {
+            let mut projected = ProjectedLine::new(shape.and_then(|(head, _)| evidence[head].take()),
+                shape.and_then(|(_, choice)| choice).and_then(|at| evidence[at].take()));
+            projected.row = Some(match line {
+                PlannedLine::Event { at, parent } => {
+                    let occurrence = index.get(at);
+                    let (key, mut row, mut choice) = match (&occurrence.payload, shape) {
+                        (Item::Family(family), _) => (family.row.id.clone(), Some(projected.family(family)), None),
+                        (Item::Log { .. }, Some((head_at, choice))) => {
+                            let row = presented[head_at].take();
+                            let choice = choice.and_then(|at| presented[at].take().map(|row| edge(events[at], row, prepared.scanned.partial_read(events[at].read_hour))));
+                            (events[head_at].id(), row, choice)
+                        }
+                        _ => unreachable!(),
+                    };
+                    if !opened {
+                        let chosen = choice.as_ref().and_then(|choice| choice.option).or_else(|| row.as_ref().and_then(|row| row.cause.as_ref()).and_then(|cause| cause.selected_option));
+                        if let Some(item) = row.as_mut().and_then(|row| row.item.as_mut()) {
+                            chosen_names(item, chosen);
+                        }
+                        let listed_options = row.as_ref().and_then(|row| row.item.as_ref()).is_some_and(|item| item.options.as_ref().is_some_and(|options| !options.is_empty()));
+                        if let Some(choice) = choice.as_mut() {
+                            choice.row.cause = None;
+                            choice.row.window = None;
+                            if listed_options {
+                                choice.row.item = None;
+                            }
                         }
                     }
+                    let state = occurrence.state_at(hour);
+                    let live = state.is_some_and(|state| index::LIVE.contains(&state));
+                    let status = state.and_then(ScriptStatus::of_code);
+                    let not_recorded_reason = (status == Some(ScriptStatus::NotRecorded))
+                        .then(|| prepared.scanned.choice_break(occurrence.observed, hour).map(|(_, reason)| reason.to_owned()))
+                        .flatten();
+                    EventFeedLine::Event(Arc::new(EventFeedPageRow {
+                        key,
+                        hour: occurrence.date,
+                        observed: occurrence.observed,
+                        live,
+                        row,
+                        choice,
+                        status,
+                        not_recorded_reason,
+                        parent,
+                        place_name: None,
+                        place_missing: None,
+                    }))
                 }
-                let state = occurrence.state_at(hour);
-                let live = state.is_some_and(|state| index::LIVE.contains(&state));
-                let status = state.and_then(ScriptStatus::of_code);
-                let not_recorded_reason = (status == Some(ScriptStatus::NotRecorded))
-                    .then(|| prepared.scanned.choice_break(occurrence.observed, hour).map(|(_, reason)| reason.to_owned()))
-                    .flatten();
-                EventFeedLine::Event(Box::new(EventFeedPageRow {
+                PlannedLine::Fold { key, first_at, observed, count, kind, country } => {
+                    let occurrence = index.get(first_at);
+                    let mut first_row = match (&occurrence.payload, shape) {
+                        (Item::Family(family), _) => Some(projected.family(family)),
+                        (Item::Log { .. }, Some((head_at, _))) => presented[head_at].clone(),
+                        _ => unreachable!(),
+                    };
+                    if !opened
+                        && let Some(item) = first_row.as_mut().and_then(|row| row.item.as_mut())
+                    {
+                        chosen_names(item, None);
+                    }
+                    EventFeedLine::Fold(Arc::new(EventFeedFoldRow {
+                        key,
+                        hour: occurrence.date,
+                        observed,
+                        count: count.to_string(),
+                        kind,
+                        country,
+                        first_row,
+                    }))
+                }
+                PlannedLine::More { key, parent, hour, total, remaining } => EventFeedLine::More(EventFeedMoreRow {
                     key,
-                    hour: occurrence.date,
-                    observed: occurrence.observed,
-                    live,
-                    row,
-                    choice,
-                    status,
-                    not_recorded_reason,
                     parent,
-                    place_name: None,
-                    place_missing: None,
-                }))
-            }
-            PlannedLine::Fold { key, first_at, observed, count, kind, country } => {
-                let occurrence = index.get(first_at);
-                let mut first_row = match (&occurrence.payload, shape) {
-                    (Item::Family(family), _) => Some(family.shown(&mut art_warnings)),
-                    (Item::Log { .. }, Some((head_at, _))) => presented[head_at].clone(),
-                    _ => unreachable!(),
-                };
-                if !opened
-                    && let Some(item) = first_row.as_mut().and_then(|row| row.item.as_mut())
-                {
-                    chosen_names(item, None);
-                }
-                EventFeedLine::Fold(Box::new(EventFeedFoldRow {
-                    key,
-                    hour: occurrence.date,
-                    observed,
-                    count: count.to_string(),
-                    kind,
-                    country,
-                    first_row,
-                }))
-            }
-            PlannedLine::More { key, parent, hour, total, remaining } => EventFeedLine::More(EventFeedMoreRow {
-                key,
-                parent,
-                hour,
-                total: total.to_string(),
-                remaining: remaining.to_string(),
-            }),
-        })
-        .collect();
+                    hour,
+                    total: total.to_string(),
+                    remaining: remaining.to_string(),
+                }),
+            });
+            projected
+        });
+    let projected = staged.finish(projected);
+    let art_warnings = projected.credit(&mut notices);
+    let mut rows = projected.rows();
     content_refusals(&presenter, &mut notices)?;
     let from = params.from.unwrap_or(query.timeline.first);
     let to = params.to.map_or(hour, |to| to.min(hour));
@@ -823,6 +861,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, (source, load): (&Source
             .collect(),
     };
     dashboard_base::products::check_reply_budget(&reply)?;
+    projected.keep(&reply.rows);
     Ok(reply)
 }
 
@@ -1085,8 +1124,22 @@ pub fn event_feed_dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &
     let ready = EventFeedTail::PREPARE.expect("event feed preparation")(source, &params, load).map_err(|error| error.to_string())?;
     let branch = branch_id(&params.branch_id).map_err(|error| error.to_string())?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
-    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, EventFeedTail::CONTENT_DEPENDENT, || prepare(source, &query, branch, load, None, asked!(params), &AtomicBool::new(false)));
-    let held = Mutex::new((finish, prepared.map_err(|error| error.to_string())?, None));
+    let prepare = move |source: &Source, query: &Query<'_>, load: &LoadContext, params: &EventFeedTailParams, cancelled: &AtomicBool| {
+        let prepared = self::prepare(source, query, branch, load, None, asked!(params), cancelled)?;
+        if params.place_names == Some(true) {
+            let mut names = RowNames::following();
+            names.hints(prepared.scanned.place_points().chain((0..prepared.index.len()).filter_map(|at| {
+                match &prepared.index.get(at as u32).payload {
+                    Item::Family(family) => place_point(&family.row),
+                    Item::Log { .. } => None,
+                }
+            })));
+            *prepared.places.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = names;
+        }
+        Ok::<_, io::Error>(prepared)
+    };
+    let (finish, prepared) = dashboard_base::products::Finish::open(source, load, EventFeedTail::CONTENT_DEPENDENT, || prepare(source, &query, load, &params, &AtomicBool::new(false)));
+    let held = Mutex::new((finish, prepared.map_err(|error| error.to_string())?, FollowedFeed::new(source)));
     let owned = Owned::of(&query, source.replay());
     let (shared, panel_load) = (Arc::clone(source), LoadContext { content: load.content.clone() });
     place_name_runs::prepared_panel(ready, dashboard_base::products::at_hour::interval_panel(source.tables(), move |hour, cancelled| {
@@ -1095,8 +1148,8 @@ pub fn event_feed_dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &
         let hour = occurrences::cutoff(&query, Some(hour))?;
         let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if held.1.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
-            let (finish, prepared) = dashboard_base::products::Finish::open(&shared, load, EventFeedTail::CONTENT_DEPENDENT, || prepare(&shared, &query, branch, load, None, asked!(params), cancelled));
-            *held = (finish, prepared.map_err(|error| dashboard_core::duplicate(&error))?, None);
+            let (finish, prepared) = dashboard_base::products::Finish::open(&shared, load, EventFeedTail::CONTENT_DEPENDENT, || prepare(&shared, &query, load, &params, cancelled));
+            *held = (finish, prepared.map_err(|error| dashboard_core::duplicate(&error))?, FollowedFeed::new(&shared));
         }
         let (finish, prepared, pages) = &mut *held;
         let reply = finish.reply(|| load_feed_at(prepared, &query, (&shared, load), &params, hour, Some(pages), cancelled))?;

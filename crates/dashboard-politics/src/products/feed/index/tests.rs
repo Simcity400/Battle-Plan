@@ -177,6 +177,7 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
     ]);
     let scanned = Scanned {
         briefs: vec![opener, later],
+        places: Vec::new(),
         unique_record_keys: true,
         native: Vec::new(),
         war_ends: Vec::new(),

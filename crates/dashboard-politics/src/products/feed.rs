@@ -496,6 +496,23 @@ fn tag(names: &Names, slot: Slot, hour: i32) -> Option<String> {
 }
 
 pub(crate) fn present_all(query: &Query<'_>, scanned: &index::Scanned, events: &[&FeedEvent], names: &Names, presenter: &Presenter<'_>, notices: &mut Notices, cancelled: &AtomicBool) -> io::Result<Vec<Option<EventFeedRow>>> {
+    let PresentedRows { rows: presented, order } = present_rows(query, scanned, events, names, presenter, cancelled)?;
+    for at in order {
+        let Some((_, source)) = &presented[at] else { continue };
+        catalogue::credit(&source.2);
+        notices.absorb(&source.1);
+    }
+    Ok(presented.into_iter().map(|row| row.and_then(|(row, _)| row)).collect())
+}
+
+type PresentedRow = (Option<EventFeedRow>, index::HeldRow);
+
+struct PresentedRows {
+    rows: Vec<Option<PresentedRow>>,
+    order: Vec<usize>,
+}
+
+fn present_rows(query: &Query<'_>, scanned: &index::Scanned, events: &[&FeedEvent], names: &Names, presenter: &Presenter<'_>, cancelled: &AtomicBool) -> io::Result<PresentedRows> {
     let states = scanned.decision_states(query, events)?;
     let mut order: Vec<usize> = (0..events.len()).collect();
     order.sort_by_key(|&at| events[at].hour);
@@ -515,18 +532,16 @@ pub(crate) fn present_all(query: &Query<'_>, scanned: &index::Scanned, events: &
         }
     }
     scanned.keep_rows(presenter.content(), presenter.effects(), request, made);
-    let mut out: Vec<Option<EventFeedRow>> = vec![None; events.len()];
-    for &at in &order {
-        let Some(kept) = held[at].as_ref() else { continue };
-        catalogue::credit(&kept.2);
-        notices.absorb(&kept.1);
-        let mut presented = kept.0.clone();
-        if let Some(row) = presented.as_mut() {
-            row.decision_state = states[at].clone();
-        }
-        out[at] = presented;
-    }
-    Ok(out)
+    let rows = held.into_iter().zip(states).map(|(held, state)| {
+        held.map(|held| {
+            let mut row = held.0.clone();
+            if let Some(row) = &mut row {
+                row.decision_state = state;
+            }
+            (row, held)
+        })
+    }).collect();
+    Ok(PresentedRows { rows, order })
 }
 
 pub(crate) fn present(event: &FeedEvent, names: &Names, presenter: &Presenter<'_>, notices: &mut Notices) -> io::Result<Option<EventFeedRow>> {
