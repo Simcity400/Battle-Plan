@@ -736,6 +736,13 @@ describe('world-tension projections', () => {
     assert.equal(eventsTopParams.includeStack, false, 'S18: Events skips building stack history');
     assert.equal(linesTopParams.includeEvents, false, 'S18: Lines skips scanning events');
 
+    const followedEvents = worldTensionEventsDeclaration.sources(topCtx, { ...viewReq, following: true });
+    assert.equal(followedEvents.entries.filter(entry => entry.read.shape === 'branch-to-hour').length, 0);
+    const eventRead = followedEvents.entries[0]!.read;
+    assert.ok(eventRead.shape === 'point' && eventRead.channel === 'panel');
+    assert.deepEqual(eventRead.followQuery, { panel: 'world-tension-stack', ...eventsTopParams, firstHour: H1936 });
+    assert.equal(eventRead.hourParam, 'lastHour');
+
     const noMarkersCtx = mkCtx({ all: true, tags: [], top: null }, { kind: 'all' }, { markers: false });
     const stackNoMarkers = (worldTensionDeclaration.sources(noMarkersCtx, viewReq).entries[0]!.read as { params: Record<string, unknown> }).params;
     assert.equal(stackNoMarkers.includeEvents, false, 'S18: Stack with markers off skips scanning events');

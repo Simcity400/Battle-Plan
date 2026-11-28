@@ -130,11 +130,25 @@ export const worldTensionEventsDeclaration: TableWidgetDeclaration<WorldTensionE
   emptyCampaign: 'Load a campaign to see threat events.',
   icon: 'alert',
   countries: { mode: 'multi', content: 'history' },
-  sources: (ctx: FamilyPlanContext) => {
+  sources: (ctx: FamilyPlanContext, view) => {
     const top = ctx.countries.top ?? null;
     const keyed = !ctx.countries.all && top == null;
     const group = keyed ? groupSelection(ctx.widget.countries) : null;
     const countries = keyed && !group ? [...ctx.countries.tags] : null;
+    const product = 'world-tension-stack';
+    const coverage = { mode: 'population', form: 'all' } as const;
+    const params = {
+      branchId: ctx.branch.id,
+      layers: 1,
+      values: 'share',
+      countries,
+      top,
+      group,
+      width: 120,
+      includeStack: false,
+      includeEvents: true,
+    };
+    const followed = { ...params, firstHour: ctx.branch.firstHour };
     return {
       owner: `world-tension-events:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
       entries: [{
@@ -142,22 +156,21 @@ export const worldTensionEventsDeclaration: TableWidgetDeclaration<WorldTensionE
         source: ctx.track.source,
         branch: ctx.branch.id,
         offset: ctx.track.axisOffset,
-        read: {
+        read: view.following ? {
+          shape: 'point',
+          channel: 'panel',
+          coverage,
+          product,
+          followQuery: { panel: product, ...followed },
+          params: followed,
+          hourParam: 'lastHour',
+          validate: validateWorldTensionStack,
+        } : {
           shape: 'branch-to-hour',
-          coverage: { mode: 'population', form: 'all' },
-          product: 'world-tension-stack',
+          coverage,
+          product,
           followQuery: null,
-          params: {
-            branchId: ctx.branch.id,
-            layers: 1,
-            values: 'share',
-            countries,
-            top,
-            group,
-            width: 120,
-            includeStack: false,
-            includeEvents: true,
-          },
+          params,
           dynamicKeys: ['firstHour', 'lastHour'],
           validate: validateWorldTensionStack,
           provenInterval: (data, _requested, hour) => {
