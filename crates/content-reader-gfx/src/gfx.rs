@@ -27,12 +27,12 @@ pub struct SpriteType {
     pub name: String,
     pub texture: Option<String>,
     pub frames: u32,
-    pub source_file: String,
+    pub source_file: Arc<str>,
     pub facts: SpriteFacts,
 }
 
 impl SpriteType {
-    fn new(source_file: &str, facts: &SpriteFacts) -> Result<Self, String> {
+    fn new(source_file: &Arc<str>, facts: &SpriteFacts) -> Result<Self, String> {
         let name = std::str::from_utf8(&facts.name)
             .map_err(|_| "its name is not UTF-8".to_owned())?
             .to_owned();
@@ -64,7 +64,7 @@ impl SpriteType {
             name,
             texture,
             frames,
-            source_file: source_file.to_owned(),
+            source_file: Arc::clone(source_file),
             facts: facts.clone(),
         })
     }
@@ -81,7 +81,7 @@ pub type Decode = fn(&str, &[u8]) -> Result<SpriteType, String>;
 
 #[derive(Clone)]
 enum Declared {
-    Read(BTreeMap<String, SpriteType>),
+    Read(Arc<[SpriteType]>),
     Kept(Kept),
 }
 
@@ -145,7 +145,7 @@ impl Kept {
 
 impl Default for Declared {
     fn default() -> Self {
-        Self::Read(BTreeMap::new())
+        Self::Read(Arc::default())
     }
 }
 
@@ -161,6 +161,11 @@ impl std::fmt::Debug for Declared {
     }
 }
 
+fn find_sprite<'a>(sprites: &'a [SpriteType], name: &str) -> Option<&'a SpriteType> {
+    let index = sprites.binary_search_by(|sprite| sprite.name.as_str().cmp(name)).ok()?;
+    sprites.get(index)
+}
+
 impl Declared {
     fn len(&self) -> usize {
         match self {
@@ -171,21 +176,21 @@ impl Declared {
 
     fn contains(&self, name: &str) -> bool {
         match self {
-            Self::Read(sprites) => sprites.contains_key(name),
+            Self::Read(sprites) => find_sprite(sprites, name).is_some(),
             Self::Kept(kept) => kept.table.find(name.as_bytes()).is_some(),
         }
     }
 
     fn get(&self, name: &str) -> Option<Result<&SpriteType, String>> {
         match self {
-            Self::Read(sprites) => sprites.get(name).map(Ok),
+            Self::Read(sprites) => find_sprite(sprites, name).map(Ok),
             Self::Kept(kept) => Some(kept.decoded(kept.table.find(name.as_bytes())?)),
         }
     }
 
     fn iter(&self) -> Box<dyn Iterator<Item = (&String, &SpriteType)> + '_> {
         match self {
-            Self::Read(sprites) => Box::new(sprites.iter()),
+            Self::Read(sprites) => Box::new(sprites.iter().map(|sprite| (&sprite.name, sprite))),
             Self::Kept(kept) => Box::new(
                 (0..kept.table.len())
                     .filter_map(move |index| kept.decoded(index).ok())
@@ -201,6 +206,7 @@ impl SpriteSet {
         let mut refused_names = BTreeMap::new();
         let mut refused = Vec::new();
         for (path, file) in files {
+            let source_file = Arc::<str>::from(path.as_str());
             let file = file.borrow();
             refused.extend(
                 file.refusals
@@ -209,7 +215,7 @@ impl SpriteSet {
             );
             for facts in &file.sprites {
                 let read = if facts.refusals.is_empty() {
-                    SpriteType::new(path, facts)
+                    SpriteType::new(&source_file, facts)
                 } else {
                     Err(facts
                         .refusals
@@ -235,7 +241,7 @@ impl SpriteSet {
             }
         }
         Self {
-            sprites: Declared::Read(sprites),
+            sprites: Declared::Read(sprites.into_values().collect()),
             refused_names,
             refused,
         }
@@ -404,6 +410,9 @@ mod tests {
         assert_eq!(a.frames, 1);
         let b = set.lookup("GFX_b").unwrap();
         assert_eq!(b.frames, 14);
+        let (key, sprite) = set.iter().next().unwrap();
+        assert!(std::ptr::eq(key.as_ptr(), sprite.name.as_ptr()));
+        assert!(std::ptr::eq(a.source_file.as_ptr(), b.source_file.as_ptr()));
         assert!(matches!(
             &b.facts.kind,
             SpriteKind::Plain(plain) if plain.always_transparent

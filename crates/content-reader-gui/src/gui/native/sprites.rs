@@ -247,7 +247,7 @@ pub enum SpriteKind {
         animation: FrameAnimation,
     },
     Tile { plain: Plain, size: [i32; 2] },
-    MaskedShield { plain: Plain, shield: MaskedShield },
+    MaskedShield { plain: Plain, shield: Box<MaskedShield> },
     CorneredTile(CorneredTile),
     Progress(Progress),
     Text(TextSprite),
@@ -558,7 +558,7 @@ impl Reader<'_> {
                 },
                 Some("maskedshieldtype") => SpriteKind::MaskedShield {
                     plain: Plain::default(),
-                    shield: MaskedShield::default(),
+                    shield: Box::default(),
                 },
                 Some("corneredtilespritetype") => SpriteKind::CorneredTile(CorneredTile {
                     frames: 1,
