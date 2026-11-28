@@ -53,8 +53,9 @@ const pending = new Promise<never>(() => {});
 const requests: string[] = [];
 const asked: { product: string; hour: number }[] = [];
 const decoratedRegistrations: { count: number }[] = [];
-let decoratedRoute: number;
-let decoratedSub: number | undefined;
+let acknowledgeDecorated = () => {};
+const initialDecoratedAck = new Promise<void>(resolve => { acknowledgeDecorated = resolve; });
+let decoratedRegistration: { id: number; route: number; count: number } | undefined;
 let followPorts: readonly MessagePort[] = [];
 const decoratedReply: DecoratedDivisionsReply = {
   divisions: [{
@@ -77,10 +78,10 @@ const makeClient = (replies: Replies) => ({
     if (request.product === 'follow') {
       if (replies !== 'decorated') return reply(request, { available: false, reason: 'not followed in the sweep' });
       const { id, query, route } = request.params as { id: number; query: { count: number }; route: number };
-      decoratedSub = id;
-      decoratedRoute = route;
+      decoratedRegistration = { id, route, count: query.count };
       decoratedRegistrations.push(query);
-      return reply(request, { available: true, route: decoratedRoute });
+      await initialDecoratedAck;
+      return reply(request, { available: true, route });
     }
     if (replies === 'decorated' && request.product === 'follow-clock') return reply(request, { available: true });
     if (request.product === 'follow-clock' || request.product === 'unfollow') return reply(request, null);
@@ -145,9 +146,10 @@ const spec = (item: Case): WidgetSpec => {
   const made = createWidget(item.kind, 'main', item.id);
   return { ...made, time: TIMES[item.mode], options: { ...made.options, ...(item.show ? { show: item.show } : {}) } };
 };
+const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 const turn = async () => {
   await new Promise<void>(resolve => setTimeout(resolve, 0));
-  await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+  await nextFrame();
 };
 const lanePending = () => !!document.querySelector('.fh-body-wrap:has(> [data-family-pending]) > .fh-overlay [data-state="loading"]');
 const settle = async () => {
@@ -184,19 +186,28 @@ Object.assign(window, { timeSweep: {
   asked: () => asked.splice(0),
   preload: () => loadEveryWidgetModule(),
   decoratedRegistrations: () => decoratedRegistrations.splice(0),
-  async settleDecorated() {
-    if (decoratedSub === undefined || pipeline?.status(decoratedSub).status !== 'followed') throw new Error('Expected an active decorated divisions registration');
+  async settleDecorated(count: number) {
+    acknowledgeDecorated();
+    let registration;
+    for (;;) {
+      registration = decoratedRegistration;
+      if (registration?.count === count) {
+        const state = pipeline?.status(registration.id);
+        if (state?.status === 'followed') break;
+        if (state?.status === 'failed' || state?.status === 'refused') throw new Error(state.reason ?? 'Decorated divisions could not follow');
+      }
+      await nextFrame();
+    }
     const hour = clock.getHour() + OFFSET;
-    const bytes = datedPanel(decoratedSub, hour, decoratedReply, clock.getSnapshot().seekSequence, decoratedRoute);
+    const bytes = datedPanel(registration.id, hour, decoratedReply, clock.getSnapshot().seekSequence, registration.route);
     splitForLanes(bytes, followPorts.length).lanes.forEach((part, lane) => {
       if (part) followPorts[lane]!.postMessage(packet('panels', part, undefined), [part.buffer]);
     });
     await settle();
     return read(mounted[0]!);
   },
-  async resizeDecorated(height: number) {
+  resizeDecorated(height: number) {
     document.getElementById(mounted[0]!.id)!.style.height = `${height}px`;
-    await settle();
   },
   async mount(ids: string[], replies: Replies, axis: number, prepared = true) {
     const runtime = makeRuntime(replies);
