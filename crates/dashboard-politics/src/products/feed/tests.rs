@@ -2497,7 +2497,9 @@ fn event_feed_folds_runs_on_the_server_across_pages_expansion_playback_filters_a
         if idx == 4 {
             assert!(stepped.fresh, "5th event at hour 100 triggers fresh folded reply");
         }
-        assert_eq!(*stepped.value, (exact.cold)(hour, &cancel), "stepped vs cold at step {idx} hour {hour}");
+        let rebuilt = dashboard_base::products::Finish::new(&replay_source, &context, EventFeedTail::CONTENT_DEPENDENT)
+            .reply(|| EventFeedTail::load(&replay_source, &ask(hour), &context, &cancel)).unwrap();
+        assert_eq!(*stepped.value, Ok(serde_json::to_value(rebuilt).unwrap()), "stepped vs exact product at step {idx} hour {hour}");
     }
 }
 

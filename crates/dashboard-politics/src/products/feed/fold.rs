@@ -2,8 +2,8 @@ use super::{
     EventFeedKind,
     index::{Feed, kind_code},
 };
-use dashboard_query::log::occurrence::{DatedRows, Direction, PlacedGap};
-use std::{borrow::Cow, cmp::Reverse, fmt::Write};
+use dashboard_query::log::occurrence::{DatedRows, DatedUpdate, Direction, PlacedGap};
+use std::{borrow::Cow, cmp::Reverse, collections::{BTreeMap, BTreeSet}, fmt::Write};
 
 pub(crate) const MIN_RUN: usize = 5;
 pub(crate) const CHILDREN_SHOWN: usize = 32;
@@ -78,12 +78,14 @@ fn has_gap(marks: &[i32], lo: i32, hi: i32, desc: bool) -> bool {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PlannedLine {
     Event { at: u32, parent: Option<String> },
     Fold { key: String, first_at: u32, observed: i32, count: u32, kind: EventFeedKind, country: String },
     More { key: String, parent: String, hour: i32, total: u32, remaining: u32 },
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct FoldedPage {
     pub total: u64,
     pub offset: u64,
@@ -215,4 +217,144 @@ pub(crate) fn page(feed: &Feed, dated: DatedRows<'_>, direction: Direction, offs
         .collect();
     placed.sort_by_key(|(before, gap)| (*before, Reverse(gap.last_hour)));
     FoldedPage { total, offset: clamped, lines, gaps: placed.into_iter().map(|(_, gap)| gap).collect() }
+}
+
+pub(crate) struct Window<'a> {
+    pub direction: Direction,
+    pub offset: u64,
+    pub limit: u32,
+    pub expanded: Option<&'a [String]>,
+    pub full: Option<&'a [String]>,
+}
+
+#[derive(Default)]
+struct Day {
+    lines: Vec<PlannedLine>,
+    gap_offsets: BTreeMap<i32, u64>,
+}
+
+pub(crate) struct Pages {
+    dates: Vec<(i32, u32, u32)>,
+    days: Vec<Day>,
+    totals: Vec<u64>,
+    marks: BTreeSet<i32>,
+    #[cfg(test)]
+    pub visited: usize,
+}
+
+impl Pages {
+    pub(crate) fn new(feed: &Feed) -> Self {
+        let mut dates: Vec<(i32, u32, u32)> = Vec::new();
+        for at in (0..feed.index.len() as u32).rev() {
+            let date = feed.index.get(at).date.div_euclid(24);
+            match dates.last_mut() {
+                Some((held, newest, _)) if *held == date => *newest = at,
+                _ => dates.push((date, at, at)),
+            }
+        }
+        let days = (0..dates.len()).map(|_| Day::default()).collect();
+        let totals = vec![0; dates.len() + 1];
+        Self { dates, days, totals, marks: BTreeSet::new(), #[cfg(test)] visited: 0 }
+    }
+
+    fn prefix(&self, mut count: usize) -> u64 {
+        let mut prefix = 0;
+        while count != 0 {
+            prefix += self.totals[count];
+            count &= count - 1;
+        }
+        prefix
+    }
+
+    fn changed_total(&mut self, day: usize, old: u64, new: u64) {
+        let mut node = day + 1;
+        while node < self.totals.len() {
+            self.totals[node] = self.totals[node] - old + new;
+            node += node & node.wrapping_neg();
+        }
+    }
+
+    fn day_at(&self, mut ordinal: u64) -> usize {
+        let mut node = 0;
+        let mut bit = self.days.len().next_power_of_two();
+        while bit != 0 {
+            let next = node + bit;
+            if let Some(&count) = self.totals.get(next) && count <= ordinal {
+                ordinal -= count;
+                node = next;
+            }
+            bit >>= 1;
+        }
+        node
+    }
+
+    pub(crate) fn advance(&mut self, feed: &Feed, update: &DatedUpdate<'_>, window: &Window<'_>) -> FoldedPage {
+        #[cfg(test)]
+        { self.visited = 0; }
+        if update.reset {
+            self.days.iter_mut().for_each(|day| *day = Day::default());
+            self.totals.fill(0);
+            self.marks.clear();
+        }
+        let desc = window.direction == Direction::Descending;
+        let mark = |first, last| if desc { last } else { first };
+        let marks: BTreeSet<_> = update.gaps.iter().map(|gap| mark(gap.first_hour, gap.last_hour)).collect();
+        let day_of = |dates: &[(i32, u32, u32)], hour: i32| dates.binary_search_by_key(&hour.div_euclid(24), |&(date, ..)| date);
+        let mut dirty: BTreeSet<_> = self.marks.symmetric_difference(&marks).filter_map(|&hour| day_of(&self.dates, hour).ok()).collect();
+        self.marks = marks;
+        let mut change = |at| {
+            dirty.insert(day_of(&self.dates, feed.index.get(at).date).expect("each feed row has a day"));
+        };
+        if update.reset {
+            update.newest_first().for_each(change);
+        } else {
+            update.changed.iter().filter(|edit| edit.visibility_changed).map(|edit| edit.at).for_each(&mut change);
+        }
+        for day in dirty {
+            let (date, newest, oldest) = self.dates[day];
+            let held = &mut self.days[day];
+            let old = held.lines.len() as u64;
+            let mut rows: Vec<_> = update.newest_within(newest, oldest).collect();
+            if !desc { rows.reverse(); }
+            #[cfg(test)]
+            { self.visited += rows.len(); }
+            let start = i64::from(date) * 24;
+            let end = (start + 23).min(i64::from(i32::MAX)) as i32;
+            let start = start.max(i64::from(i32::MIN)) as i32;
+            let gaps: Vec<_> = self.marks.range(start..=end).map(|&hour| PlacedGap {
+                first_hour: hour, last_hour: hour, reason: String::new(), before: String::new(),
+            }).collect();
+            let dated = DatedRows { rows: &rows, gaps: &gaps, live: 0, unattributed: 0, until: None };
+            let built = page(feed, dated, window.direction, 0, u32::MAX, window.expanded, window.full);
+            held.lines = built.lines;
+            held.gap_offsets = built.gaps.into_iter().map(|gap| (gap.first_hour, gap.before.parse().expect("a fold gap ordinal"))).collect();
+            self.changed_total(day, old, built.total);
+        }
+        let total = self.prefix(self.days.len());
+        let offset = window.offset.min(total);
+        let mut ordinal = offset;
+        let mut lines = Vec::new();
+        let end = total.min(offset.saturating_add(u64::from(window.limit)));
+        while ordinal < end {
+            let day = self.day_at(if desc { total - ordinal - 1 } else { ordinal });
+            let first = if desc { total - self.prefix(day + 1) } else { self.prefix(day) };
+            let members = &self.days[day].lines[(ordinal - first) as usize..];
+            let take = members.len().min((end - ordinal) as usize);
+            lines.extend_from_slice(&members[..take]);
+            ordinal += take as u64;
+        }
+        let mut gaps: Vec<_> = update.gaps.iter().map(|gap| {
+            let hour = mark(gap.first_hour, gap.last_hour);
+            let before = match day_of(&self.dates, hour) {
+                Ok(day) => {
+                    let first = if desc { total - self.prefix(day + 1) } else { self.prefix(day) };
+                    first + self.days[day].gap_offsets.get(&hour).copied().unwrap_or_default()
+                }
+                Err(day) => if desc { total - self.prefix(day) } else { self.prefix(day) },
+            };
+            (before, PlacedGap { first_hour: gap.first_hour, last_hour: gap.last_hour, reason: gap.reason.clone(), before: before.to_string() })
+        }).collect();
+        gaps.sort_by_key(|(before, gap)| (*before, Reverse(gap.last_hour), if desc { -i64::from(gap.first_hour) } else { i64::from(gap.first_hour) }));
+        FoldedPage { total, offset, lines, gaps: gaps.into_iter().map(|(_, gap)| gap).collect() }
+    }
 }
