@@ -101,27 +101,28 @@ async function checkHostedRefusal() {
     });
     const overlay = () => mount.querySelector('.fh-overlay')?.textContent ?? null;
     const sharedActive = () => mount.querySelector('.fh-frame')?.getAttribute('data-shared-surface') === '1';
+    const placementOf = () => Number(mount.querySelector<HTMLCanvasElement>('canvas.fh-canvas')?.dataset.placement);
     send(100, 37);
-    if (!await until(() => sharedActive() && labels.has('37'))) throw new Error('Initial rank did not paint on the shared canvas');
+    if (!await until(() => sharedActive() && labels.has('37') && pipeline.view(placementOf())?.through === 100)) {
+      throw new Error('Initial rank did not install on the shared canvas');
+    }
+    const placement = placementOf();
     send(101, null);
     clock.setPlaying(true);
     const anchor = clock.composedAt();
     const tick = (offset: number) => { now = anchor + offset; frames.tick(now); };
     const refusal = await until(() => {
       tick(1500);
-      return overlay()?.includes('The ranking is incomplete') === true;
+      return pipeline.view(placement)?.through === 101 && sharedActive() && overlay()?.includes('The ranking is incomplete') === true;
     });
-    shared.syncNow();
-    await Promise.resolve();
-    const refusalSlot = sharedActive();
+    if (!refusal) throw new Error('Rank refusal did not install while keeping the shared canvas active');
     labels.clear();
     const held = await until(() => {
       tick(2500);
       return overlay() === null && sharedActive() && labels.has('37');
     });
-    const placement = Number(mount.querySelector<HTMLCanvasElement>('canvas.fh-canvas')?.dataset.placement);
+    if (!held) throw new Error('Expired rank refusal did not reveal the held reading');
     const gap = pipeline.view(placement);
-    const afterGap = { refusal, refusalSlot, held, through: gap?.through, painted: gap?.painted, label: labels.has('37'), overlay: overlay() };
     labels.clear();
     mount.querySelector<HTMLElement>('.fh-body')!.focus();
     const rebound = await until(() => {
@@ -136,7 +137,7 @@ async function checkHostedRefusal() {
       tick(3500);
       return overlay() === null && labels.has('83') && pipeline.view(placement)?.through === 103;
     });
-    return { ...afterGap, rebound, resumed };
+    return { through: gap?.through, painted: gap?.painted, rebound, resumed };
   } finally {
     clock.stop();
     flushSync(() => root.unmount());

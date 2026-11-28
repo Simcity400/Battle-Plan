@@ -23,7 +23,14 @@ test('ordered bars settle to the same pixels as a cold draw after worker playbac
 
 test('the shared host shows a proven refusal and reveals the held recorded bar after it expires', async () => {
   await withNativePage('ordered-bars-host-refusal', '/ui/src/families/motionHost.dom.fixture.tsx', async page => {
-    const result = await page.evaluate('window.checkHostedRefusal()');
-    assert.deepEqual(result, { refusal: true, refusalSlot: true, held: true, through: 100, painted: 100, label: true, overlay: null, rebound: true, resumed: true });
+    const { cdpSession } = await import(new URL('../../../tools/e2e/cdp.mjs', import.meta.url).href) as {
+      cdpSession(url: string): Promise<{ send(method: string, params: Record<string, unknown>): Promise<unknown>; close(): void }>;
+    };
+    const cdp = await cdpSession(page.page);
+    try {
+      await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+      const result = await page.evaluate('window.checkHostedRefusal()');
+      assert.deepEqual(result, { through: 100, painted: 100, rebound: true, resumed: true });
+    } finally { cdp.close(); }
   });
 });
