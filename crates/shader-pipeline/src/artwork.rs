@@ -303,7 +303,7 @@ impl Renderer {
         let lifecycle = crate::gpu::device_lifecycle();
         let instance = crate::gpu::instance();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| format!("No graphics adapter could render dashboard artwork: {error}"))?;
         let limits = wgpu::Limits {
             max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d,
             max_dynamic_uniform_buffers_per_pipeline_layout: adapter
@@ -321,7 +321,7 @@ impl Renderer {
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             ..Default::default()
         }))
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| format!("Could not create the graphics device for dashboard artwork: {error}"))?;
         drop(lifecycle);
         Ok(Self {
             arena: gpu::Arena::new(&device),
