@@ -79,6 +79,25 @@ fn entry_invocations_detect_cycles_and_render_finite_scope_changes() {
 }
 
 #[test]
+fn large_stack_expansion_carries_the_keyed_variable_reader() {
+    script_game::enter();
+    let (catalogue, _folder) = tests::catalogue("", "");
+    let f = frame();
+    let text = ScriptedText::new(&f, &catalogue.localisation, catalogue.scripted_content().unwrap(), 2);
+    let graph = EventScopes::new(vec![EventScope::of(EventObject::Country(2))]);
+    let scopes = ExpansionScopes::new(&graph);
+    use crate::triggers::world::{variable_values, with_variable_values};
+    let result = with_variable_values(Some(std::sync::Arc::new(|_| Some(Some(7)))), || {
+        text.on_large_stack(&scopes, |_| {
+            assert_eq!(variable_values().and_then(|reader| reader(Some(42))), Some(Some(7)));
+            Ok("done".into())
+        })
+    });
+    assert_eq!(result.as_deref(), Ok("done"));
+    assert!(variable_values().is_none());
+}
+
+#[test]
 fn entry_invocations_refuse_growing_history_at_the_backstop_without_stack_overflow() {
     script_game::enter();
     let (catalogue, _folder) = tests::catalogue(
