@@ -400,6 +400,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         ...(view ? { view } : {}),
         yAxis,
         series: [],
+        ...rank,
         drawnKeys: NO_DRAWN_KEYS,
         legend,
         gaps: options.gaps.length > 0 ? options.gaps : undefined,

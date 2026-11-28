@@ -324,6 +324,22 @@ test('a failing top-rank read does not re-ask the same hour when setHour runs ag
   assert.deepEqual(asked, [100, 200, 200], 'retry() re-asks the failed top-rank hour');
   assert.equal(view.error, null);
   assert.deepEqual([...view.current!.keys()], ['GER']);
+  view.close();
+
+  fail = true;
+  const errors: unknown[] = [];
+  const followed = new TileView(cache, { ...top, followRank: 'head' }, () => errors.push(followed.error));
+  followed.setView({ from: 0, to: 8759, end: 8759, width: 600 });
+  followed.setHour(300);
+  await settle();
+  assert.ok(errors.at(-1) instanceof Error);
+  followed.setHour(301, true);
+  assert.equal(errors.at(-1), null, 'Play clears an exact rank error before it can block the followed head');
+  followed.setFollowedRank(301, { tags: ['GER'], refused: null, hour: 301, from: 301, until: 301 });
+  await settle();
+  assert.equal(followed.settled, true);
+  assert.deepEqual(asked, [100, 200, 200, 300]);
+  followed.close();
 });
 
 test('a top whose lines stay the same still tells the chart when its refusal or failure clears', async () => {

@@ -214,6 +214,7 @@ export class TileView {
       this.followingRank = follow;
       this.rankAsked++;
       this.rankPending = false;
+      if (this.rankFailedHour !== null) this.failure = null;
       this.rankFailedHour = null;
       this.setRank(null);
     }
@@ -233,7 +234,10 @@ export class TileView {
 
   private setRank(rank: TileRanked | null): void {
     const before = this.ranked;
-    if (!before && !rank) return;
+    if (!before && !rank) {
+      if (this.failure !== this.told.failure) this.notify();
+      return;
+    }
     this.ranked = rank;
     if (before && rank && before.refused === rank.refused
       && (before.tags === rank.tags || (before.tags.length === rank.tags.length && before.tags.every((tag, at) => tag === rank.tags[at])))) return;
