@@ -625,9 +625,15 @@ fn variant_views_follow_the_recording_without_a_full_map_mirror() {
     let variants = TableId::VariantDefinitions;
     let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, FormatVersion::CURRENT.version(), b"variant views", &[(1, 0, 3)], &[TableId::Countries, variants], |synthetic, _, ordinal| {
         let countries = [CountryRow { id: 7, tag: b"TST".to_vec(), ..Default::default() }];
-        let rows = [VariantDefinitionRow { id: 42, equipment_token: if ordinal < 2 { 9 } else { 10 }, creator_link: 7, ..Default::default() }];
+        let token = if ordinal < 2 { 9 } else { 10 };
+        let name = if ordinal < 2 { b"before".to_vec() } else { b"after".to_vec() };
+        let rows = [
+            VariantDefinitionRow { id: 41, equipment_token: 8, creator_link: 7, ..Default::default() },
+            VariantDefinitionRow { id: 42, equipment_token: token, creator_link: 7, explicit_entity: name, ..Default::default() },
+        ];
         synthetic.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
-        synthetic.table(variants, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        let rows = if ordinal < 2 { &rows[..] } else { &rows[1..] };
+        synthetic.table(variants, Input::Snapshot { rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
     });
     let opened = Arc::new(WorldPages::over(Recording::open(bytes).unwrap(), Span::Whole).unwrap());
     let kinds = Arc::new(opened.schema().to_vec());
@@ -638,20 +644,30 @@ fn variant_views_follow_the_recording_without_a_full_map_mirror() {
     let (layer, _) = super::shared_maps_tests::Reads::new(&[TableId::Countries]);
     let mut side = MapSide::new(Arc::clone(&entry), vec![layer], View::default()).unwrap();
     side.set_branch(1);
-    let reader = side.views().reader("variant models", &[super::views::Need::every(variants)]);
+    let reader = side.views().handle().telling("variant models", &[super::views::Need::every(variants)]);
     let mut held = None;
     for (offset, token) in [(0, 9), (0, 9), (2, 10)] {
         let at = hour + offset;
-        side.anchor(at, false, 0.0, true);
+        side.anchor(at, false, 0.0, held.is_none());
         side.catch_up(at).unwrap();
-        let frame = reader.frame().unwrap();
+        let (frame, changes, _) = reader.take_keyed().unwrap();
         assert_eq!(frame.hour, at);
-        assert_eq!(frame.complete::<tables::VariantDefinitions>().unwrap()[0].equipment_token, token);
+        let rows = frame.complete::<tables::VariantDefinitions>().unwrap();
+        let row = rows.iter().find(|row| row.id == 42).unwrap();
+        assert_eq!(row.equipment_token, token);
+        assert_eq!(&row.explicit_entity[..], if offset == 0 { &b"before"[..] } else { &b"after"[..] });
+        assert_eq!(rows.iter().any(|row| row.id == 41), offset == 0);
+        if offset > 0 {
+            let changes = changes.get(&variants).expect("changed variant rows carry their invalidation");
+            assert!(changes.as_ref().is_none_or(|rows| rows.contains_key(&41) && rows.contains_key(&42)));
+        }
         let mirror = side.parts().unwrap().0.get(variants).unwrap();
         let slot = mirror.slot(42).unwrap();
         assert_eq!(mirror.cell(0, slot).value(), Some(token as u64));
         assert_eq!(mirror.cell(1, slot).value(), Some(7));
         assert!(!(2..variants.field_count()).any(|column| mirror.holds(column)));
+        assert_eq!(mirror.slot(41).is_some(), offset == 0);
+        assert_eq!(mirror.refused(), 0, "intentionally omitted columns do not count as refused writes");
         let view = frame.tables[variants.index()].clone();
         if let Some(before) = held.replace(view.clone()) {
             assert_eq!(SharedView::ptr_eq(&before, &view), offset == 0);
