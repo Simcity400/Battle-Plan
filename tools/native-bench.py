@@ -36,6 +36,8 @@ class View:
             return
         sample = row["Ok"]
         self.rows_complete &= sample.get("rows_complete", True)
+        if "panel_through" in sample:
+            self.replies.setdefault(event["hour"], []).append(("panel-completed-through", sample["panel_through"]))
         for query, through in sample.get("limited", []):
             slot = self.slots.get(str(query), f"live cells {query}")
             self.replies.setdefault(event["hour"], []).append((slot, "limited-through", through))

@@ -295,6 +295,7 @@ impl View {
         let mut received = Vec::new();
         let mut limited = Vec::new();
         let mut panels = None;
+        let mut panel_through = None;
         let hour = context.step.last();
         let has_live = self
             .readers
@@ -359,10 +360,11 @@ impl View {
             let (bytes, service) = measured(|| batch.finish(Some(hour)));
             counts.add(service);
             counts.bytes += bytes.len() as u64;
-            for record in dated::records(&bytes)?
-                .into_iter()
-                .filter(|record| record.kind != dated::COMPLETED)
-            {
+            for record in dated::records(&bytes)? {
+                if record.kind == dated::COMPLETED {
+                    panel_through = Some(record.hour);
+                    continue;
+                }
                 let reason = (record.kind == dated::REFUSED)
                     .then(|| String::from_utf8_lossy(record.body).into_owned());
                 let mut reply = Reply::new(record.id, record.hour, record.body, reason);
@@ -404,6 +406,7 @@ impl View {
             changed: changed && !context.step.reset(),
             replies: received,
             limited,
+            panel_through,
             rows_complete: !self.uncounted_follow && !has_live,
             refusals,
         })
@@ -663,6 +666,8 @@ struct Sample {
     changed: bool,
     replies: Vec<Reply>,
     limited: Vec<(u32, i32)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    panel_through: Option<i32>,
     rows_complete: bool,
     refusals: BTreeMap<String, String>,
 }
