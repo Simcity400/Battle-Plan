@@ -1,7 +1,14 @@
 use replay_data::rows::{WarOverviewCountryRow, WarRelationRow};
-use std::collections::{HashMap, HashSet};
+use std::{cmp::Ordering, collections::{HashMap, HashSet}};
 
 pub(crate) type Pair = (u32, u32);
+
+pub(super) struct ScoreOrder {
+    pub first: u32,
+    pub second: u32,
+    pub order: Ordering,
+}
+
 pub(crate) fn pair(a: u32, b: u32) -> Pair {
     if a < b { (a, b) } else { (b, a) }
 }
@@ -216,8 +223,8 @@ impl World {
         }
         Ok((s.major, s.divisions.wrapping_add(s.factories)))
     }
-    pub fn representative(&self, blob: &Blob, pairs: &[Pair]) -> Result<Pair, String> {
-        self.oldest(blob, pairs).and_then(|oldest| self.ranked(blob, oldest))
+    pub(super) fn representative(&self, blob: &Blob, pairs: &[Pair], orders: &mut Vec<ScoreOrder>) -> Result<Pair, String> {
+        self.oldest(blob, pairs).and_then(|oldest| self.ranked(blob, oldest, orders))
     }
     fn oldest(&self, blob: &Blob, pairs: &[Pair]) -> Result<Pair, String> {
         let first_rank: HashMap<_, _> = blob
@@ -249,7 +256,7 @@ impl World {
             .ok_or_else(|| "Not recorded: blob has no active representative".to_owned())?;
         Ok(oldest)
     }
-    pub fn ranked(&self, blob: &Blob, oldest: Pair) -> Result<Pair, String> {
+    fn ranked(&self, blob: &Blob, oldest: Pair, orders: &mut Vec<ScoreOrder>) -> Result<Pair, String> {
         let original = &self.relations[&oldest];
         let major_first = self.score(original.first_country)?.0 != 0;
         let major_second = self.score(original.second_country)?.0 != 0;
@@ -277,6 +284,14 @@ impl World {
         };
         first.sort_by(compare);
         second.sort_by(compare);
+        for side in [&first, &second] {
+            for pair in side.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                if scores[&a].0 == scores[&b].0 {
+                    orders.push(ScoreOrder { first: a, second: b, order: scores[&a].1.cmp(&scores[&b].1) });
+                }
+            }
+        }
         let (mut i, mut j) = (0, 0);
         while i < first.len() && j < second.len() {
             let a = if major_first {
@@ -292,7 +307,10 @@ impl World {
             if self.active(a, b) {
                 return Ok(pair(a, b));
             }
-            if scores[&first[i]].1 > scores[&second[j]].1 {
+            let (first, second) = (first[i], second[j]);
+            let order = scores[&first].1.cmp(&scores[&second].1);
+            orders.push(ScoreOrder { first, second, order });
+            if order.is_gt() {
                 i += 1;
             } else {
                 j += 1;

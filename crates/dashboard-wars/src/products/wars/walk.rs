@@ -57,6 +57,8 @@ pub(crate) fn observed(
     named: Result<(Pair, WarName), String>,
     hour: i32,
 ) -> Observed {
+    #[cfg(test)]
+    super::tests::count_observation();
     let first: HashSet<_> = blob.first.iter().copied().collect();
     let relations = pairs
         .iter()
@@ -482,6 +484,11 @@ impl Walk {
         }
         self.previous = Some(hour);
         self.held = Some((viewed, observed));
+    }
+
+    pub fn can_repeat_observation(&self) -> bool {
+        self.settled && self.previous.is_some() && self.previous == self.last_frame
+            && self.held.as_ref().is_some_and(|(_, observed)| self.open.iter().map(|war| war.groups).sum::<usize>() == observed.len())
     }
 
     pub fn extend(&mut self, last: i32) {
