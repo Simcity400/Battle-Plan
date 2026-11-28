@@ -91,6 +91,7 @@ pub trait Product: 'static {
     const CONTENT_DEPENDENT: bool;
     const INTERACTIVE: bool = false;
     const REPLAYS: bool = false;
+    const PREPARE: Option<super::read_ahead::Prepare<Self::Params>> = None;
     const FIELDS: Fields;
     type Params: DeserializeOwned + 'static;
     type Reply: Serialize + ReplyWarnings + 'static;

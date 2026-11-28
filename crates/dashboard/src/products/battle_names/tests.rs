@@ -1,5 +1,46 @@
 use super::*;
 
+#[test]
+fn title_preparation_retries_failures_and_refuses_a_retired_binding() {
+    use dashboard_base::test_fixtures::{source, source_with_content, visual_mods};
+    let game = visual_mods::Machine::new(&uuid::Uuid::new_v4().to_string());
+    let (source, load) = source_with_content(vec![source(1, 100, Some(1))], &game.root);
+    let source = Arc::new(source);
+    let binding = load.content.as_ref().unwrap().presentation.binding();
+    let failed = Arc::<Build>::default();
+    failed.ready.publish(Err(io::Error::other("Synthetic title failure")));
+    *source.state::<Ahead>().lock().unwrap() = Ahead(binding.generation, HashMap::from([(1, Arc::clone(&failed))]));
+    for _ in 0..2 {
+        assert_eq!(ahead(&source, 1, &load).err().unwrap().to_string(), "Synthetic title failure");
+    }
+
+    let retry = start(&source, 1, &load, true).unwrap().unwrap();
+    assert!(!Arc::ptr_eq(&retry, &failed));
+    let _ = retry.ready.wait();
+    binding.retire();
+    assert_eq!(start(&source, 1, &load, true).err().unwrap().kind(), io::ErrorKind::Interrupted);
+}
+
+#[test]
+fn a_map_title_poll_uses_the_recorded_binding_after_its_binding_retires() {
+    use dashboard_base::{source::Work, test_fixtures::visual_mods};
+    let game = visual_mods::Machine::new("battle_titles_rebind");
+    let (source, content) = game.open();
+    let source = Arc::new(source);
+    source.bind(Some((&content.options, content.allow_unverified)), Default::default());
+    let captured = LoadContext { content: source.admit(Work::Recorded) };
+    source.bind(None, Default::default());
+    source.bind(Some((&content.options, content.allow_unverified)), Default::default());
+    let binding = source.binding().unwrap();
+    let build = Arc::<Build>::default();
+    let titles = Arc::new(number(vec![named(Key::Report(77), 100, "Battle of Copper Hollow")]));
+    assert!(build.names.set(titles).is_ok());
+    build.ready.publish(Ok(()));
+    *source.state::<Ahead>().lock().unwrap() = Ahead(binding.generation, HashMap::from([(1, build)]));
+    let titles = ahead(&source, 1, &captured).unwrap().unwrap();
+    assert_eq!(titles.get("result:77").unwrap().as_deref(), Ok("Battle of Copper Hollow"));
+}
+
 fn named(key: Key, hour: i32, title: &str) -> (Battle, Result<String, String>) {
     let date = match key { Key::Land(_, date, _) | Key::Naval(_, date) => date, Key::Report(_) => hour };
     (
