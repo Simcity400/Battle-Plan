@@ -476,6 +476,84 @@ fn a_followed_reply_reads_each_table_under_the_projection_its_final_plan_asks() 
     }
 }
 
+struct Discovering;
+
+#[derive(Serialize, PartialEq)]
+struct DiscoveredReply {
+    links: bool,
+    resources: bool,
+    warnings: Vec<String>,
+}
+
+crate::reply_warnings!(DiscoveredReply);
+
+impl AtHour for Discovering {
+    const KEY: &'static str = "test-discovering";
+    const TITLE: &'static str = "Discovering";
+    const CONTENT_DEPENDENT: bool = false;
+    type Params = PlannedParams;
+    const FIELDS: crate::products::Fields = crate::fields![branchId];
+    type Reply = DiscoveredReply;
+    type Context = ();
+
+    fn tables(_params: &Self::Params) -> Vec<TableId> {
+        vec![TableId::Countries, TableId::CountryLinks, TableId::CountryResources]
+    }
+
+    fn reads(_params: &Self::Params, _owner: Option<Owner>, stage: usize, held: &DecodedFrame) -> Vec<Read> {
+        match stage {
+            0 => vec![Read::all(TableId::Countries)],
+            1 => {
+                let needs_resources = held.complete::<tables::Countries>().unwrap()[0].political_power_raw == Some(2);
+                [Some(TableId::CountryLinks), needs_resources.then_some(TableId::CountryResources)]
+                    .into_iter().flatten().filter(|table| held.tables[table.index()].held().is_not_selected())
+                    .map(Read::all).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let through = if stage == 1 && at.hour == FIRST { FIRST } else { i32::MAX };
+        (Self::reads(params, owner, stage, held), through)
+    }
+
+    fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
+        Ok(())
+    }
+
+    fn reply(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        Ok(DiscoveredReply {
+            links: frame.complete::<tables::CountryLinks>().is_ok(),
+            resources: frame.complete::<tables::CountryResources>().is_ok(),
+            warnings: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn replanned_discovery_only_sees_earlier_stages_at_the_new_hour() {
+    let frames = (FIRST..=FIRST + 2).map(|hour| {
+        let mut frame = frame(FIRST);
+        frame.hour = hour;
+        if let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()] {
+            rows[0].political_power_raw = Some(if hour < FIRST + 2 { 1 } else { 2 });
+        }
+        frame
+    }).collect();
+    let (source, _) = recording_frames(frames);
+    let panel = exact_panel::<Discovering>(&source, &load(), &json!({"branchId": "1"})).unwrap();
+    let reader = panel.exact().unwrap();
+    let token = false.into();
+    for (hour, resources) in [(FIRST, false), (FIRST + 1, false), (FIRST + 2, true)] {
+        let followed = (reader.advance)(hour, hour == FIRST, &token, None);
+        let exact = (reader.cold)(hour, &token).unwrap();
+        assert_eq!(followed.value.as_ref().as_ref().unwrap(), &exact, "hour {hour}");
+        assert_eq!(exact["links"], true);
+        assert_eq!(exact["resources"], resources);
+    }
+}
+
 struct Dropping;
 
 #[derive(Serialize, PartialEq)]

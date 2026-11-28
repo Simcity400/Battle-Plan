@@ -106,5 +106,5 @@ export function balanceAxis(balance: Pick<BalanceHistory, 'ranges'> | null): { m
 export function sideLabel(side: BalanceSide | null | undefined): { readonly label: string; readonly reason: string | null } | null {
   if (!side) return null;
   if (side.name) return { label: side.name, reason: null };
-  return { label: side.token, reason: side.reason ?? 'The recorded localisation has no name for this side' };
+  return { label: 'Side name not recorded', reason: side.reason ?? 'The recorded localisation has no name for this side' };
 }
