@@ -1213,6 +1213,43 @@ fn a_pause_inside_a_step_and_single_hours_while_paused_show_exactly_that_hour() 
     frames_to_exact(&mut side, paused, &states[0]);
 }
 
+#[test]
+fn a_reopened_map_seeks_a_paused_hour_older_than_the_ring() {
+    let (recording, _) = record(1, 49, busy);
+    let entry = open(units(recording, "reopen paused"), quick()).unwrap();
+    let composes = Arc::new(Mutex::new(0));
+    let map = || MapSide::new(Arc::clone(&entry), vec![Box::new(Sum::new(&composes))], View::default()).unwrap();
+    let mut first = map();
+    entry.anchor(48, false, 4.0, true);
+    crate::test_support::recorded::frames_at(&mut first, 48, "the first map's last hour", |_, frame| frame.drawn == Some(48));
+    let epoch = entry.playhead().epoch();
+    let paused = 3;
+    entry.anchor(paused, false, 4.0, false);
+
+    let (entered, waiting) = mpsc::channel();
+    let (release, resume) = mpsc::channel::<()>();
+    let mut gate = Some((entered, resume));
+    let hook = entry.hooks().add(Box::new(move |_, _| {
+        if let Some((entered, resume)) = gate.take() {
+            let _ = entered.send(());
+            let _ = resume.recv();
+        }
+    }));
+    let mut reopened = map();
+    waiting.recv().unwrap();
+    drop(first);
+    assert_eq!(entry.playhead().epoch(), epoch);
+    assert_eq!(entry.playhead().newest(), Some(48));
+    assert!(!reopened.reaches(paused));
+    let frame = reopened.frame_still(paused).unwrap();
+    drop(release);
+    entry.hooks().remove(hook);
+
+    assert!(frame.exact, "the reopened map must request a reset at the paused hour");
+    assert_eq!(frame.drawn, None);
+    crate::test_support::recorded::frames_at(&mut reopened, paused, "the reopened map's first frame", |_, frame| frame.drawn == Some(paused));
+}
+
 fn real_key_shapes() -> Vec<u128> {
     let mut keys: Vec<u128> = (1..=13_000).collect();
     keys.extend((0..1_500u128).flat_map(|country| (0..40u128).map(move |region| country << 32 | region)));
