@@ -1569,10 +1569,12 @@ impl<P: PlaybackProducts> MapSide<P> {
             && !self.superseded
             && !swapped
             && !self.pending.iter().any(|step| step.last() <= head)
-            && (self.stepped || self.entry.paused())
+            && ((self.stepped && self.applied.is_some()) || self.entry.paused())
             && playhead.holding().is_none()
-            && let Some(applied) = self.applied
-            && (applied > head || (applied < head && playhead.newest().is_some_and(|newest| newest > head) && self.consumer.reaches(head) == Some(false)))
+            && (self.applied.is_some_and(|applied| applied > head)
+                || (self.applied.is_none_or(|applied| applied < head)
+                    && playhead.newest().is_some_and(|newest| newest > head)
+                    && self.consumer.reaches(head) == Some(false)))
         {
             self.entry.exact(head);
             frame.exact = true;
