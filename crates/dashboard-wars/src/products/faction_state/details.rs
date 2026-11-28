@@ -419,8 +419,8 @@ impl AtHour for FactionDetails {
 }
 
 impl DetailContent {
-    pub(super) fn with_lexical(mut self, source: &Source) -> Self {
-        self.inputs = self.inputs.with_lexical(source);
+    pub(super) fn with_scripted_playback(mut self, source: &Source) -> Self {
+        self.inputs = self.inputs.with_lexical(source).with_variable_dates(source);
         self
     }
 

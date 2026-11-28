@@ -1292,7 +1292,7 @@ pub(crate) fn history(source: &Source, branch: u64, tag: &Country) -> io::Result
     let state = source.state::<Option<Arc<KeyedVariables>>>();
     let variables = Arc::clone(state.lock().unwrap_or_else(PoisonError::into_inner)
         .get_or_insert_with(|| Arc::new(KeyedVariables::new(source.replay()))));
-    let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())), dates: source.state::<ReadDates>(),
+    let read = Arc::new(Read { ideas, naming, looks: Mutex::new((Weak::new(), Vec::new())), dates: ReadDates::for_scripted_source(source),
         variables, lexical: Lexical::for_source(source), presentation: Mutex::default() });
     *held = Some(Arc::clone(&read));
     Ok(read)
