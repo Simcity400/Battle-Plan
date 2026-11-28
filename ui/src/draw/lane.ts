@@ -2148,7 +2148,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const pictures: Picture<Value>[] = [];
       let from = dated?.h ?? -Infinity;
       let through = dated?.c ?? Infinity;
-      const accepts = (picture: Picture<Value>) => at === hour && hour <= picture.c ? !picture.carried : isPlaybackReading(picture);
+      const accepts = (picture: Picture<Value>) => (at === hour && hour <= picture.c) || isPlaybackReading(picture);
       for (const id of widget.subs) {
         const picture = this.facts.select(id, at, accepts);
         if (!picture) return null;

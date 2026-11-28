@@ -982,6 +982,33 @@ describe('Ordered bar playback', () => {
     assert.equal(f.barWidth(), single * 3);
   }));
 
+  it('keeps the proven bar on the first resumed tick after a seek', async () => withLane(async f => {
+    f.record(100, { value: 50 });
+    f.record(123);
+    f.record(124, { value: 100 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const exact = f.barWidth();
+    await f.request(100, 1, 1, true);
+    f.lane.stream(1, 2, 110);
+    assert.ok(f.lane.facts.select(1, 110)?.carried);
+    f.clock(110, 0, 2);
+    await f.request(110, 0, 2);
+    assert.equal(f.barWidth(), exact);
+
+    f.clock(110.5, 1, 2, true);
+    await f.request(110, 1, 2, true);
+    f.canvas.clearOps();
+    f.tick(0);
+    assert.equal(f.barWidth(), exact);
+    f.record(124, { value: 90 }, 2);
+    f.clock(122.5, 1, 2, true);
+    f.canvas.clearOps();
+    f.tick(0);
+    assert.equal(f.barWidth(), exact);
+    assert.equal(f.served.at(-1)?.changed, 0);
+  }));
+
   it('paints a newly ready projection on the next ordinary playing request', async () => withLane(async f => {
     f.ready(false);
     f.clock(100.5, 1);
