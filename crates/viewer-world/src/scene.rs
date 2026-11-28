@@ -5168,6 +5168,11 @@ mod tests {
         let mut modded_tga = viewer_runtime::test_support::test_tga_rgba8(4, 4);
         modded_tga[18..22].copy_from_slice(&[10, 20, 30, 255]);
         std::fs::write(mod_dir.join("gfx/icon.tga"), modded_tga).unwrap();
+        std::fs::write(
+            mod_dir.join("gfx/later.tga"),
+            viewer_runtime::test_support::test_tga_rgba8(2, 2),
+        )
+        .unwrap();
 
         let layers = Arc::new(
             content_reader_layers::ResolvedLayers::from_folders(&[
@@ -5176,21 +5181,18 @@ mod tests {
             ])
             .unwrap(),
         );
-        let decoded = content_reader_gui::gui::native::resources::stack_texture_or_recorded(
-            &layers,
-            None,
-            b"gfx/icon.tga",
-            content_reader_image::native::Decode::default(),
-        )
-        .unwrap()
-        .unwrap();
-        let source = viewer_gpu::textures::GuiSource::deferred_stack(
-            Arc::clone(&layers),
-            None,
-            b"gfx/icon.tga".to_vec(),
-            content_reader_image::native::Decode::default(),
-            &decoded.image,
-        );
+        let deferred = |path: &[u8]| {
+            let decode = content_reader_image::native::Decode::default();
+            let decoded = content_reader_gui::gui::native::resources::stack_texture_or_recorded(
+                &layers, None, path, decode,
+            )
+            .unwrap()
+            .unwrap();
+            viewer_gpu::textures::GuiSource::deferred_stack(
+                Arc::clone(&layers), None, path.to_vec(), decode, &decoded.image,
+            )
+        };
+        let source = deferred(b"gfx/icon.tga");
         assert!(!source.is_held());
         let cache = TextureCache::new(SceneSources {
             reader: crate::scene_content::TerrainReader {
@@ -5200,22 +5202,25 @@ mod tests {
                 quality: 0,
                 decode: content_reader_image::native::Decode::default(),
             },
-            icon_images: vec![source],
+            icon_images: vec![source, deferred(b"gfx/later.tga")],
         });
 
         let icons_a = cache.icons(&device_a, &queue_a).unwrap();
-        assert_eq!(icons_a.page_count(), 1);
+        assert_eq!(icons_a.page_count(), 2);
         assert!(icons_a.warnings().is_empty());
         assert!(cache.uploaded_icons(&device_a).is_some());
         let original = icons_a.view(0).unwrap();
 
         let icons_b = cache.icons(&device_b, &queue_b).unwrap();
-        assert_eq!(icons_b.page_count(), 1);
+        assert_eq!(icons_b.page_count(), 2);
         assert!(icons_b.warnings().is_empty());
         assert!(cache.uploaded_icons(&device_b).is_some());
 
         std::fs::remove_file(mod_dir.join("gfx/icon.tga")).unwrap();
         std::fs::remove_file(base.join("gfx/icon.tga")).unwrap();
+        std::fs::remove_file(mod_dir.join("gfx/later.tga")).unwrap();
+        assert_eq!(icons_a.view(1).unwrap().view.texture().width(), 1);
+        assert!(icons_a.warnings()[0].contains("gfx/later.tga"));
         let fallback = icons_b.view(0).unwrap();
         assert_eq!(fallback.view.texture().width(), 1);
         assert_eq!(icons_a.view(0).unwrap().view, original.view);
