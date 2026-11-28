@@ -412,7 +412,7 @@ pub(super) fn names_decision(kind: EventFeedKind) -> bool {
     )
 }
 
-fn presents_event(kind: EventFeedKind) -> bool {
+pub(super) fn presents_event(kind: EventFeedKind) -> bool {
     matches!(kind, EventFeedKind::ScriptEventFired | EventFeedKind::NewsEventFired | EventFeedKind::EventOptionSelected)
 }
 
@@ -423,6 +423,7 @@ pub(crate) struct Presenter<'q> {
     kept: Arc<Mutex<KeptNaming>>,
     effects: bool,
     index: Option<IndexNames<'q>>,
+    assets: Option<&'q super::assets::Warming>,
 }
 
 type Held<K, V> = RefCell<HashMap<K, V>>;
@@ -545,6 +546,7 @@ struct Art<'a, 'q> {
     effects: bool,
     index: Option<&'a IndexNames<'q>>,
     exact: &'a [TableId],
+    assets: Option<&'q super::assets::Warming>,
 }
 
 impl Art<'_, '_> {
@@ -563,6 +565,9 @@ impl Art<'_, '_> {
     }
 
     fn drawn(&self, key: (&str, &str), draw: impl FnOnce() -> catalogue::Drawn<Result<String, String>>) -> Result<String, String> {
+        if let Some(drawn) = self.assets.and_then(|assets| assets.art(key)) {
+            return drawn;
+        }
         let once = {
             let mut held = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
             if !held.drawn.as_ref().is_some_and(|(catalogue, _)| Arc::ptr_eq(catalogue, self.catalogue)) {
@@ -571,7 +576,7 @@ impl Art<'_, '_> {
             let Some((_, drawn)) = held.drawn.as_mut() else { return draw().get().clone() };
             Arc::clone(drawn.entry((key.0.to_owned(), key.1.to_owned())).or_default())
         };
-        let (drawn, noted) = once.get_or_init(|| content_reader_layers::content::diagnostics::capture(draw));
+        let (drawn, noted) = once.get_or_init(|| content_reader_layers::content::diagnostics::capture(|| resolve_art(draw)));
         noted.credit();
         drawn.get().clone()
     }
@@ -605,7 +610,12 @@ struct Frames {
 
 impl<'q> Presenter<'q> {
     pub fn new(query: &'q Query<'q>, catalogue: Option<&'q Arc<Catalogue>>, kept: Arc<Mutex<KeptNaming>>) -> Self {
-        Self { query, catalogue, frames: RefCell::default(), kept, effects: true, index: None }
+        Self { query, catalogue, frames: RefCell::default(), kept, effects: true, index: None, assets: None }
+    }
+
+    pub(super) fn with_assets(self, assets: Option<&'q super::assets::Warming>) -> Self {
+        let assets = assets.filter(|assets| self.catalogue.is_some_and(|catalogue| assets.matches(catalogue)));
+        Self { assets, ..self }
     }
 
     pub fn without_effects(self) -> Self {
@@ -683,7 +693,7 @@ impl<'q> Presenter<'q> {
     }
 
     pub fn picture(&self, token: &str, key: &str, notices: &mut Notices) -> Option<String> {
-        draw_picture(notices, &Art { catalogue: self.catalogue?, kept: &self.kept, effects: self.effects, index: self.index.as_ref(), exact: &[] }, token, key)
+        draw_picture(notices, &Art { catalogue: self.catalogue?, kept: &self.kept, effects: self.effects, index: self.index.as_ref(), exact: &[], assets: self.assets }, token, key)
     }
 
     pub fn item(&self, event: &FeedEvent, kind: EventFeedKind, token: Option<String>, notices: &mut Notices) -> io::Result<EventFeedItem> {
@@ -695,7 +705,7 @@ impl<'q> Presenter<'q> {
         let present = |frame: Result<&DecodedFrame, String>, notices: &mut Notices, exact: &[TableId]| -> io::Result<EventFeedItem> {
             let mut item = item.clone();
             let inputs = Inputs::of(event, frame.as_ref().ok().copied());
-            presentation(notices, &Art { catalogue: shown, kept: &self.kept, effects: self.effects, index: self.index.as_ref(), exact }, kind, &mut item, &inputs, frame.map(HourFrame::from))?;
+            presentation(notices, &Art { catalogue: shown, kept: &self.kept, effects: self.effects, index: self.index.as_ref(), exact, assets: self.assets }, kind, &mut item, &inputs, frame.map(HourFrame::from))?;
             Ok(item)
         };
         let dated = match self.frame(event.hour)? {
@@ -736,7 +746,7 @@ fn presentation(notices: &mut Notices, art: &Art<'_, '_>, kind: EventFeedKind, i
                 }
             }
             if !indexing {
-                let icon = art.drawn(("decision", &token), || catalogue::draw(|| format!("decision {token} icon"), catalogue, |catalogue| decision_icon(catalogue, &token)));
+                let icon = art.drawn(("decision", &token), || draw_decision(catalogue, &token));
                 match icon {
                     Ok(url) => item.icon = Some(url),
                     Err(reason) => notices.unavailable("decisionIcon", "Decision icon", format!("Decision {token}: {reason}"), Some(1)),
@@ -750,7 +760,8 @@ fn presentation(notices: &mut Notices, art: &Art<'_, '_>, kind: EventFeedKind, i
         return Ok(());
     };
     let lookup = || {
-        let event = catalogue.event_index().get(token.as_bytes())?;
+        let event = art.assets.and_then(|assets| assets.event(&token))
+            .unwrap_or_else(|| catalogue.event_index().get(token.as_bytes()))?;
         let title = if event.refused.is_none() && keys != Some(TitleKeys::Choice) { event.sole_title_key().map(|key| key.map(Arc::from)) } else { Ok(None) };
         Ok((event, title))
     };
@@ -869,7 +880,29 @@ fn draw_picture(notices: &mut Notices, art: &Art<'_, '_>, token: &str, picture: 
         return None;
     }
     let catalogue: &Catalogue = art.catalogue;
-    let image = art.drawn((token, picture), || catalogue::draw(
+    let image = art.drawn((token, picture), || draw_event(catalogue, token, picture));
+    match image {
+        Ok(icon) => Some(icon),
+        Err(reason) => {
+            notices.unavailable("scriptEventPicture", "Event picture", reason, Some(1));
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static ART_RESOLUTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn resolve_art<T>(draw: impl FnOnce() -> T) -> T {
+    #[cfg(test)]
+    ART_RESOLUTIONS.with(|count| count.set(count.get() + 1));
+    draw()
+}
+
+pub(super) fn draw_event(catalogue: &Catalogue, token: &str, picture: &str) -> catalogue::Drawn<Result<String, String>> {
+    catalogue::draw(
         || format!("event {token} picture"),
         catalogue,
         |catalogue| {
@@ -878,14 +911,11 @@ fn draw_picture(notices: &mut Notices, art: &Art<'_, '_>, token: &str, picture: 
                 .into_result()?
                 .ok_or_else(|| format!("Event {token}: picture {picture} is unavailable"))
         },
-    ));
-    match image {
-        Ok(icon) => Some(icon),
-        Err(reason) => {
-            notices.unavailable("scriptEventPicture", "Event picture", reason, Some(1));
-            None
-        }
-    }
+    )
+}
+
+pub(super) fn draw_decision(catalogue: &Catalogue, token: &str) -> catalogue::Drawn<Result<String, String>> {
+    catalogue::draw(|| format!("decision {token} icon"), catalogue, |catalogue| decision_icon(catalogue, token))
 }
 
 fn scoped_text(catalogue: &Catalogue, inputs: &Inputs, frame: Result<HourFrame<'_>, String>, key: &str) -> Result<ExpandedText, String> {

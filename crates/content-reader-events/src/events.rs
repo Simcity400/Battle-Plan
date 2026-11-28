@@ -18,6 +18,11 @@ use std::{
     },
 };
 
+#[cfg(feature = "test-support")]
+thread_local! {
+    pub static EVENT_FILE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Event {
     pub id: Vec<u8>,
@@ -658,6 +663,8 @@ impl LazyEvents {
                         return Ok(None);
                     }
                     let file = Observed::new(|| {
+                        #[cfg(feature = "test-support")]
+                        EVENT_FILE_READS.with(|reads| reads.set(reads.get() + 1));
                         let bytes = path
                             .read(&self.layers)
                             .map_err(|error| format!("{path}: {error}"))?;
@@ -745,6 +752,8 @@ impl LazyEvents {
                 continue;
             }
             let read = Observed::new(|| {
+                #[cfg(feature = "test-support")]
+                EVENT_FILE_READS.with(|reads| reads.set(reads.get() + 1));
                 let bytes = path
                     .read(&self.layers)
                     .map_err(|error| format!("{path}: {error}"))?;

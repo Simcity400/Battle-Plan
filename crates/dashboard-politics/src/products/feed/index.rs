@@ -106,6 +106,7 @@ struct Brief {
 pub(crate) struct Scanned {
     briefs: Vec<Brief>,
     places: Vec<PlacePoint>,
+    pub(super) asset_requests: super::assets::Requests,
     pub(super) unique_record_keys: bool,
     native: Vec<Occurrence<Item>>,
     pub war_ends: Vec<NativeWarEnd>,
@@ -187,6 +188,7 @@ impl Scanned {
         Self {
             briefs: Vec::new(),
             places: Vec::new(),
+            asset_requests: Vec::new(),
             unique_record_keys: true,
             native: Vec::new(),
             war_ends: Vec::new(),
@@ -392,6 +394,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     runs.dedup();
     let mut briefs = Vec::new();
     let mut places = Vec::new();
+    let mut asset_requests = HashMap::new();
     let mut native = Vec::new();
     let mut war_ends = Vec::new();
     let mut incomplete = Vec::new();
@@ -431,6 +434,10 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
             }
             if kind == EventFeedKind::StateTransferred && let Some(state) = event.cause.and_then(|cause| cause.state) {
                 places.push(PlacePoint::State(state, event.hour));
+            }
+            for asset in super::assets::needed(kind, &event) {
+                let earliest = asset_requests.entry(asset).or_insert(at);
+                if (at.hour, at.run, at.key) < (earliest.hour, earliest.run, earliest.key) { *earliest = at; }
             }
             briefs.push(Brief {
                 at,
@@ -474,7 +481,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     let breaks = spans(held.clone());
     let decision_lost = incomplete.iter().filter(|(_, _, read)| read.refusals != Some(0)).map(|&(hour, ..)| (hour, hour));
     let decision_breaks = spans(held.into_iter().chain(decision_lost).collect());
-    Ok(Scanned { briefs, places, unique_record_keys, native, war_ends, incomplete, windows_unrecorded: reasons, lifecycles, resolved: Mutex::default(), presented: Mutex::default(), titles: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
+    Ok(Scanned { briefs, places, asset_requests: super::assets::ordered(asset_requests), unique_record_keys, native, war_ends, incomplete, windows_unrecorded: reasons, lifecycles, resolved: Mutex::default(), presented: Mutex::default(), titles: Mutex::default(), breaks, choice_breaks, decision_breaks, partial_reads, gaps })
 }
 
 fn incomplete_break_reason(read: &FeedEvent) -> String {

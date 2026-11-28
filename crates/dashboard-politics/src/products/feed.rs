@@ -1,4 +1,5 @@
 
+mod assets;
 mod cards;
 mod cause;
 pub(crate) mod decision_state;
