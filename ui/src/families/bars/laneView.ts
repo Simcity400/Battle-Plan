@@ -3,9 +3,9 @@ import { textWidth } from '../../charts/textWidth.ts';
 import type { LaneBinding, LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import type { MotionSampleDiagnostic } from '../motion.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
-import { barsAuditWindow, barsRangeForBand, barsScrollHeight, layoutFamilyBars, visibleBarsRange, barsScales, type BarsLayout } from './layout.ts';
+import { barsAuditWindow, barsRangeForBand, barsScrollHeight, layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
 import { assertBarsModelValid, barsLabelText, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, formatBarsValueField, isSingleValueOrdered, type BarsDataRow, type BarsModel, type BarsRow, type BarsValueField } from './model.ts';
-import { collectVisibleBarsIcons, drawFamilyBars, easeBarFraction, hitFamilyBars, targetBarWidths, type BarsEasedRow, type BarsGlideOffset } from './painter.ts';
+import { collectVisibleBarsIcons, drawFamilyBars, easeBarFraction, hitFamilyBars, orderedBarGeometry, type BarsEasedRow, type BarsGlideOffset } from './painter.ts';
 import { hitPickList, pickAudit, pickedKey, pickNav, pickTooltip } from './pickList.ts';
 import { barsRegionRows } from './shareRows.ts';
 import { regionHitKey } from '../regions/regionRows.ts';
@@ -263,43 +263,40 @@ function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, next
   const endpoints = matchingRows(current, next, diagnostic);
   if (!endpoints) return null;
   const start = frame.layout;
-  const endLayout = current.rows.some(row => row.kind === 'data' && row.target) ? nextLayout() : undefined;
-  const playbackValues = endLayout && new Map<string, BarsEasedRow>();
+  const endLayout = nextLayout();
+  const playbackValues = new Map<string, BarsEasedRow>();
   const interpolate = (from: number, to: number) => from + (to - from) * fraction;
-  const rows: BarsModel['rows'][number][] = [];
-  let changed = endLayout !== undefined && (start.plotLeft !== endLayout.plotLeft
-    || (start.showAxis && (start.plotWidth !== endLayout.plotWidth || start.scaleMax !== endLayout.scaleMax)));
+  let changed = start.plotLeft !== endLayout.plotLeft
+    || (start.showAxis && (start.plotWidth !== endLayout.plotWidth || start.scaleMax !== endLayout.scaleMax));
   for (let i = 0; i < current.rows.length; i++) {
     const row = current.rows[i]!;
     const end = endpoints[i]!;
-    if (row.kind === 'section') { rows.push(row); continue; }
+    if (row.kind === 'section') continue;
     if (row.kind !== 'data' || end.kind !== 'data' || row.numeric == null || end.numeric == null
       || !row.value || !end.value
       || (row.value.value.kind !== 'zero' && row.value.value.kind !== 'known')
       || (end.value.value.kind !== 'zero' && end.value.value.kind !== 'known')) return null;
-    if (row.target && end.target && endLayout && playbackValues) {
-      if (!measuredTarget(row.target) || !measuredTarget(end.target)) return null;
-      const from = targetBarWidths(start.plotWidth, row.target.numeric / start.scaleMax, Math.max(0, row.numeric) / start.scaleMax);
-      const to = targetBarWidths(endLayout.plotWidth, end.target.numeric / endLayout.scaleMax, Math.max(0, end.numeric) / endLayout.scaleMax);
-      playbackValues.set(row.key, { targetWidths: { target: interpolate(from.target, to.target), delivered: interpolate(from.delivered, to.delivered) } });
-      changed ||= from.target !== to.target || from.delivered !== to.delivered;
-      rows.push(row);
-      continue;
-    }
-    if (row.numeric === end.numeric) { rows.push(row); continue; }
-    changed = true;
-    rows.push({ ...row, numeric: interpolate(row.numeric, end.numeric) });
+    if ((row.target && !measuredTarget(row.target)) || (end.target && !measuredTarget(end.target))) return null;
+    const from = orderedBarGeometry(start.plotWidth, row.numeric / start.scaleMax, row.target && row.target.numeric / start.scaleMax);
+    const to = orderedBarGeometry(endLayout.plotWidth, end.numeric / endLayout.scaleMax, end.target && end.target.numeric / endLayout.scaleMax);
+    playbackValues.set(row.key, { orderedGeometry: {
+      fill: interpolate(from.fill, to.fill),
+      gapStart: interpolate(from.gapStart, to.gapStart),
+      gapEnd: interpolate(from.gapEnd, to.gapEnd),
+      gapStroke: interpolate(from.gapStroke, to.gapStroke),
+      labelEnd: interpolate(from.labelEnd, to.labelEnd),
+    } });
+    changed ||= from.fill !== to.fill || from.gapStart !== to.gapStart || from.gapEnd !== to.gapEnd
+      || from.gapStroke !== to.gapStroke || from.labelEnd !== to.labelEnd;
   }
   if (!changed) return false;
-  const plotWidth = endLayout ? interpolate(start.plotWidth, endLayout.plotWidth) : start.plotWidth;
-  const plotLeft = endLayout ? interpolate(start.plotLeft, endLayout.plotLeft) : start.plotLeft;
-  const scaleMax = endLayout ? plotWidth / interpolate(start.plotWidth / start.scaleMax, endLayout.plotWidth / endLayout.scaleMax)
-    : interpolate(start.scaleMax, barsScales(next, start.showAxis).scaleMax);
+  const plotWidth = interpolate(start.plotWidth, endLayout.plotWidth);
+  const plotLeft = interpolate(start.plotLeft, endLayout.plotLeft);
+  const pixelsPerUnit = interpolate(start.plotWidth / start.scaleMax, endLayout.plotWidth / endLayout.scaleMax);
   return {
     ...frame,
-    model: { ...current, rows },
-    layout: { ...start, plotWidth, plotLeft, plotRight: plotLeft + plotWidth, scaleMax },
-    ...(playbackValues ? { playbackValues } : {}),
+    layout: { ...start, plotWidth, plotLeft, plotRight: plotLeft + plotWidth, scaleMax: plotWidth / pixelsPerUnit },
+    playbackValues,
   };
 }
 

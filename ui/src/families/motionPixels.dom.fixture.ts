@@ -18,7 +18,7 @@ const theme: FamilyTheme = {
   hatchEdge: colours.border, font: 'Segoe UI, sans-serif', fontSize: { small: 11, body: 12 }, lineWidth: 1, hatchSpacing: 6,
 };
 
-function rig(kind: string, dpr: number) {
+function rig(kind: string, dpr: number, values = [30, 150]) {
   let now = 1000;
   let serial = 0;
   let presented: Presented<ImageBitmap> | undefined;
@@ -41,8 +41,8 @@ function rig(kind: string, dpr: number) {
     slots: [{ widget: 1, x: slotX, y: 4, w: 481, h: 235, bx: slotX, by: 2, bw: 481, bh: 238, visible: true }],
   });
   layout();
-  lane.receive('panels', datedPanel(1, 100, 30));
-  lane.receive('panels', datedPanel(1, 101, 150));
+  lane.receive('panels', datedPanel(1, 100, values[0]));
+  lane.receive('panels', datedPanel(1, 101, values[1]));
   const request = async (now: number, speed = 0, acknowledge = false, refused: Refusal[] = []) => {
     const installed = acknowledge ? (presented?.entries ?? []).map(({ id, widget, binding }) => ({ id, widget, binding })) : [];
     lane.frame({ type: 'frame', serial: ++serial, now, target: now, exact: true, seek: 1, speed, installed, refused, inspect: [] });
@@ -87,7 +87,7 @@ async function checkSettledPixels(withTarget = false) {
       const refused = view.refused('main');
       if (refused) return { form: 'ordered', hour: view.hour, rows: [], empty: refused, emptyKind: 'unavailable' };
       const value = Number(view.panel('main'));
-      const target = value + 40;
+      const target = value <= 0.1 ? 0.1 : value + 40;
       return {
         form: 'ordered', hour: view.hour, scaleMax: 200, showAxis: true,
         rows: [{
@@ -102,6 +102,7 @@ async function checkSettledPixels(withTarget = false) {
     },
   }, 'main');
   const results: { dpr: number; moving: number; paused: number }[] = [];
+  const tinyEndpoints: { dpr: number; first: number; last: number }[] = [];
   for (const dpr of [1, 1.25, 1.5, 2]) {
     const played = rig(kind, dpr);
     await played.request(100);
@@ -116,6 +117,20 @@ async function checkSettledPixels(withTarget = false) {
     const cold = rig(kind, dpr);
     await cold.request(100);
     results.push({ dpr, moving, paused: changedBytes(cold.pixels(), played.pixels()) });
+    if (withTarget) for (const values of [[0.1, 0], [0, 0.1]]) {
+      const live = rig(kind, dpr, values);
+      const endpoint = rig(kind, dpr, values);
+      live.clock(true);
+      await live.request(100, 1);
+      live.step(0);
+      await endpoint.request(100);
+      const first = changedBytes(endpoint.pixels(), live.pixels());
+      live.step(500);
+      live.step(500);
+      await endpoint.request(101);
+      const last = changedBytes(endpoint.pixels(), live.pixels());
+      tinyEndpoints.push({ dpr, first, last });
+    }
   }
   const histories = [];
   for (const revoked of [false, true]) {
@@ -176,7 +191,7 @@ async function checkSettledPixels(withTarget = false) {
   await coldRefusal.request(101);
   const afterRefusal = changedBytes(refused.pixels(), coldRefusal.pixels());
   bitmap.close();
-  return { results, histories, afterScroll, afterResize, afterTick, afterRefusal };
+  return { results, tinyEndpoints, histories, afterScroll, afterResize, afterTick, afterRefusal };
 }
 
 (window as unknown as { checkSettledPixels: typeof checkSettledPixels }).checkSettledPixels = checkSettledPixels;

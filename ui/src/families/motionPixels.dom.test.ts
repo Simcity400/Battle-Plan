@@ -19,8 +19,9 @@ async function motionBrowser(url: string) {
 test('ordered bars settle to the same pixels as a cold draw after worker playback', async () => {
   await withNativePage('ordered-bars-pixel-settle', '/ui/src/families/motionPixels.dom.fixture.ts', async page => {
     for (const withTarget of [false, true]) {
-      const { results, histories, afterScroll, afterResize, afterTick, afterRefusal } = await page.evaluate<{
+      const { results, tinyEndpoints, histories, afterScroll, afterResize, afterTick, afterRefusal } = await page.evaluate<{
         results: { dpr: number; moving: number; paused: number }[];
+        tinyEndpoints: { dpr: number; first: number; last: number }[];
         histories: { revoked: boolean; history: string; difference: number }[];
         afterScroll: number; afterResize: number; afterTick: number; afterRefusal: number;
       }>(`window.checkSettledPixels(${withTarget})`);
@@ -29,6 +30,8 @@ test('ordered bars settle to the same pixels as a cold draw after worker playbac
         assert.ok(result.moving > 0, `no movement at ${detail}`);
         assert.equal(result.paused, 0, `paused picture differs at ${detail}`);
       }
+      if (withTarget) assert.equal(tinyEndpoints.length, 8);
+      for (const { dpr, first, last } of tinyEndpoints) assert.deepEqual([first, last], [0, 0], `tiny target endpoints at DPR ${dpr}`);
       for (const sample of histories) assert.equal(sample.difference, 0, `${sample.history} with endpoint refusal ${sample.revoked}`);
       assert.equal(afterScroll, 0, 'layout must not copy other pixels into the owned slot');
       assert.equal(afterResize, 0, 'the worker redraws owned pixels as the resized geometry takes effect');

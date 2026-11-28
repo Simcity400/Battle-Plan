@@ -1238,7 +1238,9 @@ describe('Ordered bar playback', () => {
     const large = { value: 505, target: 1000, scale: 1000 };
     const tiny = { value: .1, target: 100, scale: 100 };
     const zero = { value: 0, target: 100, scale: 100 };
-    for (const [first, next] of [[small, large], [large, small], [tiny, zero], [zero, tiny]] as const) await withLane(async f => {
+    const fulfilled = { ...tiny, target: .1 };
+    const unmet = { ...zero, target: .1 };
+    for (const [first, next] of [[small, large], [large, small], [tiny, zero], [zero, tiny], [fulfilled, unmet], [unmet, fulfilled]] as const) await withLane(async f => {
       f.bind(1, 1, false, 'target');
       f.record(100, first);
       f.record(101, next);
@@ -1246,15 +1248,17 @@ describe('Ordered bar playback', () => {
       const edges = () => {
         const gap = f.operations().find(op => op.op === 'roundRect' && op.globalAlpha === 0.16);
         const fill = f.operations().find(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE);
-        assert.ok(gap);
-        return [fill ? Number(fill.args[0]) + Number(fill.args[2]) : Number(gap.args[0]), Number(gap.args[0]) + Number(gap.args[2])];
+        assert.ok(fill || gap);
+        const delivered = fill ? Number(fill.args[0]) + Number(fill.args[2]) : Number(gap!.args[0]);
+        const requested = gap ? Number(gap.args[0]) + Number(gap.args[2]) : delivered;
+        return [delivered, requested];
       };
       const start = edges();
       f.canvas.clearOps();
       await f.request(101);
       const cold = edges();
       if (first.target !== next.target) assert.ok(Math.abs(start[1]! - cold[1]!) > 4, 'the readout shifts the plot edge');
-      for (const fraction of [.5, .99]) {
+      for (const fraction of [.5, .75, .99]) {
         f.canvas.clearOps();
         f.clock(100 + fraction, 1);
         f.tick(0);
@@ -1268,6 +1272,17 @@ describe('Ordered bar playback', () => {
       }
     });
   });
+
+  it('tweens an unmarked ordered fill from its cold minimum width to zero', async () => withLane(async f => {
+    f.record(100, { value: .1, scale: 100 });
+    f.record(101, { value: 0, scale: 100 });
+    await f.request(100);
+    assert.equal(f.barWidth(), 2);
+    f.canvas.clearOps();
+    f.clock(100.5, 1);
+    f.tick(0);
+    assert.equal(f.barWidth(), 1);
+  }));
 
   it('cuts target motion when a marker disappears or proof has a gap', async () => {
     for (const [hour, target] of [[101, undefined], [102, 180]] as const) await withLane(async f => {
@@ -1781,13 +1796,21 @@ describe('Ordered bar playback', () => {
   it('uses the same interpolated scale for the width and the axis', async () => withLane(async f => {
     f.record(100, { value: 60, scale: 200 });
     f.record(101, { value: 100, scale: 400 });
+    const sample = () => {
+      const tick = f.operations().find(op => op.op === 'fillText' && op.args[0] === '100');
+      assert.ok(tick);
+      return { width: f.barWidth(), oneHundred: Number(tick.args[1]) - Number(f.bar().args[0]) };
+    };
     await f.request(100);
+    const first = sample();
+    f.canvas.clearOps();
+    await f.request(101);
+    const last = sample();
     f.canvas.clearOps();
     f.clock(100.5, 1);
     f.tick(0);
-    const tick = f.operations().find(op => op.op === 'fillText' && op.args[0] === '100');
-    assert.ok(tick);
-    const oneHundred = Number(tick.args[1]) - Number(f.bar().args[0]);
-    assert.ok(Math.abs(f.barWidth() / oneHundred - .8) < .02);
+    const middle = sample();
+    assert.ok(Math.abs(middle.width - (first.width + last.width) / 2) < .02);
+    assert.ok(Math.abs(middle.oneHundred - (first.oneHundred + last.oneHundred) / 2) < 1);
   }));
 });
