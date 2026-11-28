@@ -101,6 +101,8 @@ struct Held {
     stopped: viewer_runtime::landed::Published<Option<String>>,
     marked: [u64; 3],
     stop: bool,
+    #[cfg(test)]
+    on_wait: Option<Box<dyn FnOnce() + Send>>,
 }
 
 struct Shared {
@@ -113,9 +115,40 @@ impl Shared {
         self.held.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn wait(&self, until: Instant) {
+    fn wait(&self, until: Instant) -> io::Result<()> {
+        let continuing = |held: &Held| {
+            if held.stop {
+                Err(io::Error::new(io::ErrorKind::Interrupted, "The map's orders layer is retiring"))
+            } else {
+                Ok(())
+            }
+        };
         let held = self.lock();
-        let _ = self.done.wait_timeout(held, until.saturating_duration_since(Instant::now()));
+        continuing(&held)?;
+        #[cfg(test)]
+        let held = {
+            let mut held = held;
+            if let Some(on_wait) = held.on_wait.take() {
+                on_wait();
+            }
+            held
+        };
+        let (held, _) = self.done.wait_timeout(held, until.saturating_duration_since(Instant::now()))
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        continuing(&held)
+    }
+
+    fn stop(&self) {
+        self.lock().stop = true;
+        self.done.notify_all();
+    }
+}
+
+pub struct Retirement(Arc<Shared>);
+
+impl Retirement {
+    pub fn stop(self) {
+        self.0.stop();
     }
 }
 
@@ -304,6 +337,10 @@ impl Orders {
         Ok(())
     }
 
+    pub fn retirement(&self) -> Retirement {
+        Retirement(Arc::clone(&self.shared))
+    }
+
     pub fn in_window(mut self) -> Self {
         self.window = true;
         self
@@ -394,7 +431,7 @@ impl Orders {
                 viewer_runtime::view_record::add("arrows", if held { "waits_for_the_build" } else { "waits_for_the_rows" }, 1);
             }
             waited = true;
-            self.shared.wait(until);
+            self.shared.wait(until)?;
         }
     }
 
@@ -492,8 +529,7 @@ impl Orders {
 
 impl Drop for Orders {
     fn drop(&mut self) {
-        self.shared.lock().stop = true;
-        self.shared.done.notify_all();
+        self.shared.stop();
         if let Some(worker) = self.worker.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner()).take() {
             let _ = worker.join();
         }

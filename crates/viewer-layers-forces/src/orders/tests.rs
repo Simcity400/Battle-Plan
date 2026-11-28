@@ -42,6 +42,29 @@ fn campaign(at: u32, store: &mut Store) {
 }
 
 #[test]
+fn retiring_a_map_interrupts_an_orders_join_whose_rows_have_not_arrived() {
+    use std::sync::mpsc;
+    use viewer_layer_core::layers::Settling;
+
+    let entry = open(recorded::record("retiring orders", 2, campaign), Settings::default()).unwrap();
+    let fed = Apart::new(&entry, 0).unwrap();
+    let mut layer = Orders::new(Arc::new(Links));
+    layer.set_views(fed.store()).unwrap();
+    let retire = layer.retirement();
+    let (waiting, at_wait) = mpsc::channel();
+    layer.shared.lock().on_wait = Some(Box::new(move || waiting.send(()).unwrap()));
+
+    let outcome = std::thread::scope(|scope| {
+        let join = scope.spawn(move || layer.settle_at(1, Settling::still()));
+        at_wait.recv().unwrap();
+        retire.stop();
+        join.join().unwrap()
+    });
+
+    assert_eq!(outcome.unwrap_err().kind(), io::ErrorKind::Interrupted);
+}
+
+#[test]
 fn a_plan_is_kept_while_its_rows_are_unchanged_and_made_again_from_the_hour_one_changed() {
     let entry = open(recorded::record("orders", 60, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(CaptureMode::Full);
