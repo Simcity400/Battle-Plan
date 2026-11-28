@@ -1,6 +1,7 @@
 import { liveKey } from '../../charts/live.ts';
 import { commandTermColour, measureColour } from '../../charts/palette.ts';
 import { firstHourOfMonth, gameDate, monthIndex } from '../../dashboard/calendar.ts';
+import { unavailableArt } from '../../families/art/types.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
@@ -23,6 +24,7 @@ import type {
 } from '../../generated/dashboard';
 import { leaderParams, validateLeaderHour } from './dossierProjection.ts';
 import { experienceWhole } from './experience.ts';
+import { portraitArt } from '../generals/generalsData.ts';
 
 export const TIMELINE_VIEW = 'timeline';
 
@@ -57,10 +59,14 @@ export function validateLeaderCareer(input: unknown): LeaderCareerReply {
   return reply;
 }
 
-export function leaderCareerProof(data: unknown, _requested: readonly [number, number], hour: number): readonly [number, number] | null {
-  const reply = data as LeaderCareerReply;
-  const last = reply.nextChange === null ? Number.MAX_SAFE_INTEGER : reply.nextChange - 1;
-  return reply.hour <= hour && hour <= last ? [reply.hour, last] : null;
+type CareerPanel = LeaderHourReply & { readonly career: LeaderCareerReply | null };
+
+function validateCareerPanel(input: unknown): CareerPanel {
+  const reply = validateLeaderHour(input) as CareerPanel;
+  if (reply.career !== null && validateLeaderCareer(reply.career).reference !== reply.reference) {
+    throw new Error('The leader and career references do not match.');
+  }
+  return reply;
 }
 
 const traitName = (trait: LeaderTrait | undefined) => trait?.name ?? trait?.token ?? 'Trait name not recorded';
@@ -156,10 +162,14 @@ function buildHeader(
   const decided = won + lost;
   const unresolved = Math.max(0, fought - decided);
   const winRate = partial ? 'Not recorded' : decided ? formatShare(won / decided) : '—';
-  const portraitHour = hourReply?.firstSeenHour ?? career.portraitHour ?? hour;
+  const portrait = hourReply
+    ? portraitArt(readView, hourReply.portrait)
+    : career.portraitHour === null
+      ? unavailableArt('Portrait unavailable')
+      : readView.art({ kind: 'portrait', leader: reference, hour: career.portraitHour });
 
   return {
-    portrait: readView.art({ kind: 'portrait', leader: reference, hour: portraitHour }),
+    portrait,
     portraitName: name,
     title: name,
     subtitle: `${rank} · ${skillText}`,
@@ -181,7 +191,7 @@ function buildMeters(readView: BoundedReadView, hourReply: LeaderHourReply | und
   if (training === null) {
     return { title: 'Traits in training', items: [], empty: 'Trait training was not recorded at this date' };
   }
-  const live = readView.live('hour');
+  const live = readView.live('main');
   const items: TimelineMeterItem[] = training.map(trait => {
     const raw = live?.get(liveKey(trait.key, 'experience'));
     const rawText = raw === undefined ? null : String(raw);
@@ -207,25 +217,25 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
   kind: 'general-career',
 
   nextChange(readView) {
-    return readView.panel<LeaderCareerReply>('career')?.nextChange ?? Infinity;
+    return readView.panel<CareerPanel>('main')?.career?.nextChange ?? Infinity;
   },
 
   project(readView, opt) {
     const hour = readView.hour;
     const base = { hour, firstHour: opt.firstHour, labelWidth: 72, axisPosition: 'top' as const };
-    const refused = readView.refused('hour') ?? readView.refused('career');
+    const refused = readView.refused('main');
     if (refused) return timelineModel({ ...base, empty: refused, emptyKind: 'unavailable' });
 
-    const career = readView.panel<LeaderCareerReply>('career');
-    const hourReply = readView.panel<LeaderHourReply>('hour');
-    if (!career) return timelineModel(base);
+    const hourReply = readView.panel<CareerPanel>('main');
+    if (!hourReply) return timelineModel(base);
+    const career = hourReply.career;
 
-    const replyChange = career.nextChange ?? Infinity;
-    const warnings = [...new Set([...career.warnings, ...(hourReply?.warnings ?? [])])];
-    const reference = career.reference ?? hourReply?.reference ?? null;
+    const replyChange = career?.nextChange ?? Infinity;
+    const warnings = [...new Set([...(career?.warnings ?? []), ...hourReply.warnings])];
+    const reference = hourReply.reference;
 
-    if (reference === null) {
-      const missing = career.missing ?? hourReply?.missing;
+    if (reference === null || career === null) {
+      const missing = hourReply.missing;
       return timelineModel({
         ...base,
         empty: missing ?? (opt.reference === null ? 'No generals yet.' : 'This leader is not serving at this date.'),
@@ -245,7 +255,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
       });
     }
 
-    const serving = hourReply?.missing === null ? hourReply : undefined;
+    const serving = hourReply.missing === null ? hourReply : undefined;
     const partial = (serving?.battlesPartialFrom !== null && serving?.battlesPartialFrom !== undefined && serving.battlesPartialFrom <= hour)
       || (career.battlesPartialFrom !== null && career.battlesPartialFrom <= hour);
     const header = buildHeader(readView, serving, career, reference, partial);
@@ -341,7 +351,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
     ];
 
     const notes: string[] = [];
-    if (hourReply?.missing) notes.push(hourReply.missing);
+    if (hourReply.missing) notes.push(hourReply.missing);
     if (partial) notes.push(PARTIAL);
     const roleKind = serving?.role?.kind ?? career.runs.at(-1)?.role.kind;
     if (roleKind === 2) notes.push(FLEET_NOTE);
@@ -430,31 +440,16 @@ export const careerTimelineDeclaration: TimelineWidgetDeclaration<CareerTimeline
       owner,
       entries: [
         {
-          name: 'hour',
+          name: 'main',
           ...common,
           read: {
             shape: 'point' as const,
             channel: 'panel' as const,
             coverage: { mode: 'keyed' as const, keys: [key] },
-            product: 'unit-leader-hour' as const,
-            followQuery: { panel: 'unit-leader-hour', branchId: ctx.branch.id, ...params },
-            params: { branchId: ctx.branch.id, ...params },
-            validate: validateLeaderHour,
-          },
-        },
-        {
-          name: 'career',
-          ...common,
-          read: {
-            shape: 'branch-to-hour' as const,
-            coverage: { mode: 'keyed' as const, keys: [key] },
             product: 'unit-leader-career' as const,
-            followQuery: null,
-            params: { branchId: ctx.branch.id, ...params },
-            buildSpanParams: (base, span) => ({ ...base, hour: span.lastHour }),
-            provenInterval: leaderCareerProof,
-            dynamicKeys: ['hour'],
-            validate: validateLeaderCareer,
+            followQuery: { panel: 'unit-leader-career', branchId: ctx.branch.id, ...params },
+            params: { branchId: ctx.branch.id, ...params, includeLeader: true },
+            validate: validateCareerPanel,
           },
         },
       ],

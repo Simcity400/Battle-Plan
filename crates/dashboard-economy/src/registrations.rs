@@ -1,5 +1,7 @@
+use dashboard_base::products::at_hour::at_hour;
+
 dashboard_base::register_products! {
-    ECONOMY_RESOURCE_MONTHS_RESOURCEMONTHS => crate::products::economy::resource_months::ResourceMonths,
+    ECONOMY_RESOURCE_MONTHS_RESOURCEMONTHS => crate::products::economy::resource_months::ResourceMonths; interval(at_hour, |r| r.hour),
     CONVOYS_CONVOYHEALTH => crate::products::convoys::ConvoyHealth; panel(crate::products::convoys::panel),
     ECONOMY_MARKET_LEDGER_MARKETLEDGERTAIL => crate::products::economy::market::ledger::MarketLedgerTail; panel(crate::products::economy::market::ledger::dated_panel),
     ECONOMY_FUEL_AWARDS_COUNTRYFUELAWARDS => crate::products::economy::fuel::awards::CountryFuelAwards,

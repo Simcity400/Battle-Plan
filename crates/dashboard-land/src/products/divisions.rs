@@ -287,17 +287,32 @@ impl Content {
     }
 
     pub fn design_name(&self, frame: &DecodedFrame, definition: &VariantDefinitionRow) -> Result<String, String> {
-        let cat = self.cat("Design names")?;
-        let lexical = frame.complete::<tables::LexicalTokens>().map_err(|why| format!("Design names unavailable: {why}"))?;
-        let tags = dashboard_text::variant_names::Tags::new(
-            frame.complete::<tables::Countries>().map_err(|why| format!("Design names unavailable: {why}"))?,
-            frame.complete::<tables::CountryLinks>().map_err(|why| format!("Design names unavailable: {why}"))?,
-            frame.complete::<tables::CountryAppearance>().ok(),
-        );
-        let raw = dashboard_text::variant_names::raw_variant(definition, frame.hour, &tags, lexical);
-        dashboard_text::variant_names::variant_names(&raw, Some(cat.as_ref() as &dyn dashboard_text::variant_names::Texts)).0.ok_or_else(|| UNNAMED_DESIGN.to_owned())
+        self.design_names(frame)(definition)
+    }
+
+    fn design_names<'a>(&'a self, frame: &'a DecodedFrame) -> impl Fn(&VariantDefinitionRow) -> Result<String, String> + 'a {
+        use dashboard_text::variant_names::{Tags, raw_variant, variant_names};
+        let inputs = std::cell::OnceCell::new();
+        move |definition| {
+            let (cat, lexical, tags) = inputs.get_or_init(|| {
+                let cat = self.cat("Design names")?;
+                let unread = |why| format!("Design names unavailable: {why}");
+                let lexical = frame.complete::<tables::LexicalTokens>().map_err(unread)?;
+                let countries = frame.complete::<tables::Countries>().map_err(unread)?;
+                let links = frame.complete::<tables::CountryLinks>().map_err(unread)?;
+                #[cfg(test)]
+                DESIGN_TAGS_BUILT.set(DESIGN_TAGS_BUILT.get() + 1);
+                let tags = Tags::new(countries, links, frame.complete::<tables::CountryAppearance>().ok());
+                Ok::<_, String>((cat, lexical, tags))
+            }).as_ref().map_err(Clone::clone)?;
+            let raw = raw_variant(definition, frame.hour, tags, *lexical);
+            variant_names(&raw, Some(cat.as_ref())).0.ok_or_else(|| UNNAMED_DESIGN.to_owned())
+        }
     }
 }
+
+#[cfg(test)]
+thread_local! { static DESIGN_TAGS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 pub const UNNAMED_DESIGN: &str = "An equipment design has no resolved name";
 

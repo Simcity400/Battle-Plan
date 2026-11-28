@@ -121,14 +121,9 @@ export const transfersDeclaration: TableWidgetDeclaration<TransfersProjectionOpt
         channel: 'panel',
         coverage: { mode: 'population', form: 'total' },
         product: 'territory-transfers',
-        followQuery: null,
+        followQuery: { panel: 'territory-transfers', branchId: ctx.branch.id },
         params: { branchId: ctx.branch.id },
         hourParam: 'through',
-        provenInterval: (data, hour) => {
-          const reply = data as TerritoryTransfersReply;
-          const last = reply.nextChange === null ? Number.MAX_SAFE_INTEGER : reply.nextChange - 1;
-          return reply.through <= hour && hour <= last ? [reply.through, last] : null;
-        },
         validate: validateTransfers,
       },
     }],

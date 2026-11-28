@@ -796,7 +796,7 @@ impl Sprawl {
         let mut library = ModelLibrary::load(
             layers,
             decode,
-            &roster.descriptors,
+            roster.descriptor_job().view(),
             &entities,
             &mut model_warnings,
         )?;
@@ -805,7 +805,7 @@ impl Sprawl {
             refused.into_iter().cloned().partition(|entity| {
                 recorded.as_ref().is_some_and(|recorded| {
                     !recorded.unreadable_names.contains_key(entity)
-                        && recorded.descriptors.entities.contains_key(entity)
+                        && recorded.has_entity(entity)
                 })
             });
         if !from_recording.is_empty() {

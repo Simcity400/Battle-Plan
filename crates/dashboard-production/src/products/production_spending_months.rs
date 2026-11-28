@@ -706,6 +706,20 @@ pub(crate) fn compute_months(
     }
 }
 
+pub fn panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
+    let first = dashboard_query::branch(asked).and_then(|branch| dashboard_base::queries::query(source, branch)).map_err(|error| error.to_string())?.timeline.first;
+    dashboard_base::products::at_hour::dated_product::<ProductionSpendingMonths>(
+        source, load, asked,
+        move |request, hour| {
+            request["firstHour"] = first.into();
+            request["lastHour"] = hour.into();
+        },
+        |params, _| params.last_hour,
+        |_, _| {},
+        |source, params, load, cancelled, _| ProductionSpendingMonths::load(source, params, load, cancelled),
+    )
+}
+
 impl Product for ProductionSpendingMonths {
     const KEY: &'static str = "production-spending-months";
     const CONTENT_DEPENDENT: bool = true;

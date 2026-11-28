@@ -16,6 +16,69 @@ fn member(token: &str, archetype: Option<&str>, domain: Option<super::Domain>) -
 }
 
 #[test]
+fn stockpile_names_read_only_spellings_used_at_each_hour() {
+    use super::{Content, design_reads, name_at, named_in};
+    use dashboard_base::{Source, SourceKey, products::{LoadContext, at_hour::{Read, counted, frame}}, queries::query, test_fixtures::{CAMPAIGN, played, records, source}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{LexicalTokenRow, ProductionLineRow, TableId, TableRows, VariantDefinitionRow, VariantModuleRow, VariantUpgradeRow};
+    use replay_frame::frame::TableView;
+    use std::{collections::BTreeSet, sync::Arc};
+
+    let frames = (100..=104).map(|hour| {
+        let mut frame = source(1, hour, Some(1));
+        let lexical = (1..512).map(|token| LexicalTokenRow { token, literal: format!("token_{token}").into_bytes() }).collect();
+        frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(lexical)).into();
+        let lines = (1..=64).map(|handle| ProductionLineRow { handle, country: 9001, variant: 1, ..Default::default() }).collect();
+        frame.tables[TableId::ProductionLines.index()] = TableView::Complete(TableRows::ProductionLines(lines)).into();
+        frame.tables[TableId::VariantDefinitions.index()] = TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: 1, equipment_token: hour as u32, creator_link: 9001, ..Default::default()
+        }])).into();
+        frame.tables[TableId::VariantModules.index()] = TableView::Complete(TableRows::VariantModules(vec![VariantModuleRow {
+            variant: 1, slot: 2, definition_token: 3, ..Default::default()
+        }])).into();
+        frame.tables[TableId::VariantUpgrades.index()] = TableView::Complete(TableRows::VariantUpgrades(vec![VariantUpgradeRow {
+            variant: 1, source_ordinal: 0, definition_token: 4, level: 1
+        }])).into();
+        frame
+    }).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let source = Arc::new(Source::from_replay(SourceKey { source_id: "stockpile-names".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap());
+    let query = query(&source, 1).unwrap();
+    let variants = [1, 99];
+    let tokens = BTreeSet::from([5, 512]);
+    let content = Content::none("No game folders");
+    let mut all = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance, TableId::LexicalTokens].map(Read::all).to_vec();
+    all.extend(design_reads(variants));
+    for hour in [100, 101] {
+        let mut refusals = BTreeMap::new();
+        let (actual, rows) = counted(|| name_at(&query, hour, &variants, &tokens, &content, &mut refusals).unwrap());
+        let mut expected_refusals = BTreeMap::new();
+        let full = frame(&query, hour, &all, "Stockpile").unwrap();
+        let expected = named_in(&full, &variants, &tokens, &content, &mut expected_refusals);
+        assert_eq!(actual, expected);
+        assert_eq!(refusals, expected_refusals);
+        assert_eq!(actual.0[&1].token, format!("token_{hour}"));
+        assert!(actual.0[&1].design.is_some());
+        assert_eq!(actual.1[&5], "token_5");
+        assert!(!actual.1.contains_key(&512));
+        assert!(rows < 32, "the unrelated lexical rows were decoded: {rows}");
+    }
+
+    let panel = super::types::panel(&source, &LoadContext { content: None }, &serde_json::json!({ "panel": "equipment-stockpile-types", "branchId": "1", "country": 7 })).unwrap();
+    let exact = panel.exact().unwrap();
+    let steps = played(source.replay_ref(), exact, 100, 104);
+    assert!(steps.iter().any(|step| step.hour > 100));
+    for step in steps {
+        assert!(!step.pending);
+        assert_eq!(*step.value, (exact.cold)(step.hour, &cancelled));
+        if step.hour > 100 {
+            assert!(step.rows < 32, "the unchanged production lines were decoded: {}", step.rows);
+        }
+    }
+}
+
+#[test]
 fn a_read_is_carried_a_day_to_the_next_read_and_no_further() {
     assert_eq!(carried(&[10, 34, 58], 100), vec![span(10, 81)]);
     assert_eq!(carried(&[10, 82], 90), vec![span(10, 33), span(82, 90)]);

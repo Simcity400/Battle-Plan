@@ -35,12 +35,6 @@ export function reserveHistoryProvenLast(history: ReserveHistoryReply): number {
   return history.nextChange === null ? Number.MAX_SAFE_INTEGER : history.nextChange - 1;
 }
 
-export function reserveHistoryProof(data: unknown, _requested: readonly [number, number], at: number): readonly [number, number] | null {
-  const reply = data as ReserveHistoryReply;
-  const last = reserveHistoryProvenLast(reply);
-  return reply.hour <= at && at <= last ? [reply.hour, last] : null;
-}
-
 export const persons = (value: number) => value.toLocaleString('en-US');
 
 export function sourceTagAt(history: ReserveHistoryReply, source: number, hour: number): string | null {

@@ -563,6 +563,32 @@ impl Product for ReserveHistory {
     }
 }
 
+pub(crate) fn dated_reserve_history(source: &Arc<Source>, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
+    use dashboard_base::products::at_hour;
+    let last = dashboard_query::branch(asked).and_then(|branch| dashboard_base::queries::query(source, branch))
+        .map_err(|error| error.to_string())?.timeline.last;
+    at_hour::dated_product::<ReserveHistory>(source, load, asked, at_hour::at_hour, |_, reply| at_hour::before(reply.next_change),
+        move |data, hour| {
+            let hour = hour.min(last);
+            if data.as_ref().as_ref().is_ok_and(|value| value["hour"].as_i64() == Some(i64::from(hour))) { return; }
+            let Ok(value) = Arc::make_mut(data) else { return };
+            let old = value["hour"].as_i64();
+            value["hour"] = hour.into();
+            if let Some(segment) = value["segments"].as_array_mut().and_then(|segments| segments.last_mut())
+                && segment["lastHour"].as_i64() == old
+            {
+                segment["lastHour"] = hour.into();
+            }
+            for source in value["sources"].as_array_mut().into_iter().flatten() {
+                if let Some(tag) = source["tags"].as_array_mut().and_then(|tags| tags.last_mut())
+                    && tag["lastHour"].as_i64() == old
+                {
+                    tag["lastHour"] = hour.into();
+                }
+            }
+        }, |source, params, load, cancelled, _| ReserveHistory::load(source, params, load, cancelled))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,7 +692,7 @@ mod tests {
             })
             .collect();
         let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-        let src = Source::from_replay(dashboard_base::SourceKey { source_id: "reserve".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let src = Arc::new(Source::from_replay(dashboard_base::SourceKey { source_id: "reserve".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap());
         let ctx = LoadContext { content: None };
 
         let at14 = ReserveHistory::load(&src, &ReserveHistoryParams { branch_id: "1".into(), holder: 9001, hour: 14 }, &ctx, &AtomicBool::new(false)).unwrap();
@@ -690,6 +716,15 @@ mod tests {
         let at20 = ReserveHistory::load(&src, &ReserveHistoryParams { branch_id: "1".into(), holder: 9001, hour: 20 }, &ctx, &AtomicBool::new(false)).unwrap();
         assert_eq!(at20.hour, 20);
         assert_eq!(at20.next_change, None);
+
+        let open = crate::registrations::OCCUPATION_RESERVE_RESERVEHISTORY.panel.expect("reserve history follows playback").open;
+        let panel = open(&src, &ctx, &serde_json::json!({"branchId": "1", "holder": 9001})).unwrap();
+        let exact = panel.exact().unwrap();
+        let steps = dashboard_base::test_fixtures::played(src.replay_ref(), exact, 10, 20);
+        for step in &steps {
+            assert_eq!(step.value.as_ref(), &(exact.cold)(step.hour, &false.into()), "reserve history at {}", step.hour);
+        }
+        assert_eq!(steps.iter().filter(|step| step.hour > 10).map(|step| step.product_calls).sum::<u64>(), 2);
     }
 
     #[test]

@@ -172,7 +172,7 @@ impl TrainAssets {
         let tags = index.files;
         let cultures = Cultures::read(layers)?;
         let is_tag = |tag: &str| tags.contains_key(tag);
-        let has_entity = |entity: &str| roster.descriptors.entities.contains_key(entity);
+        let has_entity = |entity: &str| roster.has_entity(entity);
         let database = train_gfx::Database::read(
             layers,
             &train_gfx::Registries {
@@ -196,7 +196,7 @@ impl TrainAssets {
             .iter()
             .map(|wagon| wagon.entity.clone())
             .collect();
-        let library = ModelLibrary::load(layers, decode, &roster.descriptors, &names, warnings)?;
+        let library = ModelLibrary::load(layers, decode, roster.descriptor_job().view(), &names, warnings)?;
         Ok(Self {
             library,
             cultures,

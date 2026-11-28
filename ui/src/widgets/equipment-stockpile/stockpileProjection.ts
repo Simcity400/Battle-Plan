@@ -215,10 +215,11 @@ function sources(ctx: FamilyPlanContext): SourcePlan {
         ...common,
         read: {
           shape: 'point',
-          channel: 'followed',
+          channel: 'panel',
           coverage: { mode: 'keyed', keys: [tag] },
           product: 'equipment-stockpile-types',
-          followQuery: null,
+          exactProduct: 'equipment-stockpile-types',
+          followQuery: { panel: 'equipment-stockpile-types', ...params },
           params,
           hourParam: 'hour',
           provenInterval: (data, at) => {
@@ -236,7 +237,7 @@ function sources(ctx: FamilyPlanContext): SourcePlan {
           channel: 'panel',
           coverage: { mode: 'keyed', keys: [tag] },
           product: 'stockpile-artwork',
-          followQuery: null,
+          followQuery: { panel: 'stockpile-artwork', ...params, variants: [] },
           params: { ...params, variants: [] },
           hourParam: 'hour',
           validate: validateStockpileArtwork,

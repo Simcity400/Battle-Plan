@@ -1419,7 +1419,7 @@ impl Bridges {
         let roster = layers.descriptor_roster()?;
         Ok(Self {
             id: viewer_scene_base::next_projection_id(),
-            library: ModelLibrary::load(layers, decode, &roster.descriptors, &entities, warnings)?,
+            library: ModelLibrary::load(layers, decode, roster.descriptor_job().view(), &entities, warnings)?,
             entities,
         })
     }

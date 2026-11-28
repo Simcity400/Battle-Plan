@@ -94,6 +94,10 @@ test('every race and mix view sends a group whole, and naval losses keys each ro
     const asked = (read.buildExactParams ? read.buildExactParams(read.params!, 500 as never, 'static') : read.params) as { group?: unknown; countries?: readonly unknown[]; top?: unknown };
     assert.deepEqual(asked.group, { type: 'faction', id: '42', membership: 'hour' }, `${kind} ${view}: the group`);
     assert.ok(!asked.countries?.length && asked.top == null, `${kind} ${view}: never its members or a top`);
+    if (kind === 'naval-losses') {
+      const { hour: _hour, ...params } = asked as typeof asked & { hour: number };
+      assert.deepEqual(read.followQuery, { panel: 'naval-losses-at', ...params });
+    }
     assert.equal((declaration.projectionOptions(ctx(view), { extent: [0, 0], surface: '#1e1e1e' }) as { group?: boolean }).group, true);
   }
   const reply: NavalLossesAtReply = {
@@ -103,7 +107,6 @@ test('every race and mix view sends a group whole, and naval losses keys each ro
   const read = navalLossesRaceDeclaration.sources(ctx('race'), { following: true, staticSpan: null }).entries[0]!.read;
   assert.ok(read.shape === 'point');
   if (read.shape !== 'point') return;
-  assert.deepEqual(read.provenInterval?.(reply, 500), [321, 599], 'asked again at 600, when the membership changes');
   const options = navalLossesRaceDeclaration.projectionOptions(ctx('race'), { extent: [0, 0], surface: '#1e1e1e' });
   const view = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity: fakeIdentity({}) });
   assert.deepEqual(navalLossesRaceProjection.project(view, options).rows.map(row => row.key), [countryKey(7)]);

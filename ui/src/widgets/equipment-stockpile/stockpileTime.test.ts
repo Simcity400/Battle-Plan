@@ -1,15 +1,22 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ChartBucket } from '../../charts/chartSummary.ts';
+import type { ProductRequest } from '../../dashboard/client.ts';
+import { TileCache } from '../../dashboard/tiles/cache.ts';
+import { TILE_BINS } from '../../dashboard/tiles/tile.ts';
+import { TileView } from '../../dashboard/tiles/view.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { setToken } from '../../dashboard/options.ts';
+import type { FollowQuery, GatedHour } from '../../dashboard/regionTime.ts';
 import { boundTiledSeries, createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
-import { readPlanExact } from '../../families/broker.ts';
+import { compileFollowPlan, readPlanExact, readsWithoutFollow } from '../../families/broker.ts';
+import { chartTileLane } from '../../families/host/tiledState.ts';
 import type { FamilyPlanContext, PixelBinnedSourceRead, PointSourceRead } from '../../families/plan.ts';
 import type { TimeChartProjection, TimeChartWidgetDeclaration } from '../../families/time-chart/declaration.ts';
 import { knownValue } from '../../families/value.ts';
 import type { StockpileLinesReply } from '../../generated/dashboard';
 import { TIME_CHART_VIEWS } from '../manifest/time-chart.ts';
+import { stockpileDeclaration } from './stockpileProjection.ts';
 
 const FIRST = 60_000_000;
 const HOUR = FIRST + 400;
@@ -59,8 +66,14 @@ function reply(hour: number, values: Record<string, number | null>, top: Stockpi
 test('the Time view asks the product for the main types at the date, and a chosen list by name', async () => {
   const { declaration } = await view();
   const automatic = declaration.sources(context({}), { width: 600, height: 300 } as never);
+  const bars = stockpileDeclaration.sources(context({}), { width: 600, height: 300 } as never);
+  assert.equal([...automatic.entries, ...bars.entries].filter(entry => readsWithoutFollow(entry.read)).length, 0);
+  const compile = (plan: typeof automatic) => compileFollowPlan(plan, query => ({ query: query as FollowQuery, refused: null })).subscriptions.map(sub => [sub.channel, sub.product]);
+  assert.deepEqual(compile(automatic), [['panel', 'equipment-stockpile-lines']]);
+  assert.deepEqual(compile(bars), [['panel', 'equipment-stockpile-types'], ['panel', 'stockpile-artwork']]);
   const tiles = automatic.entries.find(entry => entry.name === 'stock')!.read as PixelBinnedSourceRead;
   assert.deepEqual(tiles.top, { n: 5 });
+  assert.equal(tiles.followRank, 'lines');
   assert.deepEqual(tiles.tags, []);
   assert.deepEqual(tiles.family, { kind: 'equipment-stockpile', measure: 'stock', country: 'GER', included: [], membership: [{ firstHour: FIRST, lastHour: FIRST + 1000 }] });
   const lines = automatic.entries.find(entry => entry.name === 'lines')!.read as PointSourceRead;
@@ -71,6 +84,7 @@ test('the Time view asks the product for the main types at the date, and a chose
   const chosen = declaration.sources(context({ chosen: `${setToken('mod#tanks')} ${setToken('rifles')}`, measure: 'share' }), { width: 600, height: 300 } as never);
   const chosenTiles = chosen.entries.find(entry => entry.name === 'stock')!.read as PixelBinnedSourceRead;
   assert.equal(chosenTiles.top, undefined);
+  assert.equal(chosenTiles.followRank, undefined);
   assert.deepEqual(chosenTiles.tags, ['mod#tanks', 'rifles'], 'a quoted type key keeps its #');
   assert.equal((chosenTiles.family as { measure: string }).measure, 'share');
   assert.equal((chosen.entries.find(entry => entry.name === 'lines')!.read as PointSourceRead).params?.top, undefined);
@@ -119,6 +133,51 @@ test('a refused ranking draws no types and says why; the settings reach the axis
   assert.equal(chosen.yAxis.min, -50);
   assert.deepEqual(chosen.legend?.map(entry => entry.label), ['Infantry equipment']);
   assert.equal(chosen.series[0]!.endLabel, null);
+});
+
+test('stockpile history loads keyed tiles for the followed type roster', async () => {
+  const { declaration, projection } = await view();
+  const ctx = context({});
+  const viewport = { from: HOUR - 12, to: HOUR + 48, end: HOUR + 48, width: 100 };
+  const entry = declaration.sources(ctx, { width: 100, height: 120 } as never).entries.find(entry => entry.name === 'stock')!;
+  assert.equal(entry.read.shape, 'pixel-binned');
+  if (entry.read.shape !== 'pixel-binned') return;
+  const requests: { top?: number; countries?: string[] }[] = [];
+  const client = {
+    product: async (request: ProductRequest) => {
+      const params = request.params as { top?: number; countries?: string[]; binHours: number; index: number };
+      requests.push(params);
+      const tags = params.countries ?? [];
+      const firstHour = params.index * TILE_BINS * params.binHours;
+      return { ...request, data: {
+        branchId: '7', measure: 'stock', decimals: 5, binHours: params.binHours, index: params.index, firstHour,
+        immutable: true, filled: firstHour + TILE_BINS * params.binHours - 1, rawValues: true, hourBytes: 0,
+        lines: tags.map(country => ({ country, missing: [], parts: [] })), bins: new Uint8Array(tags.length * TILE_BINS),
+      } };
+    },
+  } as never;
+  const lane = chartTileLane(client, { ...entry, read: entry.read }, ctx.branch.lastHour, ctx.gateSpan, hour => hour as GatedHour);
+  assert.ok(lane);
+  const tiles = new TileView(new TileCache(), lane, () => {});
+  tiles.setView(viewport);
+  const options = declaration.projectionOptions(ctx, { extent: [FIRST, HOUR + 48], surface: '#111111' });
+  for (const [i, keys] of [['mod#tanks', 'rifles'], ['rifles', 'mod#tanks'], ['rifles', 'radio'], [], []].entries()) {
+    const hour = HOUR + i * 12;
+    const refused = i === 4 ? 'Stockpile rank was not recorded' : null;
+    const head = reply(hour, {}, { keys, refused });
+    const readView = createBoundedReadView({ hour, panels: new Map([['lines', head]]) });
+    const rank = projection.project(readView, options).followedTileRanks?.lines;
+    assert.deepEqual(rank, { tags: keys, refused });
+    tiles.setHour(hour, true);
+    tiles.setFollowedRank(hour, { ...rank!, hour, from: hour, until: head.nextChange! - 1 });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(tiles.settled, true);
+    assert.ok(tiles.current);
+    assert.deepEqual([...tiles.current.keys()], keys);
+  }
+  assert.equal(requests.filter(request => request.top !== undefined).length, 0);
+  assert.deepEqual(requests.map(request => request.countries), [['mod#tanks', 'rifles'], ['radio']]);
+  tiles.close();
 });
 
 test('the exact audit reads the dated main types, so a correct picture has an exact read to agree with', async () => {

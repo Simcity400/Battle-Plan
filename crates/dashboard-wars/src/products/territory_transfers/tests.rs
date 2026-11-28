@@ -127,3 +127,23 @@ fn a_country_is_named_by_its_latest_read_tag_through_the_hour_and_a_later_transf
     assert_eq!(name(20), Some(("NEW".to_owned(), 8, 2)), "a tag read at hour 5 does not replace one read at 8");
     assert_eq!(name(30), Some(("TIE".to_owned(), 8, 3)), "of two tags read at the same hour, the later transfer's is kept");
 }
+
+#[test]
+fn following_transfers_keeps_the_prefix_until_points_are_read() {
+    use dashboard_base::test_fixtures::{CAMPAIGN, played, records, source};
+    let frames = (100..=106).map(|hour| source(1, hour, Some(1))).collect();
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let source = Arc::new(Source::from_replay(dashboard_base::SourceKey { source_id: "transfer-steps".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap());
+    let transfers = index(vec![deal("transfer", Some((101, 103)), vec![state(7, country(1, "SPR", 100), country(2, "SPA", 101), 101, Some("12"), Some(105))])]);
+    source.state::<Indexes>().lock().unwrap().0.insert("1".into(), Arc::new(transfers));
+
+    let open = crate::registrations::TERRITORY_TRANSFERS_TERRITORYTRANSFERS.panel.expect("transfers follow playback").open;
+    let panel = open(&source, &LoadContext { content: None }, &serde_json::json!({"branchId": "1"})).unwrap();
+    let exact = panel.exact().unwrap();
+    let steps = played(source.replay_ref(), exact, 100, 106);
+    for step in &steps {
+        assert_eq!(step.value.as_ref(), &(exact.cold)(step.hour, &cancelled), "transfers at {}", step.hour);
+    }
+    assert_eq!(steps.iter().filter(|step| step.hour > 100).map(|step| step.product_calls).sum::<u64>(), 2);
+}

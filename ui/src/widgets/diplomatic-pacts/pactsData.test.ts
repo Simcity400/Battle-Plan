@@ -1,7 +1,11 @@
 import { PENDING_ART } from '../../families/art/types.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { agreementKinds, agreementLanes, agreementsOf, pactSince, pactState, pactsProof, validatePacts } from './pactsData.ts';
+import { compileFollowPlan } from '../../families/broker.ts';
+import { occupationReserveBreakdownDeclaration } from '../occupation-reserve-manpower/occupationReserveBreakdownProjection.ts';
+import { transfersDeclaration } from '../territory-transfers/transfersProjection.ts';
+import { diplomaticPactsDeclaration } from './diplomaticPactsProjection.ts';
+import { agreementKinds, agreementLanes, agreementsOf, pactSince, pactState, validatePacts } from './pactsData.ts';
 import type { DiplomacyPactsReply, DiplomacyPact as Pact } from '../../generated/dashboard';
 
 const ids = new Map<Pact, string>();
@@ -55,12 +59,29 @@ test('lanes are a section per kind, split by side, with ended agreements shown o
   assert.ok(!agreementLanes(agreements, false, 110, text).some(lane => lane.meta && idOf((lane.meta as { agreement: { pact: Pact } }).agreement.pact) === '1'), 'Ended hidden');
 });
 
-test('an agreements reply holds nothing after its hour and proves up to its next change', () => {
+test('an agreements reply holds nothing after its hour', () => {
   const reply: DiplomacyPactsReply = { hour: 20, nextChange: 30, kinds: [{ kind: 'guarantee', count: 1, name: null, reason: 'not read' }], pacts: [pact('9', 'guarantee', 1, 20, { held: true })], unobserved: [], warnings: [] };
   assert.equal(validatePacts(reply), reply);
   assert.throws(() => validatePacts({ ...reply, pacts: [{ ...reply.pacts[0], lastSeen: 21 }] }), /malformed/, 'a pact seen after the hour asked is refused');
   assert.throws(() => validatePacts({ ...reply, pacts: [{ ...reply.pacts[0], firstSeen: 'soon' }] }), /malformed/);
   assert.throws(() => validatePacts({ pacts: [] }), /malformed/);
-  assert.deepEqual(pactsProof(reply, [0, 20], 25), [20, 29]);
-  assert.equal(pactsProof(reply, [0, 20], 30), null);
+});
+
+test('dated agreements, transfers and reserve history compile onto the panel channel', () => {
+  const ctx = {
+    track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
+    branch: { id: '1', firstHour: 100, lastHour: 300 },
+    widget: { time: { mode: 'follow' } },
+    countryTag: 'GER', options: { holder: 'GER|9' },
+  };
+  const view = { following: true, staticSpan: null };
+  const panels = [
+    ['diplomatic-pacts', diplomaticPactsDeclaration.sources(ctx as never, view)],
+    ['territory-transfers', transfersDeclaration.sources(ctx as never, view)],
+    ['occupation-reserve-history', occupationReserveBreakdownDeclaration.sources(ctx as never, view)],
+  ] as const;
+  for (const [product, plan] of panels) {
+    const compiled = compileFollowPlan(plan, query => ({ query: query as never, refused: null }));
+    assert.deepEqual(compiled.subscriptions.map(({ product, channel }) => [product, channel]), [[product, 'panel']]);
+  }
 });

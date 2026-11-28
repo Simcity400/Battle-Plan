@@ -154,9 +154,3 @@ export function agreementKinds(kinds: readonly DiplomacyKind[]): { kind: string;
 }
 
 export const aboutElsewhere = (warning: string) => [...ELSEWHERE].some(kind => warning.includes(`Relation ${kind}:`));
-
-export function pactsProof(data: unknown, _requested: readonly [number, number], at: number): readonly [number, number] | null {
-  const reply = data as DiplomacyPactsReply;
-  const last = reply.nextChange === null ? Number.MAX_SAFE_INTEGER : reply.nextChange - 1;
-  return reply.hour <= at && at <= last ? [reply.hour, last] : null;
-}

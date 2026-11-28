@@ -79,6 +79,49 @@ fn an_interval_seed_can_join_preparation_before_it_has_a_wake() {
     assert_eq!(ready.value.as_ref().as_ref().unwrap()["slot"], 7);
 }
 
+#[test]
+fn an_exact_panel_and_request_use_the_same_hourly_preparation() {
+    use crate::products::read_ahead::Preparation;
+    struct Prepared;
+    impl AtHour for Prepared {
+        const KEY: &'static str = "test-prepared-hour";
+        const TITLE: &'static str = "Prepared hour";
+        const CONTENT_DEPENDENT: bool = false;
+        const FIELDS: crate::products::Fields = crate::fields![branchId, country];
+        const PREPARE: Option<PrepareHour<Self::Params>> = Some(|source, _, _, hour| {
+            if hour == 100 { source.state::<Arc<Preparation>>().lock().unwrap().pending() } else { Ok(None) }
+        });
+        type Params = PowerParams;
+        type Reply = PowerReply;
+        type Context = ();
+
+        fn tables(_: &Self::Params) -> Vec<TableId> { Vec::new() }
+        fn context(_: &Source, _: &LoadContext) -> io::Result<()> { Ok(()) }
+        fn reply(frame: &DecodedFrame, _: &Self::Params, _: &At<'_, ()>) -> io::Result<PowerReply> {
+            Ok(PowerReply { slot: frame.hour as u32, rows: Vec::new(), warnings: Vec::new() })
+        }
+    }
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![source(1, 100, Some(1)), source(1, 101, Some(1))])])
+        .unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Arc::new(Source::from_replay(crate::SourceKey { source_id: "prepared-hour".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap());
+    let load = LoadContext { content: None };
+    let prepare = entry::<Prepared>().prepare.unwrap();
+    let request = json!({"branchId":"1","country":"ONE","hour":100});
+    let held = prepare(&source, &request, &load).unwrap().unwrap();
+    let panel = (exact::<Prepared>().open)(&source, &load, &json!({"branchId":"1","country":"ONE"})).unwrap();
+    let read = &panel.exact().unwrap().advance;
+    let cancelled = AtomicBool::new(false);
+    assert!(read(100, true, &cancelled, None).pending);
+    assert_eq!(read(101, true, &cancelled, None).value.as_ref().as_ref().unwrap()["slot"], 101);
+    assert!(read(100, true, &cancelled, None).pending);
+    held.publish(Ok(()));
+    assert!(prepare(&source, &request, &load).unwrap().is_none());
+    let answer = read(100, true, &cancelled, None);
+    assert!(!answer.pending && answer.fresh);
+    assert_eq!(answer.value.as_ref().as_ref().unwrap()["slot"], 100);
+}
+
 fn column(table: TableId, name: &str) -> usize {
     dashboard_declare::field(table, name).unwrap()
 }

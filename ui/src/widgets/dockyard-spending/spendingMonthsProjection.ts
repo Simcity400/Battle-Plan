@@ -3,7 +3,7 @@ import { colour, reservedGrey } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { icDecimals } from '../../dashboard/icDecimals.ts';
 import type { OptionValue } from '../../dashboard/options';
-import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
+import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type {
   TimeChartProjection,
@@ -291,12 +291,15 @@ export function createSpendingMonthsView(spec: SpendingMonthsSpec): {
     emptyCampaign: `Load a campaign to see ${spec.name.toLowerCase()}.`,
     icon: 'sunburst',
     countries: { mode: 'single', choose: `Choose a country to see its ${spec.name.toLowerCase()}.` },
-    sources(ctx: FamilyPlanContext): SourcePlan {
+    sources(ctx, view): SourcePlan {
       const tag = ctx.countryTag;
       const domain = spec.domain(ctx.options);
       if (!tag) {
         return { owner: `${spec.kind}:months:${ctx.track.source.id}:${ctx.branch.id}`, entries: [] };
       }
+      const params = { branchId: ctx.branch.id, country: countryFromKey(tag), domain, repairs: spec.repairs };
+      const product = 'production-spending-months' as const;
+      const read = { coverage: { mode: 'keyed' as const, keys: [tag] }, product, params, validate: validateProductionSpendingMonths };
       return {
         owner: `${spec.kind}:months:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${tag}:${domain}`,
         entries: [{
@@ -304,24 +307,9 @@ export function createSpendingMonthsView(spec: SpendingMonthsSpec): {
           source: ctx.track.source,
           branch: ctx.branch.id,
           offset: ctx.track.axisOffset,
-          read: {
-            shape: 'branch-to-hour',
-            coverage: { mode: 'keyed', keys: [tag] },
-            product: 'production-spending-months',
-            followQuery: null,
-            params: {
-              branchId: ctx.branch.id,
-              country: countryFromKey(tag),
-              domain,
-              repairs: spec.repairs,
-            },
-            dynamicKeys: ['firstHour', 'lastHour'],
-            validate: validateProductionSpendingMonths,
-            provenInterval: (data, _requested, hour) => {
-              const reply = data as ProductionSpendingMonthsReply;
-              return reply.nextChangeHour !== null ? [hour, reply.nextChangeHour - 1] : [hour, Infinity];
-            },
-          },
+          read: view.following
+            ? { ...read, shape: 'point', channel: 'panel', followQuery: { panel: product, ...params } }
+            : { ...read, shape: 'branch-to-hour', followQuery: null, dynamicKeys: ['firstHour', 'lastHour'] },
         }],
       };
     },

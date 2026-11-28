@@ -4,7 +4,7 @@ dashboard_base::register_products! {
     ARMY_ARMYBREAKDOWN => crate::products::army::ArmyBreakdown,
     LEADERS_LEADERPORTRAITS => crate::products::leaders::LeaderPortraits,
     LEADER_NAME_RUNS_LEADERNAMERUNS => crate::products::leader_name_runs::LeaderNameRuns,
-    LEADERS_CAREER_LEADERCAREER => crate::products::leaders::career::LeaderCareer,
+    LEADERS_CAREER_LEADERCAREER => crate::products::leaders::career::LeaderCareerAt; panel(crate::products::leaders::career::career_panel),
     LEADERS_CAREER_LEADERCHOICES => crate::products::leaders::career::LeaderChoices,
     DIVISION_LOG_TAIL => crate::products::division_log::DivisionLogTail; panel(crate::products::division_log::dated_panel),
     DIVISION_SERVICE_RECORD_TAIL => crate::products::divisions::careers::service_record::DivisionServiceRecordTail; panel(crate::products::divisions::careers::service_record::dated_panel),
