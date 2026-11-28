@@ -204,7 +204,7 @@ function makeRecordingCanvas(width = 960, height = 300) {
 
 const KIND = 'worker-motion-test';
 const BLUE = '#4f86f7';
-type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; segments?: boolean; scale?: number; whole?: boolean; art?: boolean; renames?: readonly number[]; france?: number };
+type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; segments?: boolean; scale?: number; whole?: boolean; art?: boolean; renames?: readonly number[]; france?: number; sectionAt?: number };
 
 const testProjection = registerFamilyProjection({
   family: 'bars',
@@ -235,6 +235,9 @@ const testProjection = registerFamilyProjection({
       const france = sample.france;
       rows.push({ kind: 'data', key: 'FRA', label: knownValue('France'), value: { value: knownValue(france) }, numeric: france, color: BLUE });
       if (numeric !== null && france > numeric) rows.reverse();
+    }
+    if (sample?.sectionAt !== undefined) {
+      rows.splice(sample.sectionAt, 0, { kind: 'section', key: 'section', label: 'Countries', count: rows.length - sample.sectionAt });
     }
     return {
       form: sample?.form ?? 'ordered',
@@ -336,10 +339,10 @@ function fixture(budget: number) {
   lane.setLaneSurface(canvas.canvas, true);
   lane.follow(1, 'panel', 'p');
   lane.bindRoute(1, 1, 9, 1, 0);
-  const bind = (measure = 1, id = 1, reducedMotion = false, mixed = false) => {
+  const bind = (measure = 1, id = 1, reducedMotion = false, mixed = false, pin: number | null = null) => {
     lane.payloads({ type: 'payloads', put: [[1, { s: 1 }], [10 + measure, measure]] });
     lane.bind(id, {
-      generation: measure, owner: 'track', surfaces: [{ width: 480, height: 240, dpr: 1 }], offset: 0, pin: null,
+      generation: measure, owner: 'track', surfaces: [{ width: 480, height: 240, dpr: 1 }], offset: 0, pin,
     }, {
       family: 'bars', kind: mixed ? `${KIND}-mixed` : KIND, view: 'main', options: measure, sources: { s: 1 }, scrollTop: 0,
       width: 480, height: 240, theme: TEST_THEME, audit: true, reducedMotion,
@@ -840,9 +843,9 @@ describe('Ordered bar playback', () => {
     assert.ok(!f.served.some(frame => frame.motionDiagnostics && frame.changed));
   }));
 
-  it('interpolates each matched key in the recorded order until the ranks swap at the boundary', async () => withLane(async f => {
-    f.record(100, { value: 100, france: 50 });
-    f.record(101, { value: 80, france: 120 });
+  it('interpolates each matched key under an unchanged section until the ranks swap at the boundary', async () => withLane(async f => {
+    f.record(100, { value: 100, france: 50, sectionAt: 0 });
+    f.record(101, { value: 80, france: 120, sectionAt: 0 });
     f.clock(100, 1, 1, true);
     await f.request(100, 1);
     const unit = f.barWidth() / 50;
@@ -865,6 +868,22 @@ describe('Ordered bar playback', () => {
       if (position < 101) assert.deepEqual(f.served.at(-1)?.motionDiagnostics?.rowChanges, { reorder: 1 });
     }
   }));
+
+  it('cuts when rows cross a section boundary or a key is replaced by a duplicate', async () => {
+    for (const [first, second, rowChanges] of [
+      [{ value: 100, france: 50, sectionAt: 1 }, { value: 80, france: 120, sectionAt: 1 }, undefined],
+      [{ value: 100, france: 50, sectionAt: 0 }, { value: 80, france: 120, sectionAt: 1 }, undefined],
+      [{ value: 100, france: 50 }, { value: 80, france: 120, key: 'FRA' }, { membership: 1 }],
+    ] as const) await withLane(async f => {
+      f.record(100, first);
+      f.record(101, second);
+      f.clock(100.75, 1, 1, true);
+      await f.request(100, 1);
+      f.tick(0);
+      assert.equal(f.served.at(-1)?.changed, 0);
+      assert.deepEqual(f.served.at(-1)?.motionDiagnostics?.rowChanges, rowChanges);
+    });
+  });
 
   it('records a label change separately and cuts even when the same keys reorder', async () => withLane(async f => {
     f.record(100, { value: 100, france: 50 });
@@ -1319,7 +1338,9 @@ describe('Ordered bar playback', () => {
   }));
 
   it('uses live proof to restore a playing picture when the page request has no selection', async () => {
-    for (const covered of [false, true]) await withLane(async f => {
+    for (const [hour, value, refusal] of [
+      [102.5, 100, false], [103, 300, false], [104, 300, false], [104, null, true], [105, 300, true],
+    ] as const) await withLane(async f => {
       f.lane.supply(1, { dated: { h: 100, c: 101 } });
       f.record(100, { value: 100 });
       f.record(101, { value: 200 });
@@ -1329,17 +1350,44 @@ describe('Ordered bar playback', () => {
       await f.request(100, 1, 1, true);
       f.tick(0);
       assert.ok(f.barWidth() > exact);
-      f.lane.supply(1, { dated: { h: 103, c: 103 } });
+      f.lane.supply(1, { dated: { h: 103, c: refusal ? 104 : 103 } });
       f.record(103, { value: 300 });
-      f.clock(covered ? 103 : 102.5, 1);
+      if (refusal) f.lane.receive('panels', datedPanel(1, 104, { rows: [], refused: 'Incomplete rank' }));
+      f.clock(hour, 1);
       f.tick(0);
       const last = f.presented.flatMap(reply => reply.entries).at(-1);
+      const samples = f.sampled.length;
       f.canvas.clearOps();
       await f.request(102, 1);
-      assert.equal(f.barWidth(), covered ? exact * 3 : exact);
+      if (value === null) {
+        assert.equal(f.sampled.length, samples + 1, 'the renderer draws the covered refusal');
+        assert.ok(!f.operations().some(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE));
+      } else {
+        assert.equal(f.barWidth(), exact * value / 100, `live hour ${hour}`);
+      }
       assert.equal(f.presented.flatMap(reply => reply.entries).at(-1), last, 'there is no new page picture for uncovered hour 102');
     });
   });
+
+  it('keeps the recorded picture when a pin has no selection and the live clock does', async () => withLane(async f => {
+    f.lane.supply(1, { dated: { h: 100, c: 101 } });
+    f.record(100, { value: 100 });
+    f.record(101, { value: 200 });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const width = f.barWidth();
+    await f.request(100, 1, 1, true);
+
+    f.bind(2, 1, false, false, 102);
+    f.lane.supply(1, { dated: { h: 103, c: 103 } });
+    f.record(103, { value: 150 });
+    f.clock(103, 1);
+    f.canvas.clearOps();
+    const last = f.presented.flatMap(reply => reply.entries).at(-1);
+    await f.request(103, 1);
+    assert.equal(f.barWidth(), width);
+    assert.equal(f.presented.flatMap(reply => reply.entries).at(-1), last);
+  }));
 
   it('paints ready artwork on the next tick despite a matching unacknowledged page entry', async () => withLane(async f => {
     f.record(100, { value: 100, art: true });

@@ -2650,9 +2650,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (!selected && request.speed > 0 && this.restorePlayback(widget, request)
       && this.host.views(widget.view).playbackEligible?.(widget.id, widget.model)) {
       const hour = Math.floor(this.livePlaybackPosition(widget, request));
-      const live = hour === this.targetOf(widget, request.now) ? null : this.select(widget, hour);
-      if (live && hour <= live.c) {
-        this.paintKeptDirect(widget, request, now, live, true);
+      const live = hour === this.targetOf(widget, request.now) ? null : this.playbackPicture(widget, hour);
+      if (live) {
+        this.paintKeptDirect(widget, request, now, this.selectionOfPlayback(live, hour), true);
         return;
       }
     }
@@ -2661,9 +2661,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private livePlaybackPosition(widget: Widget, request: FrameRequest): number {
     const clock = this.playbackClock;
-    return clock?.seek === request.seek
-      ? positionAt(clock, performance.timeOrigin + this.time()) + widget.binding.offset
-      : this.targetOf(widget, request.now);
+    const hour = clock?.seek === request.seek ? positionAt(clock, performance.timeOrigin + this.time()) : request.now;
+    return this.targetOf(widget, hour);
   }
 
   private completePlaybackDraw(widget: Widget, request: FrameRequest, playback: PlaybackRenderer | undefined, drawnEntry?: number) {

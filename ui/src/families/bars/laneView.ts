@@ -204,19 +204,25 @@ function matchingRows(first: BarsModel, second: BarsModel, diagnostic?: MotionSa
   const reordered = first.rows.some((row, i) => row.key !== second.rows[i]!.key);
   let endpoints = second.rows;
   if (reordered) {
-    const byKey = new Map(second.rows.map(row => [row.key, row]));
-    if (byKey.size !== second.rows.length) return null;
+    const byKey = new Map<string, { row: BarsRow; section: number }>();
+    let section = -1;
+    for (const [i, row] of second.rows.entries()) {
+      if (row.kind === 'section') section = i;
+      byKey.set(row.key, { row, section });
+    }
     const matched: BarsRow[] = [];
-    for (const row of first.rows) {
+    section = -1;
+    for (const [i, row] of first.rows.entries()) {
+      if (row.kind === 'section') section = i;
       const endpoint = byKey.get(row.key);
       if (!endpoint) {
         if (diagnostic) diagnostic.rowChange = 'membership';
         return null;
       }
-      matched.push(endpoint);
+      if (section !== endpoint.section) return null;
+      matched.push(endpoint.row);
       byKey.delete(row.key);
     }
-    if (first.rows.some(row => row.kind !== 'data')) return null;
     endpoints = matched;
   }
   for (const [i, row] of first.rows.entries()) {
@@ -227,6 +233,7 @@ function matchingRows(first: BarsModel, second: BarsModel, diagnostic?: MotionSa
         if (diagnostic) diagnostic.rowChange = 'label';
         return null;
       }
+      if (row.kind === 'section' && endpoint.kind === 'section' && row.count !== endpoint.count) return null;
       continue;
     }
     if (row.label?.kind !== endpoint.label?.kind || barsLabelText(row.label) !== barsLabelText(endpoint.label)) {
