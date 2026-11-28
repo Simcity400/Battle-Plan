@@ -451,6 +451,7 @@ if (sweep) {
     const costConf = costSessionConfinement(run, sweep, costSessionSlug);
     const costReport = summarizeWidgetCosts(widgetWindows, records ?? [], {
       baselines: emptyWindows,
+      mapRecords,
       profile: { name: run.profile ?? null, cpuThrottle: run.cpuThrottle ?? sweep.meta.cpuThrottle ?? 1, cores: run.cores ?? null },
       confinement: costConf,
     });
@@ -486,6 +487,7 @@ if (sweep) {
       const notes = [];
       if (w.detail) notes.push(w.detail);
       if (w.lagReason) notes.push(w.lagReason);
+      if (w.lagCoverage) notes.push(`Native map hours matched on ${w.lagCoverage.matched} of ${w.lagCoverage.presents} presents`);
       if (w.belowBaselineNoise) notes.push('below baseline noise');
       if (w.lowFrameCount) notes.push(`low sample: ${w.main.n} frames in ${ms1(w.seconds)} s`);
       if (w.correctnessErrors?.length) notes.push(...w.correctnessErrors);
