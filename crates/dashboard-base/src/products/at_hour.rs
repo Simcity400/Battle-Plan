@@ -1,9 +1,9 @@
 
-use super::{Finish, LoadContext, PanelReader, Registered, ReplyWarnings};
+use super::{Finish, LoadContext, PanelReader, Registered, ReplyWarnings, read_ahead::Preparation};
 use crate::Source;
 use dashboard_follow::{
     live::{Cells, Group, GroupState, Live},
-    panel::{Declared, Panel, PanelData},
+    panel::{Declared, Panel, PanelData, ProductRead, ProductReader, Wake},
 };
 use dashboard_query::{
     Query,
@@ -86,11 +86,14 @@ pub struct ReadsAt<'a, C> {
     pub since: Option<i32>,
 }
 
+pub type PrepareHour<P> = fn(&Arc<Source>, &P, &LoadContext, i32) -> io::Result<Option<Arc<Preparation>>>;
+
 pub trait AtHour: 'static {
     const KEY: &'static str;
     const TITLE: &'static str;
     const CONTENT_DEPENDENT: bool;
     const INTERACTIVE: bool = true;
+    const PREPARE: Option<PrepareHour<Self::Params>> = None;
     const FIELDS: super::Fields;
     type Params: DeserializeOwned + Send + 'static;
     type Reply: Serialize + ReplyWarnings + PartialEq + Send + 'static;
@@ -375,6 +378,11 @@ fn load<P: AtHour>(source: &Source, lease_id: &str, mut request: Value, load: &L
 
 pub fn exact_panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String>
 where P::Params: Sync, P::Context: Sync {
+    exact_panel_with::<P>(source, load, asked, None)
+}
+
+fn exact_panel_with<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value, owned: Option<&Arc<Source>>) -> Result<Box<dyn Panel>, String>
+where P::Params: Sync, P::Context: Sync {
     let mut request = asked.clone();
     if let Some(fields) = request.as_object_mut() { fields.remove("panel"); }
     let params = dashboard_query::named::named_fields::<P::Params>(&request).map_err(|reason| format!("Invalid {} panel: {reason}", P::KEY))?;
@@ -386,6 +394,10 @@ where P::Params: Sync, P::Context: Sync {
     let params = Arc::new(params);
     let pool = placed::Pool::of(source).map_err(|e| e.to_string())?;
     let advance = shared_reader(source, load, P::KEY, asked, || incremental::reader::<P>(source, pool.clone(), params.clone(), context.clone(), Query { replay: query.replay, holders: query.holders.clone(), timeline: query.timeline.clone() }, finish.clone()));
+    let advance = if let Some((prepare, source)) = P::PREPARE.zip(owned) {
+        let (source, params, load) = (Arc::clone(source), Arc::clone(&params), LoadContext { content: load.content.clone() });
+        prepare_reader(advance, move |hour| source.in_scope(|| prepare(&source, &params, &load, hour)))
+    } else { advance };
     let (replay, holders, timeline, executable) = (source.replay(), query.holders, query.timeline, source.tables());
     let cold: dashboard_follow::panel::ExactReader = Arc::new(move |hour, cancelled| {
         let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
@@ -394,6 +406,46 @@ where P::Params: Sync, P::Context: Sync {
         serde_json::to_value(reply).map_err(|e| e.to_string())
     });
     Ok(product_panel(advance, cold))
+}
+
+#[derive(Default)]
+struct Awaiting(Mutex<Option<(i32, Arc<Preparation>, bool)>>);
+
+impl Awaiting {
+    fn check(&self, hour: i32, wake: Option<&Wake>, prepare: impl FnOnce() -> io::Result<Option<Arc<Preparation>>>) -> io::Result<()> {
+        let mut waiting = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if waiting.as_ref().is_none_or(|(asked, ..)| *asked != hour) {
+            let previous = waiting.take();
+            *waiting = prepare()?.map(|build| {
+                let subscribed = previous.is_some_and(|(_, old, subscribed)| subscribed && Arc::ptr_eq(&old, &build));
+                (hour, build, subscribed)
+            });
+        }
+        let Some((_, build, subscribed)) = waiting.as_mut() else { return Ok(()) };
+        let Some(result) = build.result() else {
+            if !*subscribed && let Some(wake) = wake.cloned() {
+                build.on_ready(Box::new(move |_| wake()));
+                *subscribed = true;
+            }
+            return Err(io::ErrorKind::WouldBlock.into());
+        };
+        *waiting = None;
+        result
+    }
+}
+
+fn prepare_reader(read: ProductReader, prepare: impl Fn(i32) -> io::Result<Option<Arc<Preparation>>> + Send + Sync + 'static) -> ProductReader {
+    let waiting = Awaiting::default();
+    Arc::new(move |hour, seed, cancelled, step| {
+        match waiting.check(hour, step.and_then(|step| step.wake), || prepare(hour)) {
+            Ok(()) => read(hour, seed, cancelled, step),
+            Err(error) => {
+                let pending = error.kind() == io::ErrorKind::WouldBlock;
+                let value = if pending { Ok(Value::Null) } else { Err(error.to_string()) };
+                ProductRead { value: Arc::new(value), rows: 0, fresh: !pending, pending, live: None, lanes: Vec::new(), from: hour }
+            }
+        }
+    })
 }
 
 pub fn interval_panel(
@@ -533,7 +585,7 @@ pub fn dated_product<P: super::Product>(
     let source = Arc::clone(source);
     let load = LoadContext { content: load.content.clone() };
     let finish = Finish::new(&source, &load, P::CONTENT_DEPENDENT);
-    let waiting = Mutex::new(None::<(i32, Arc<super::read_ahead::Preparation>, bool)>);
+    let waiting = Awaiting::default();
     Ok(dated_interval(source.tables(), P::PREPARE.is_some(), move |hour, cancelled, step| {
         let mut request = params.clone();
         date(&mut request, hour);
@@ -544,25 +596,7 @@ pub fn dated_product<P: super::Product>(
         let (reply, rows) = counted(|| finish.reply(|| {
             let Some(step) = step else { return P::load(&source, &params, &load, cancelled) };
             if let Some(prepare) = P::PREPARE {
-                let mut waiting = waiting.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if waiting.as_ref().is_none_or(|(asked, ..)| *asked != hour) {
-                    let previous = waiting.take();
-                    *waiting = prepare(&source, &params, &load)?.map(|build| {
-                        let subscribed = previous.is_some_and(|(_, old, subscribed)| subscribed && Arc::ptr_eq(&old, &build));
-                        (hour, build, subscribed)
-                    });
-                }
-                if let Some((_, build, subscribed)) = waiting.as_mut() {
-                    let Some(result) = build.result() else {
-                        if !*subscribed && let Some(wake) = step.step.and_then(|step| step.wake).cloned() {
-                            build.on_ready(Box::new(move |_| wake()));
-                            *subscribed = true;
-                        }
-                        return Err(io::ErrorKind::WouldBlock.into());
-                    };
-                    *waiting = None;
-                    result?;
-                }
+                waiting.check(hour, step.step.and_then(|step| step.wake), || prepare(&source, &params, &load))?;
             }
             load_step(&source, &params, &load, cancelled, step)
         }));
@@ -664,13 +698,22 @@ where
 
 pub const fn exact<P: AtHour>() -> PanelReader
 where P::Params: Sync, P::Context: Sync {
-    PanelReader { open: |source, load, asked| exact_panel::<P>(source, load, asked) }
+    PanelReader { open: |source, load, asked| exact_panel_with::<P>(source, load, asked, Some(source)) }
+}
+
+fn prepare_exact<P: AtHour>(source: &Arc<Source>, request: &Value, load: &LoadContext) -> io::Result<Option<Arc<Preparation>>> {
+    let mut request = request.clone();
+    let hour = request_hour(&mut request).ok_or_else(|| dashboard_core::invalid(format!("Invalid {} request: it names no hour", P::KEY)))?;
+    let params = dashboard_query::named::named::<P::Params>(&request)
+        .map_err(|error| dashboard_core::invalid(format!("Invalid {} request: {error}", P::KEY)))?;
+    P::validate(&params).map_err(dashboard_core::invalid)?;
+    P::PREPARE.expect("registered preparation")(source, &params, load, hour)
 }
 
 pub const fn entry<P: AtHour>() -> Registered {
     Registered {
         panel: None,
-        prepare: None,
+        prepare: if P::PREPARE.is_some() { Some(prepare_exact::<P>) } else { None },
         key: P::KEY,
         content_dependent: P::CONTENT_DEPENDENT,
         interactive: P::INTERACTIVE,
