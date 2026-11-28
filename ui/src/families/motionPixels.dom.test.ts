@@ -41,6 +41,25 @@ test('ordered bars settle to the same pixels as a cold draw after worker playbac
   });
 });
 
+test('a moving target clears the recorded readout until the plot widens at the next hour', async () => {
+  await withNativePage('target-bars-readout-clearance', '/ui/src/families/motionPixels.dom.fixture.ts', async page => {
+    type Edges = { barRight: number; readoutLeft: number };
+    const { first, samples, last, firstDifference, lastDifference } = await page.evaluate<{
+      first: Edges; samples: (Edges & { fraction: number; readoutDifference: number })[]; last: Edges; firstDifference: number; lastDifference: number;
+    }>('window.checkReadoutClearance()');
+    assert.ok(first.barRight > 0 && first.readoutLeft < 490 && last.readoutLeft < 490);
+    assert.ok(last.barRight > first.readoutLeft, 'the next bar reaches into the previous readout column');
+    assert.deepEqual([firstDifference, lastDifference], [0, 0], 'both recorded endpoints match cold draws');
+    let previous = first.barRight;
+    for (const { fraction, barRight, readoutLeft, readoutDifference } of samples) {
+      assert.equal(readoutLeft, first.readoutLeft, `held readout at ${fraction}`);
+      assert.ok(barRight > previous && barRight < readoutLeft, `bar ${barRight}, readout ${readoutLeft} at ${fraction}`);
+      assert.equal(readoutDifference, 0, `recorded readout pixels at ${fraction}`);
+      previous = barRight;
+    }
+  });
+});
+
 test('the shared host shows a proven refusal and reveals the held recorded bar after it expires', async () => {
   await withNativePage('ordered-bars-host-refusal', '/ui/src/families/motionHost.dom.fixture.tsx', async page => {
     const cdp = await motionBrowser(page.page);

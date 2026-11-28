@@ -1233,14 +1233,14 @@ describe('Ordered bar playback', () => {
     });
   });
 
-  it('tweens target and delivered edges to the cold endpoint through plot changes and subpixel fills', async () => {
+  it('tweens target and delivered edges through plot changes and subpixel fills', async () => {
     const small = { value: 50, target: 100, scale: 100 };
     const large = { value: 505, target: 1000, scale: 1000 };
     const tiny = { value: .1, target: 100, scale: 100 };
     const zero = { value: 0, target: 100, scale: 100 };
     const fulfilled = { ...tiny, target: .1 };
     const unmet = { ...zero, target: .1 };
-    for (const [first, next] of [[small, large], [large, small], [tiny, zero], [zero, tiny], [fulfilled, unmet], [unmet, fulfilled]] as const) await withLane(async f => {
+    for (const [first, next] of [[small, large], [tiny, zero], [zero, tiny], [fulfilled, unmet], [unmet, fulfilled]] as const) await withLane(async f => {
       f.bind(1, 1, false, 'target');
       f.record(100, first);
       f.record(101, next);
@@ -1258,12 +1258,13 @@ describe('Ordered bar playback', () => {
       await f.request(101);
       const cold = edges();
       if (first.target !== next.target) assert.ok(Math.abs(start[1]! - cold[1]!) > 4, 'the readout shifts the plot edge');
+      const end = [cold[0]!, Math.min(start[1]!, cold[1]!)];
       for (const fraction of [.5, .75, .99]) {
         f.canvas.clearOps();
         f.clock(100 + fraction, 1);
         f.tick(0);
         for (const [i, edge] of edges().entries()) {
-          const expected = start[i]! + (cold[i]! - start[i]!) * fraction;
+          const expected = start[i]! + (end[i]! - start[i]!) * fraction;
           assert.ok(Math.abs(edge - expected) < .02, `edge ${i} at ${fraction}, got ${edge}, expected ${expected}`);
         }
         const labels = f.operations().filter(op => op.op === 'fillText').map(op => op.args[0]);

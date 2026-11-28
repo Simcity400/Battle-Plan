@@ -1,6 +1,8 @@
+import { readableColour } from '../charts/palette.ts';
 import { datedPanel, datedRecord } from '../dashboard/follow/messages.fixture.ts';
 import type { Refusal } from '../dashboard/follow/page.ts';
 import { Lane, type Presented } from '../draw/lane.ts';
+import { parseColor } from '../shell/appearance/color.ts';
 import { DEFAULT_SEEDS, deriveColors } from '../shell/appearance/themes.ts';
 import { defaultArtFrame, readyArt } from './art/types.ts';
 import { barsLane, type FamilyBarsBinding } from './bars/laneView.ts';
@@ -68,6 +70,67 @@ function changedBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
   let changed = 0;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) changed++;
   return changed;
+}
+
+async function checkReadoutClearance() {
+  const sprite = new OffscreenCanvas(16, 16);
+  const brush = sprite.getContext('2d')!;
+  brush.fillStyle = theme.green;
+  brush.fillRect(0, 0, 3, 16);
+  const bitmap = sprite.transferToImageBitmap();
+  const icon = { ...readyArt('fixture-readout', { frame: defaultArtFrame(16, 16) }), bitmap };
+  const kind = 'target-bars-readout-clearance';
+  registerFamilyProjection({
+    family: 'bars', kind,
+    singleValueBars: () => 'target-markers',
+    project(view): BarsModel {
+      const value = Number(view.panel('main'));
+      const target = value === 900 ? 1000 : 1;
+      return {
+        form: 'ordered', hour: view.hour, scaleMax: target, showAxis: false,
+        rows: [{
+          kind: 'data', key: 'fuel', label: knownValue('Fuel'), numeric: value, value: { value: knownValue(value) },
+          target: { numeric: target, value: knownValue(target) },
+          readout: { icon, primary: String(value), secondary: `/ ${target} a day`, ...(value === 900 ? { shortfall: '\u2212100' } : {}) },
+        }],
+      };
+    },
+  }, 'main');
+  const width = 490;
+  const fill = parseColor(readableColour(theme.accent, theme.surface))!;
+  const readout = parseColor(theme.green)!;
+  const live = rig(kind, 1, [900, 1]);
+  const cold = rig(kind, 1, [900, 1]);
+  const edges = () => {
+    const pixels = live.pixels(0, 0, width, 250);
+    let barRight = -1;
+    let readoutLeft = width;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const x = (i / 4) % width;
+      if (pixels[i] === fill.r && pixels[i + 1] === fill.g && pixels[i + 2] === fill.b) barRight = Math.max(barRight, x);
+      if (pixels[i] === readout.r && pixels[i + 1] === readout.g && pixels[i + 2] === readout.b) readoutLeft = Math.min(readoutLeft, x);
+    }
+    return { barRight, readoutLeft };
+  };
+  live.clock(true);
+  await live.request(100, 1);
+  live.step(0);
+  const first = edges();
+  await cold.request(100);
+  const firstDifference = changedBytes(cold.pixels(), live.pixels());
+  const readoutPixels = () => live.pixels(first.readoutLeft, 0, width - first.readoutLeft, 250);
+  const heldReadout = readoutPixels();
+  const samples = [.25, .5, .75, .99].map(fraction => {
+    live.clock(true, 100 + fraction);
+    live.step(0);
+    return { fraction, ...edges(), readoutDifference: changedBytes(heldReadout, readoutPixels()) };
+  });
+  live.clock(true, 101);
+  live.step(0);
+  await cold.request(101);
+  const result = { first, samples, last: edges(), firstDifference, lastDifference: changedBytes(cold.pixels(), live.pixels()) };
+  bitmap.close();
+  return result;
 }
 
 async function checkSettledPixels(withTarget = false) {
@@ -195,3 +258,4 @@ async function checkSettledPixels(withTarget = false) {
 }
 
 (window as unknown as { checkSettledPixels: typeof checkSettledPixels }).checkSettledPixels = checkSettledPixels;
+(window as unknown as { checkReadoutClearance: typeof checkReadoutClearance }).checkReadoutClearance = checkReadoutClearance;

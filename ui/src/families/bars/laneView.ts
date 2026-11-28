@@ -264,10 +264,13 @@ function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, next
   if (!endpoints) return null;
   const start = frame.layout;
   const endLayout = nextLayout();
+  const holdPlot = start.showReadout && endLayout.plotRight > start.plotRight;
+  const endPlotLeft = holdPlot ? start.plotLeft : endLayout.plotLeft;
+  const endPlotWidth = holdPlot ? start.plotWidth : endLayout.plotWidth;
   const playbackValues = new Map<string, BarsEasedRow>();
   const interpolate = (from: number, to: number) => from + (to - from) * fraction;
-  let changed = start.plotLeft !== endLayout.plotLeft
-    || (start.showAxis && (start.plotWidth !== endLayout.plotWidth || start.scaleMax !== endLayout.scaleMax));
+  let changed = start.plotLeft !== endPlotLeft
+    || (start.showAxis && (start.plotWidth !== endPlotWidth || start.scaleMax !== endLayout.scaleMax));
   for (let i = 0; i < current.rows.length; i++) {
     const row = current.rows[i]!;
     const end = endpoints[i]!;
@@ -278,7 +281,7 @@ function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, next
       || (end.value.value.kind !== 'zero' && end.value.value.kind !== 'known')) return null;
     if ((row.target && !measuredTarget(row.target)) || (end.target && !measuredTarget(end.target))) return null;
     const from = orderedBarGeometry(start.plotWidth, row.numeric / start.scaleMax, row.target && row.target.numeric / start.scaleMax);
-    const to = orderedBarGeometry(endLayout.plotWidth, end.numeric / endLayout.scaleMax, end.target && end.target.numeric / endLayout.scaleMax);
+    const to = orderedBarGeometry(endPlotWidth, end.numeric / endLayout.scaleMax, end.target && end.target.numeric / endLayout.scaleMax);
     playbackValues.set(row.key, { orderedGeometry: {
       fill: interpolate(from.fill, to.fill),
       gapStart: interpolate(from.gapStart, to.gapStart),
@@ -290,9 +293,9 @@ function orderedMotion(frame: BarsFrame, next: BarsModel, fraction: number, next
       || from.gapStroke !== to.gapStroke || from.labelEnd !== to.labelEnd;
   }
   if (!changed) return false;
-  const plotWidth = interpolate(start.plotWidth, endLayout.plotWidth);
-  const plotLeft = interpolate(start.plotLeft, endLayout.plotLeft);
-  const pixelsPerUnit = interpolate(start.plotWidth / start.scaleMax, endLayout.plotWidth / endLayout.scaleMax);
+  const plotWidth = interpolate(start.plotWidth, endPlotWidth);
+  const plotLeft = interpolate(start.plotLeft, endPlotLeft);
+  const pixelsPerUnit = interpolate(start.plotWidth / start.scaleMax, endPlotWidth / endLayout.scaleMax);
   return {
     ...frame,
     layout: { ...start, plotWidth, plotLeft, plotRight: plotLeft + plotWidth, scaleMax: plotWidth / pixelsPerUnit },
