@@ -2,7 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Lane, type Bitmapped, type LaneHost, type Presented } from '../draw/lane.ts';
 import { contextWidgetKey } from '../draw/kit.ts';
-import { datedPanel, datedRecord } from '../dashboard/follow/messages.fixture.ts';
+import { datedPanel, datedRecord, message } from '../dashboard/follow/messages.fixture.ts';
+import { Page } from '../dashboard/follow/page.ts';
 import type { FamilyTheme } from './contract.ts';
 import { createLaneView } from './laneRuntime.ts';
 import { type MotionClock } from './motion.ts';
@@ -200,7 +201,7 @@ function makeRecordingCanvas(width = 960, height = 300) {
 
 const KIND = 'worker-motion-test';
 const BLUE = '#4f86f7';
-type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; scale?: number; whole?: boolean; art?: boolean };
+type Sample = { value: number | null; key?: string; form?: BarsModel['form']; target?: boolean; segments?: boolean; scale?: number; whole?: boolean; art?: boolean };
 
 registerFamilyProjection({
   family: 'bars',
@@ -224,6 +225,7 @@ registerFamilyProjection({
         ...(sample?.art ? { media: { kind: 'flag', tag: 'GER',
           art: readyArt('art://motion-fixture', { frame: defaultArtFrame(20, 13) }) } } : {}),
         ...(sample?.target ? { target: { numeric: 400, value: knownValue(400) } } : {}),
+        ...(sample?.segments ? { segments: [{ key: 'part', label: 'Part', share: 1, color: BLUE, value }] } : {}),
       }],
     };
   },
@@ -331,9 +333,9 @@ function fixture(budget: number) {
   const record = (hour: number, value?: Sample, seek = 1) => lane.receive('panels', datedPanel(1, hour, value, seek, 9));
   let serial = 0;
   const drain = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
-  const request = async (hour: number, speed = 0, seek = 1, acknowledge = false) => {
+  const request = async (hour: number, speed = 0, seek = 1, acknowledge = false, exact = speed === 0) => {
     const installed = acknowledge ? (presented.at(-1)?.entries ?? []).map(({ widget, binding, id }) => ({ widget, binding, id })) : [];
-    lane.frame({ type: 'frame', serial: ++serial, seek, now: hour, target: hour, exact: speed === 0, speed, installed, refused: [], inspect: [[1, 'row:GER']] });
+    lane.frame({ type: 'frame', serial: ++serial, seek, now: hour, target: hour, exact, speed, installed, refused: [], inspect: [[1, 'row:GER']] });
     await drain();
   };
   const clock = (anchorPosition: number, speed: number, seek = 1) => lane.setClock(baseClock({
@@ -380,7 +382,7 @@ describe('Ordered bar playback', () => {
     assert.equal(f.operations().length, 0);
   }));
 
-  it('cuts at a missing reading or changed row and never chases an unproved endpoint', async () => withLane(async f => {
+  it('leaves missing readings and row boundaries to the first ordinary paint', async () => withLane(async f => {
     f.record(100, { value: 100 });
     f.record(101, { value: null });
     f.record(102, { value: 200 });
@@ -388,15 +390,37 @@ describe('Ordered bar playback', () => {
     f.clock(100.5, 168);
     await f.request(100, 168);
     const start = f.barWidth();
+    f.canvas.clearOps();
     f.tick(0);
-    assert.equal(f.barWidth(), start);
-    f.tick(2 / .168);
+    assert.equal(f.operations().length, 0);
+    await f.request(101, 168);
+    assert.ok(f.operations().some(op => op.op === 'fillText' && String(op.args[0]).includes('recorded')));
+    await f.request(102, 168);
     assert.equal(f.barWidth(), start * 2);
     f.canvas.clearOps();
-    f.tick(1 / .168);
+    f.clock(103.5, 168);
+    f.tick(0);
     await f.drain();
-    const widths = f.operations().filter(op => (op.op === 'fillRect' || op.op === 'roundRect') && op.fillStyle === BLUE).map(op => op.args[2]);
-    assert.deepEqual(widths, [start * 4], 'the first paint at the boundary uses the new rows without a page request');
+    assert.equal(f.operations().length, 0);
+    await f.request(103, 168);
+    assert.equal(f.barWidth(), start * 4);
+  }));
+
+  it('does not paint or publish newly segmented rows between page requests', async () => withLane(async f => {
+    f.record(100, { value: 100 });
+    f.record(101, { value: 200, segments: true });
+    f.record(102, { value: 300, segments: true });
+    f.clock(100.5, 1);
+    await f.request(100, 1);
+    const before = f.presented.length;
+    f.canvas.clearOps();
+    f.clock(101.5, 1);
+    f.tick(0);
+    await f.drain();
+    assert.equal(f.operations().length, 0);
+    assert.equal(f.presented.length, before);
+    await f.request(101, 1);
+    assert.equal(f.presented.at(-1)?.entries[0]?.lo, 101);
   }));
 
   it('keeps the recorded labels, tooltip, mirror and audit through ordinary presentation', async () => withLane(async f => {
@@ -433,23 +457,19 @@ describe('Ordered bar playback', () => {
     assert.equal(f.barWidth(), width);
   }));
 
-  it('cuts when coverage is absent or a source refuses the next hour', async () => withLane(async f => {
+  it('leaves gaps and refusals to the recorded painter', async () => withLane(async f => {
     f.record(100, { value: 100 });
     f.lane.receive('panels', datedRecord(1, 101, 0, 'Unavailable'));
     f.record(103, { value: 300 });
     await f.request(100);
     const start = f.barWidth();
-    f.clock(100.5, 1);
-    f.tick(0);
-    assert.equal(f.barWidth(), start);
-    f.clock(102.5, 1);
-    f.tick(0);
-    assert.equal(f.barWidth(), start);
-    f.clock(103.5, 1);
-    f.tick(0);
-    assert.equal(f.barWidth(), start * 3);
-    f.clock(105.5, 1);
-    f.tick(0);
+    f.canvas.clearOps();
+    for (const position of [100.5, 102.5, 103.5, 105.5]) {
+      f.clock(position, 1);
+      f.tick(0);
+      assert.equal(f.operations().length, 0);
+    }
+    await f.request(103, 1);
     assert.equal(f.barWidth(), start * 3);
   }));
 
@@ -471,7 +491,7 @@ describe('Ordered bar playback', () => {
     assert.equal(f.barWidth(), single * 3);
   }));
 
-  it('wakes the normal direct painter when a loading projection becomes ready', async () => withLane(async f => {
+  it('paints a newly ready projection on the next ordinary playing request', async () => withLane(async f => {
     f.ready(false);
     f.clock(100.5, 1);
     f.record(100, { value: 100 });
@@ -480,7 +500,9 @@ describe('Ordered bar playback', () => {
     assert.equal(f.operations().length, 0);
     f.ready(true);
     f.lane.touch(1);
-    for (let i = 0; i < 12; i++) await Promise.resolve();
+    await f.drain();
+    assert.equal(f.operations().length, 0);
+    await f.request(100, 1);
     const exact = f.barWidth();
     f.tick(0);
     assert.ok(f.barWidth() > exact);
@@ -530,7 +552,24 @@ describe('Ordered bar playback', () => {
     assert.equal(f.presented.flatMap(p => p.entries).length, count);
   }));
 
-  it('services one artwork wake while a matching presentation awaits acknowledgement', async () => withLane(async f => {
+  it('restores the recorded picture on the next playing request when selection disappears', async () => withLane(async f => {
+    f.lane.supply(1, { dated: { h: 100, c: 101 } });
+    f.record(100, { value: 100 });
+    f.record(101, { value: 200 });
+    f.clock(100.5, 1);
+    await f.request(100, 1);
+    const exact = f.barWidth();
+    await f.request(100, 1, 1, true);
+    f.tick(0);
+    assert.ok(f.barWidth() > exact);
+    f.lane.supply(1, { dated: { h: 103, c: 103 } });
+    f.clock(102.5, 1);
+    f.tick(0);
+    await f.request(102, 1);
+    assert.equal(f.barWidth(), exact);
+  }));
+
+  it('paints ready artwork on the next page request despite a matching unacknowledged entry', async () => withLane(async f => {
     f.record(100, { value: 100, art: true });
     f.clock(100, 1);
     await f.request(100, 1);
@@ -538,12 +577,82 @@ describe('Ordered bar playback', () => {
     f.painted.length = 0;
     f.finishArtwork();
     await f.drain();
+    assert.deepEqual(f.painted, []);
+    await f.request(100, 1);
     assert.deepEqual(f.painted, [1]);
     assert.equal(f.operations().filter(op => op.op === 'drawImage').length, 1);
     assert.equal(typeof f.presented.at(-1)?.entries[0]?.fields.meta, 'object');
-    f.tick(16);
+    await f.request(100, 1);
+    assert.deepEqual(f.painted, [1]);
+  }));
+
+  it('artwork completion after a boundary never paints the previous page hour', async () => withLane(async f => {
+    f.record(100, { value: 30, art: true });
+    f.record(101, { value: 60, key: 'ENG', art: true });
+    f.record(102, { value: 100, key: 'ENG', art: true });
+    f.clock(100.5, 1);
+    await f.request(100, 1);
+    const width = f.barWidth();
+    f.clock(101.5, 1);
+    f.tick(0);
+    await f.drain();
+    f.canvas.clearOps();
+    const entries = f.presented.length;
+    f.finishArtwork();
+    await f.drain();
+    assert.equal(f.operations().length, 0);
+    assert.equal(f.presented.length, entries);
+    await f.request(101, 1);
+    assert.equal(f.barWidth(), width * 2);
+    assert.ok(f.operations().some(op => op.op === 'drawImage'));
+  }));
+
+  it('several expensive artwork wakes do no work between exact playing page requests', async () => withLane(async f => {
+    f.mount(3, true);
+    f.record(100, { value: 100, art: true });
+    f.record(101, { value: 200, art: true });
+    f.clock(100.5, 1);
+    await f.request(100, 1, 1, false, true);
+    f.selectionCost(11);
+    f.painted.length = 0;
+    f.finishArtwork();
+    await f.drain();
+    assert.deepEqual(f.painted, []);
+    assert.equal(f.selections(), 0);
+  }, 10));
+
+  it('selects the first static picture on the next same-hour page publish after dated supply', async () => withLane(async f => {
+    f.lane.mount(1, [], 'bars', {});
+    f.bind();
+    f.clock(100, 1);
+    const page = new Page<TestBitmap>({ lanes: 1, seek: 1, post: (_lane, request) => {
+      if (request.type === 'frame') f.lane.frame(request);
+    } });
+    page.mount(1, { route: 1, lane: 0, surfaces: [] });
+    page.publish(100, { playing: true, speed: 1 });
+    await f.drain();
+    assert.deepEqual(f.painted, []);
+    f.lane.supply(1, { dated: { h: 100, c: 100 } });
+    await f.drain();
+    assert.deepEqual(f.painted, []);
+    page.publish(100);
     await f.drain();
     assert.deepEqual(f.painted, [1]);
+    assert.equal(f.presented.at(-1)?.entries[0]?.lo, 100);
+  }));
+
+  it('includes the affected route reset with the first entry after artwork becomes ready', async () => withLane(async f => {
+    f.record(100, { value: 100, art: true });
+    f.clock(100, 1);
+    await f.request(100, 1);
+    const before = f.presented.length;
+    f.lane.receive('follow', message(100, [], true, 9, 1), 1);
+    f.finishArtwork();
+    await f.drain();
+    await f.request(100, 1);
+    const first = f.presented.slice(before).find(p => p.entries.some(entry => entry.gen.reset === 1));
+    assert.ok(first);
+    assert.ok(first.resets?.some(([route, reset]) => route === 1 && reset === 1));
   }));
 
   it('does not serve a target bar or its dirty sibling between page requests', async () => withLane(async f => {
@@ -560,7 +669,7 @@ describe('Ordered bar playback', () => {
     assert.deepEqual(f.painted, []);
   }));
 
-  it('services eligible artwork without serving a dirty sibling', async () => withLane(async f => {
+  it('keeps eligible artwork and a dirty sibling pending for the next page request', async () => withLane(async f => {
     f.mount(2, true);
     f.record(100, { value: 100 });
     f.clock(100, 1);
@@ -570,7 +679,7 @@ describe('Ordered bar playback', () => {
     f.lane.touch(2);
     f.lane.touch(1);
     await f.drain();
-    assert.deepEqual(f.painted, [1]);
+    assert.deepEqual(f.painted, []);
     await f.request(100, 1);
     assert.deepEqual(f.painted, [1, 2]);
   }));

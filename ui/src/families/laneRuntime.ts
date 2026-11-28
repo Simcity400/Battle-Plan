@@ -108,7 +108,7 @@ export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   readonly view: readonly (keyof TBinding & string)[];
   readonly playback?: {
     supports(model: TModel, binding: TBinding): boolean;
-    frame(frame: LaneFrame<TBinding, TModel, TLayout>, current: TModel, next: TModel | null, fraction: number): LaneFrame<TBinding, TModel, TLayout> | null;
+    frame(frame: LaneFrame<TBinding, TModel, TLayout>, current: TModel, next: TModel, fraction: number): LaneFrame<TBinding, TModel, TLayout> | null;
   };
   layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number, step: LaneStep<TModel, TLayout>): TLayout;
   keepsCanvas?(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean;
@@ -274,7 +274,6 @@ function releaseIndex(revision: number | null): void {
 
 const EMPTY: Painted = { surfaces: [], fields: {}, motion: false };
 const WAITING: Painted = { ...EMPTY, waiting: true };
-const PLAYBACK_DECLINED: Painted = { ...EMPTY, playbackDeclined: true };
 
 function hasMirrorRows(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
@@ -784,7 +783,6 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         resetMirror(keep);
         return WAITING;
       }
-      if (input.onlyPlayback && !animation) return PLAYBACK_DECLINED;
       if (typeof status === 'object') {
         keep.flusher.cancel();
         keep.drawn = null;
@@ -985,23 +983,20 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
             return null;
           }
         };
-        let lastModel = model;
+        let lastModel: TModel | null = null;
         let lastNext: TModel | null = null;
         let lastFraction = 0;
         playback = (current, next, fraction, target) => {
-          const proven = current && modelAt(current);
-          const from = proven ?? model;
-          const end = proven && next && fraction > 0 ? modelAt(next) : null;
-          const to = from === end ? null : end;
-          if (lastModel === from && lastNext === to && lastFraction === (to ? fraction : 0)) return false;
+          const from = modelAt(current), to = modelAt(next);
+          if (!from || !to) return 'cut';
+          if (lastModel === from && lastNext === to && lastFraction === fraction) return false;
           const shown = animation.frame(frame, from, to, fraction);
-          if (!shown) return 'cut';
-          const visualModel = shown.model;
-          if (visualModel === lastModel && (!lastNext || lastFraction === 0)) return false;
+          if (!shown || (shown.model === from && lastModel !== null)) return 'cut';
+          if (shown.model === from) return false;
           drawCanvas(shown, target);
           lastModel = from;
-          lastNext = visualModel !== from ? to : null;
-          lastFraction = lastNext ? fraction : 0;
+          lastNext = to;
+          lastFraction = fraction;
           return true;
         };
       }

@@ -214,12 +214,13 @@ function sameRows(first: BarsModel, second: BarsModel): boolean {
 }
 
 function orderedMotion(
-  frame: BarsFrame, current: BarsModel, next: BarsModel | null, fraction: number,
+  frame: BarsFrame, current: BarsModel, next: BarsModel, fraction: number,
 ): BarsFrame | null {
   if (!canAnimate(current, frame.binding) || !sameRows(frame.model, current)) return null;
   const currentScale = current === frame.model ? frame.layout.scaleMax : barsScales(current, frame.layout.showAxis).scaleMax;
   const exact = current === frame.model ? frame : { ...frame, model: current, layout: { ...frame.layout, scaleMax: currentScale } };
-  if (!next || fraction <= 0 || !canAnimate(next, frame.binding) || !sameRows(current, next)) return exact;
+  if (!canAnimate(next, frame.binding) || !sameRows(current, next)) return null;
+  if (fraction <= 0) return exact;
   const rows: BarsModel['rows'][number][] = [];
   let changed = false;
   for (let i = 0; i < current.rows.length; i++) {
@@ -229,7 +230,7 @@ function orderedMotion(
     if (row.kind !== 'data' || end.kind !== 'data' || row.numeric == null || end.numeric == null
       || !row.value || !end.value
       || (row.value.value.kind !== 'zero' && row.value.value.kind !== 'known')
-      || (end.value.value.kind !== 'zero' && end.value.value.kind !== 'known')) return exact;
+      || (end.value.value.kind !== 'zero' && end.value.value.kind !== 'known')) return null;
     if (row.numeric === end.numeric) { rows.push(row); continue; }
     changed = true;
     rows.push({ ...row, numeric: row.numeric + (end.numeric - row.numeric) * fraction });
