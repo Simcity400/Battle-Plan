@@ -5,7 +5,7 @@ import { contentSet, setToken } from '../../dashboard/options.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
-import { artKindCell, newIdentityBoundary, resolveName } from '../../families/table/identityCell.ts';
+import { artKindCell, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import { LOG_TABLE_BASE, logCountryCell, logDateCell, logWatchCell, occurrenceSelection, pagedTailEntry, projectPagedSlots, urlArtHandle } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
@@ -43,7 +43,7 @@ function sunkBy(cause: ShipSinkingAttribution): readonly TooltipExtraRow[] {
 
 export interface SinkingSubject {
   readonly hour: number;
-  readonly battle: { readonly key: string } | null;
+  readonly battle: { readonly key: string; readonly title: Value<string> } | null;
 }
 
 function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInfo | undefined, boundary: ReturnType<typeof newIdentityBoundary>): TableRow {
@@ -59,11 +59,11 @@ function shipRow(view: BoundedReadView, row: SinkingRow, shipClass: ShipClassInf
   let loss: TableCell;
   let battle: SinkingSubject['battle'] = null;
   if (row.battle.kind === 'linked') {
-    const battleValue = resolveName(view, 'battle', row.battle.id, { boundary }).value;
+    const battleValue = row.title?.trim() ? knownValue(row.title) : notRecorded(row.titleMissing ?? 'Battle title not recorded');
     const killer = killerBeside(cause);
     const tooltipRows = [{ label: 'Battle', value: battleValue }, ...sunkBy(cause)];
     loss = { value: battleValue, strong: true, tooltipRows, ...(killer ? { inlineSubtext: killer } : {}) };
-    battle = { key: row.battle.id };
+    battle = { key: row.battle.id, title: battleValue };
   } else {
     loss = cause.kind === 'notRecorded' ? { value: notRecorded(cause.reason), missingFigure: 'Cause' }
       : { value: knownValue(cause.kind === 'cause' ? cause.text : cause.kind === 'airWing' ? 'Air attack' : `Sunk by ${cause.name}`) };
@@ -124,7 +124,7 @@ export const shipsSunkDeclaration: TableWidgetDeclaration<Options> = {
     const selected = contentSet(ctx.options.classes);
     const prefix = prefixOf(ctx.track.source.metadata.campaignKey, ctx.branch.id);
     const classes = selected.filter(key => key.startsWith(prefix)).map(key => Number(key.slice(prefix.length))).filter(Number.isSafeInteger);
-    const ask = { ...occurrenceSelection(ctx), ...(selected.length ? { classes } : {}) };
+    const ask = { ...occurrenceSelection(ctx), ...(selected.length ? { classes } : {}), rowNames: true };
     return {
       owner: JSON.stringify([ctx.track.source.id, ctx.branch.id, 'ships-sunk', from, ask]),
       entries: [pagedTailEntry('main', ctx.track.source, ctx.branch.id, ctx.track.axisOffset,
