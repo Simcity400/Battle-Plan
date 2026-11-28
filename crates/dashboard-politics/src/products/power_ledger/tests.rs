@@ -546,8 +546,7 @@ fn overlapping_coverage_gap_preserves_specific_day_log_refusal_on_affected_hour(
         LogGap { first: 142, last: 143, status: Status::Unavailable { reason: 1 }, reason: Some("gap a".into()) },
         LogGap { first: 149, last: 153, status: Status::Unavailable { reason: 2 }, reason: Some("gap b".into()) },
     ];
-    let mut hours = std::collections::BTreeMap::new();
-    super::apply_day_gaps(&mut runs, 0, &gaps, &mut hours);
+    super::apply_log_gaps(&mut runs, &gaps, "Daily spending log");
     assert_eq!(
         runs,
         [
@@ -577,6 +576,9 @@ fn same_run_stretch_boundary_reads_first_hour_log_event_and_gap() {
                     set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(Vec::new()));
                     frame.tables[TableId::CountryPowerDailyCosts.index()] = TableView::Unavailable { reason: "boundary costs unavailable".into() }.into();
                 } else {
+                    if hour == 144 {
+                        set(&mut frame, TableId::CountryPowerChanges, TableRows::CountryPowerChanges(vec![decision(11, 144, 25 * PP)]));
+                    }
                     let day = match hour {
                         ..=119 => None,
                         120..=143 => Some((daily(120, 3 * PP, 2 * PP, PP, 50), cost(120, 2 * PP, 50))),
@@ -622,6 +624,16 @@ fn same_run_stretch_boundary_reads_first_hour_log_event_and_gap() {
         listed,
         [(144, Some(120), 1, 1, Some("200000".into()))],
         "a 1-hour query on the first hour of a later same-run stretch must still read its PowerSpendDays event"
+    );
+    assert_eq!(
+        available.payments.len(),
+        1,
+        "a 1-hour query on the first hour of a later same-run stretch must still read its PowerSpendPayments event"
+    );
+    assert_eq!(
+        available.gains.len(),
+        1,
+        "a 1-hour query on the first hour of a later same-run stretch must still read its PowerSpendGains event"
     );
 
     let unavailable = build(true);
@@ -1347,4 +1359,237 @@ fn damaged_final_block_clock_does_not_abort_complete_items_read() {
     assert_eq!(items.stretches, 0, "the damaged final-block clock does not force a fallback membership walk");
     assert_eq!(reply.payments.len(), 2);
     assert!(reply.payments.iter().all(|payment| reply.items[payment.item as usize].category == "decisions"));
+}
+
+#[test]
+fn format_155_summary_logs_skip_legacy_walks_and_surface_log_gaps() {
+    let source = recording();
+    let _ = dashboard_query::cost::take();
+    let (whole, counts) = replay_recording::cells::count_reads(|| asked(&source, FIRST, LAST));
+    let storage_ns = dashboard_query::cost::take();
+    assert!(storage_ns > 0, "parallel format 155 scans must report storage time back to the requesting thread");
+    assert!(counts.contains_key(&TableId::PowerSpendCoverage), "parallel format 155 scans must report reads back to count_reads");
+    assert!(!counts.contains_key(&TableId::PowerSpendTotals), "format 155 must not read retired PowerSpendTotals");
+    for legacy in [TableId::CountryPowerChanges, TableId::CountryLinks] {
+        let stat = counts.get(&legacy);
+        assert!(
+            stat.is_none_or(|stat| stat.restores == 0 && stat.stretches == 0 && stat.visited_ordinals == 0),
+            "format 155 must not walk {legacy:?} rows: {stat:?}"
+        );
+    }
+    assert_eq!(whole.payments.len(), 2);
+    assert_eq!(whole.days.len(), 2);
+    assert_eq!(whole.gains.len(), 2);
+
+    use replay_data::rows::{ClockRow, PowerSpendGainRow};
+    use replay_journal::synthetic::{Input, Sample};
+    let next_slot = SLOT + 1;
+    let half = 1_i64 << 62;
+    let frames: Vec<DecodedFrame> = (FIRST..=125)
+        .map(|hour| {
+            let slot = if hour < 118 { SLOT } else { next_slot };
+            let mut frame = source_frame(hour);
+            set(&mut frame, TableId::Countries, TableRows::Countries(vec![CountryRow { id: GER, canonical_slot: slot, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }]));
+            set(&mut frame, TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: GER, canonical_slot: slot }]));
+            set(&mut frame, TableId::Clock, TableRows::Clock(vec![ClockRow { hour, ..Default::default() }]));
+            frame
+        })
+        .collect();
+    let writers_without_power_ledger = |columns: &[usize], current: &[usize]| {
+        let mut kept = columns.to_vec();
+        kept[TableId::PowerSpendCoverage.index()] = 0;
+        recorder_derive::writers_within(&kept, current)
+    };
+    let bytes = replay::campaign::fixtures::encode_framed_at(writers_without_power_ledger, replay_data::FORMAT_VERSION, CAMPAIGN.into(), &[records(1, frames)], |synthetic, decoded| {
+        let countries = decoded.complete::<replay_data::rows::tables::Countries>()?;
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: countries, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let links = decoded.complete::<replay_data::rows::tables::CountryLinks>()?;
+        if decoded.hour == 117 {
+            synthetic.table::<CountryLinkRow>(TableId::CountryLinks, Input::Unavailable { reason: "links lost", read: false, sample: Sample::FromReadBit })?;
+        } else {
+            let links_read = decoded.hour != 115;
+            synthetic.table(TableId::CountryLinks, Input::Snapshot { rows: links, partial: None, read: links_read, sample: Sample::FromReadBit })?;
+        }
+        if decoded.hour == 113 {
+            synthetic.table::<CountryPowerChangeRow>(TableId::CountryPowerChanges, Input::Unavailable { reason: "politics observation restarted", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 114 || decoded.hour == 116 {
+            synthetic.table::<CountryPowerChangeRow>(TableId::CountryPowerChanges, Input::Unavailable { reason: "hook paused", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 117 {
+            synthetic.table(TableId::CountryPowerChanges, Input::Snapshot { rows: &[] as &[CountryPowerChangeRow], partial: Some(1), read: true, sample: Sample::FromReadBit })?;
+        } else {
+            synthetic.table(TableId::CountryPowerChanges, Input::Snapshot { rows: &[] as &[CountryPowerChangeRow], partial: None, read: true, sample: Sample::FromReadBit })?;
+        }
+        let slot = if decoded.hour < 118 { SLOT } else { next_slot };
+        let coverage = [PowerSpendCoverageRow {
+            holder: slot,
+            political: true,
+            command: true,
+            reason: PowerSpendCoverageRow::KNOWN,
+            political_since: Some(FIRST),
+            command_since: Some(FIRST),
+            ..Default::default()
+        }];
+        synthetic.table(TableId::PowerSpendCoverage, Input::Snapshot { rows: &coverage, partial: None, read: true, sample: Sample::FromReadBit })?;
+        if decoded.hour == 110 {
+            synthetic.table::<replay_data::rows::PowerSpendDayRow>(TableId::PowerSpendDays, Input::Unavailable { reason: "days lost", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 112 || decoded.hour == 116 {
+            synthetic.table::<replay_data::rows::PowerSpendDayRow>(TableId::PowerSpendDays, Input::Unavailable { reason: "writer withheld", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 113 {
+            synthetic.table::<replay_data::rows::PowerSpendDayRow>(TableId::PowerSpendDays, Input::Unavailable { reason: "politics observation restarted", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 114 {
+            synthetic.table::<replay_data::rows::PowerSpendDayRow>(TableId::PowerSpendDays, Input::Unavailable { reason: "hook paused", read: false, sample: Sample::FromReadBit })?;
+        } else {
+            synthetic.table(TableId::PowerSpendDays, Input::Snapshot { rows: &[] as &[replay_data::rows::PowerSpendDayRow], partial: None, read: true, sample: Sample::FromReadBit })?;
+        }
+        if decoded.hour == 110 {
+            synthetic.table::<replay_data::rows::PowerSpendPaymentRow>(TableId::PowerSpendPayments, Input::Unavailable { reason: "payments lost", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 113 {
+            synthetic.table::<replay_data::rows::PowerSpendPaymentRow>(TableId::PowerSpendPayments, Input::Unavailable { reason: "politics observation restarted", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 116 {
+            synthetic.table::<replay_data::rows::PowerSpendPaymentRow>(TableId::PowerSpendPayments, Input::Unavailable { reason: "writer withheld", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 120 {
+            synthetic.table::<replay_data::rows::PowerSpendPaymentRow>(TableId::PowerSpendPayments, Input::Unavailable { reason: "second piece lost", read: false, sample: Sample::FromReadBit })?;
+        } else {
+            synthetic.table(TableId::PowerSpendPayments, Input::Snapshot { rows: &[] as &[replay_data::rows::PowerSpendPaymentRow], partial: None, read: true, sample: Sample::FromReadBit })?;
+        }
+        if decoded.hour == 112 || decoded.hour == 116 {
+            synthetic.table::<PowerSpendGainRow>(TableId::PowerSpendGains, Input::Unavailable { reason: "writer withheld", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 113 {
+            synthetic.table::<PowerSpendGainRow>(TableId::PowerSpendGains, Input::Unavailable { reason: "politics observation restarted", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 114 {
+            synthetic.table::<PowerSpendGainRow>(TableId::PowerSpendGains, Input::Unavailable { reason: "gains corrupted", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 115 {
+            synthetic.table::<PowerSpendGainRow>(TableId::PowerSpendGains, Input::Unavailable { reason: "gains lost", read: false, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 117 {
+            synthetic.table(TableId::PowerSpendGains, Input::Snapshot { rows: &[] as &[PowerSpendGainRow], partial: Some(1), read: true, sample: Sample::FromReadBit })?;
+        } else if decoded.hour == 122 {
+            let split = [
+                PowerSpendGainRow { holder: next_slot, hour: 122, currency: 0, entry: 0, event_hour: Some(122), gained: Recorded::Value(half), capped: Recorded::Value(0), days: 0, unknown_days: 0, unmatched: 0 },
+                PowerSpendGainRow { holder: next_slot, hour: 122, currency: 0, entry: 1, event_hour: Some(122), gained: Recorded::Value(half), capped: Recorded::Value(0), days: 0, unknown_days: 0, unmatched: 0 },
+            ];
+            synthetic.table(TableId::PowerSpendGains, Input::Snapshot { rows: &split, partial: None, read: true, sample: Sample::FromReadBit })?;
+        } else {
+            synthetic.table(TableId::PowerSpendGains, Input::Snapshot { rows: &[] as &[PowerSpendGainRow], partial: None, read: true, sample: Sample::FromReadBit })?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let damaged_replay = Replay::open(bytes).unwrap().into_timelines(&Default::default()).unwrap();
+    let damaged_source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-log-gap".into(), revision: "1".into() }, "gap.battleplan".into(), Arc::new(damaged_replay), &AtomicBool::new(false)).unwrap();
+    let base_query = dashboard_base::queries::query(&damaged_source, 1).unwrap();
+    let holders = dashboard_query::identity::Holders::new(
+        [(
+            "GER".to_owned(),
+            vec![
+                dashboard_query::identity::HolderRun { first: FIRST, last: 117, holder: dashboard_query::identity::Holder::Found { slot: SLOT, id: GER }, starts_segment: true },
+                dashboard_query::identity::HolderRun { first: 118, last: 125, holder: dashboard_query::identity::Holder::Found { slot: next_slot, id: GER }, starts_segment: false },
+            ],
+        )]
+        .into(),
+        Vec::new(),
+    );
+    let explicit_query = dashboard_query::Query { replay: base_query.replay, timeline: base_query.timeline, holders: Arc::new(holders) };
+    let naming = naming::context(&damaged_source, &LoadContext { content: None }).unwrap();
+    let reply = spending(
+        &explicit_query,
+        &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from: FIRST, to: 125 },
+        &naming,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(
+        reply.coverage.iter().any(|span| {
+            !span.covered
+                && span.first_hour == 110
+                && span.last_hour == 110
+                && span.reason.as_deref().is_some_and(|r| r.contains("Daily spending log unavailable: days lost") && r.contains("Spending payments log unavailable: payments lost"))
+        }),
+        "overlapping day and payment log failures with distinct causes must preserve both reasons in coverage: {:?}",
+        reply.coverage
+    );
+    assert!(
+        reply.coverage.iter().any(|span| !span.covered && span.first_hour == 120 && span.last_hour == 120 && span.reason.as_deref().is_some_and(|r| r.contains("Spending payments log unavailable: second piece lost"))),
+        "a payment log gap in the second of two adjacent holder pieces must surface as uncovered: {:?}",
+        reply.coverage
+    );
+    assert!(
+        reply.gain_coverage.iter().any(|span| {
+            !span.covered
+                && span.first_hour == 112
+                && span.last_hour == 112
+                && span.reason.as_deref().is_some_and(|r| r.contains("Spending gains log unavailable: writer withheld"))
+        }),
+        "a shared writer refusal on PowerSpendDays and PowerSpendGains while raw inputs are complete must still mark gain_coverage uncovered: {:?}",
+        reply.gain_coverage
+    );
+    assert!(reply.warnings.iter().any(|w| w.contains("Daily spending log unavailable: writer withheld (hours: 2)")), "warnings: {:?}", reply.warnings);
+    assert!(!reply.warnings.iter().any(|w| w.contains("Spending gains log unavailable: writer withheld")), "identical shared refusal warning is deduplicated: {:?}", reply.warnings);
+    assert!(
+        reply.gain_coverage.iter().any(|span| {
+            !span.covered
+                && span.first_hour == 116
+                && span.last_hour == 116
+                && span.reason.as_deref().is_some_and(|r| r.contains("Power changes unavailable") && r.contains("Spending gains log unavailable: writer withheld"))
+        }),
+        "a shared writer refusal across all three logs overlapping a different CountryPowerChanges outage must still surface in gain_coverage: {:?}",
+        reply.gain_coverage
+    );
+    assert!(
+        reply.gain_coverage.iter().any(|span| {
+            !span.covered
+                && span.first_hour == 117
+                && span.last_hour == 117
+                && span.reason.as_deref().is_some_and(|r| r.contains("Power changes was read in part: 1 missing") && r.contains("Spending gains log was read in part: 1 missing"))
+        }),
+        "when CountryLinks is unavailable, a matching CountryPowerChanges truncation must not suppress an independent PowerSpendGains truncation: {:?}",
+        reply.gain_coverage
+    );
+    assert!(reply.warnings.iter().any(|w| w.contains("Spending gains log was read in part: 1 missing (hours: 1)")), "warnings: {:?}", reply.warnings);
+    assert!(
+        reply.gain_coverage.iter().any(|span| {
+            !span.covered && span.first_hour == 113 && span.last_hour == 113 && span.reason.as_deref() == Some("Power changes unavailable")
+        }),
+        "a propagated CountryPowerChanges outage across PowerSpendDays and PowerSpendGains must not duplicate its reason in gain_coverage: {:?}",
+        reply.gain_coverage
+    );
+    assert!(
+        reply.coverage.iter().any(|span| {
+            !span.covered && span.first_hour == 113 && span.last_hour == 113 && span.reason.as_deref() == Some("Daily spending log unavailable: politics observation restarted")
+        }),
+        "a propagated CountryPowerChanges outage with differing per-table reason IDs must still deduplicate PowerSpendPayments against PowerSpendDays: {:?}",
+        reply.coverage
+    );
+    assert!(reply.warnings.iter().any(|w| w.contains("Daily spending log unavailable: politics observation restarted (hours: 1)")), "warnings: {:?}", reply.warnings);
+    assert!(!reply.warnings.iter().any(|w| w.contains("Spending payments log unavailable: politics observation restarted")), "warnings: {:?}", reply.warnings);
+    assert!(!reply.warnings.iter().any(|w| w.contains("Spending gains log unavailable: politics observation restarted")), "warnings: {:?}", reply.warnings);
+    assert!(
+        reply.gain_coverage.iter().any(|span| {
+            !span.covered
+                && span.first_hour == 114
+                && span.last_hour == 114
+                && span.reason.as_deref().is_some_and(|r| r.contains("Power changes unavailable") && r.contains("Spending gains log unavailable: gains corrupted"))
+        }),
+        "a distinct PowerSpendGains failure overlapping a CountryPowerChanges outage must preserve both reasons in gain_coverage: {:?}",
+        reply.gain_coverage
+    );
+    assert!(reply.warnings.iter().any(|w| w.contains("Spending gains log unavailable: gains corrupted (hours: 1)")), "warnings: {:?}", reply.warnings);
+    assert!(
+        reply.gain_coverage.iter().any(|span| {
+            !span.covered
+                && span.first_hour == 115
+                && span.last_hour == 115
+                && span.reason.as_deref().is_some_and(|r| r.contains("Country links was not read at this hour") && r.contains("Spending gains log unavailable: gains lost"))
+        }),
+        "an overlapping CountryLinks unread hour and distinct PowerSpendGains failure must preserve both causes in gain_coverage: {:?}",
+        reply.gain_coverage
+    );
+    assert!(reply.warnings.iter().any(|w| w.contains("Daily spending log unavailable: days lost (hours: 1)")), "warnings: {:?}", reply.warnings);
+    assert!(reply.warnings.iter().any(|w| w.contains("Spending payments log unavailable: payments lost (hours: 1)")), "warnings: {:?}", reply.warnings);
+    assert!(reply.warnings.iter().any(|w| w.contains("Spending payments log unavailable: second piece lost (hours: 1)")), "warnings: {:?}", reply.warnings);
+    assert!(reply.warnings.iter().any(|w| w.contains("Spending gains log unavailable: gains lost (hours: 1)")), "warnings: {:?}", reply.warnings);
+    assert!(
+        reply.gains.iter().any(|g| g.read == 122 && g.hour == Some(122) && g.gained_raw.as_deref() == Some("9223372036854775808")),
+        "multiple split PowerSpendGains entries must reconstruct exact i128 gains: {:?}",
+        reply.gains
+    );
 }

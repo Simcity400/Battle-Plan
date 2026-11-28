@@ -525,3 +525,5 @@
 524 LandCombatResultObservers 128 kind:U8,item:U64,index:U64,identity:U64,identity_2:U64,identity_3:U64,a:I64,b:I64,c:I64,d:I64,e:I64
 525 LandDivisionDamage 128 hour:I32,target:U64,attacker:U64,army:OptionalU64,strength_raw:I64
 526 DivisionKills 64 killed_raw:I64,incomplete_from:OptionalI32
+527 PowerSpendPayments 104 ordinal:U32,known:I64,payments:I64,unknown:I64,uncovered:I64,latest_hour:OptionalI32,latest_sequence:OptionalU64,latest_ordinal:OptionalU32
+528 PowerSpendGains 104 event_hour:OptionalI32,gained:I64,capped:I64,days:I64,unknown_days:I64,unmatched:I64

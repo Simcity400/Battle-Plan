@@ -403,6 +403,108 @@ fn second_country(store: &mut Store, hour: i32) {
     }
 }
 
+#[derive(Default)]
+struct DaySummary {
+    days: i64,
+    day_payments: i64,
+    day_charge: i64,
+    day_unknown: i64,
+    days_uncovered: i64,
+    credits: i64,
+    first_day: Option<i32>,
+    last_day: Option<i32>,
+}
+
+#[derive(Default)]
+struct PaymentSummary {
+    known: i64,
+    payments: i64,
+    unknown: i64,
+    uncovered: i64,
+    latest_hour: Option<i32>,
+    latest_sequence: Option<u64>,
+}
+
+#[derive(Default)]
+struct GainSummary {
+    gained: i128,
+    capped: i128,
+    gain_days: i64,
+    gain_unknown_days: i64,
+    unmatched: i64,
+}
+
+struct LandedLogs {
+    store: Store,
+    days: BTreeMap<(u32, u8, u32), DaySummary>,
+    payments: BTreeMap<(u32, u8, u32), PaymentSummary>,
+    gains: BTreeMap<(u32, u8), GainSummary>,
+}
+
+impl std::ops::Deref for LandedLogs {
+    type Target = Store;
+    fn deref(&self) -> &Self::Target {
+        &self.store
+    }
+}
+
+impl LandedLogs {
+    fn new(store: Store) -> Self {
+        Self { store, days: BTreeMap::new(), payments: BTreeMap::new(), gains: BTreeMap::new() }
+    }
+
+    fn record_landed_rows(&mut self) {
+        assert!(keys(&self.store, TableId::PowerSpendTotals).is_empty(), "PowerSpendTotals is retired in format 155");
+        let view = self.store.view(TableId::PowerSpendDays.index());
+        for row in inputs::every::<SpendDay>(&view).unwrap() {
+            let entry = self.days.entry((row.holder, row.currency, row.ordinal)).or_default();
+            entry.days += row.days;
+            entry.day_payments += row.payments;
+            if let Recorded::Value(charge) = row.charge {
+                entry.day_charge += charge;
+            }
+            entry.day_unknown += row.unknown;
+            entry.days_uncovered += row.uncovered;
+            entry.credits += row.credits;
+            if row.days > 0 || row.payments > 0 {
+                entry.first_day = Some(entry.first_day.map_or(row.day, |first| first.min(row.day)));
+                entry.last_day = Some(entry.last_day.map_or(row.day, |last| last.max(row.day)));
+            }
+        }
+        let view = self.store.view(TableId::PowerSpendPayments.index());
+        for row in inputs::every::<SpendPayment>(&view).unwrap() {
+            let entry = self.payments.entry((row.holder, row.currency, row.ordinal)).or_default();
+            if let Recorded::Value(known) = row.known {
+                entry.known += known;
+            }
+            entry.payments += row.payments;
+            entry.unknown += row.unknown;
+            entry.uncovered += row.uncovered;
+            if row.latest_hour.is_some() {
+                entry.latest_hour = row.latest_hour;
+                entry.latest_sequence = row.latest_sequence;
+            }
+        }
+        let view = self.store.view(TableId::PowerSpendGains.index());
+        for row in inputs::every::<SpendGain>(&view).unwrap() {
+            let entry = self.gains.entry((row.holder, row.currency)).or_default();
+            if let Recorded::Value(gained) = row.gained {
+                entry.gained += i128::from(gained);
+            }
+            if let Recorded::Value(capped) = row.capped {
+                entry.capped += i128::from(capped);
+            }
+            entry.gain_days += row.days;
+            entry.gain_unknown_days += row.unknown_days;
+            entry.unmatched += row.unmatched;
+        }
+    }
+
+    fn has_item_activity(&self, holder: u32, currency: u8, ordinal: u32) -> bool {
+        self.days.contains_key(&(holder, currency, ordinal)) || self.payments.contains_key(&(holder, currency, ordinal))
+    }
+}
+
 fn run(store: &mut Store, writers: &mut Writers, hour: i32) {
     store.begin_hour(hour, if hour == 0 { TEXTS } else { &[] }).unwrap();
     edit(store, hour);
@@ -412,12 +514,13 @@ fn run(store: &mut Store, writers: &mut Writers, hour: i32) {
     store.end_hour(&mut Discard).unwrap();
 }
 
-fn through(hours: std::ops::RangeInclusive<i32>) -> (Store, Writers) {
-    let (mut store, mut writers) = (testing::store(), writers());
+fn through(hours: std::ops::RangeInclusive<i32>) -> (LandedLogs, Writers) {
+    let (mut logged, mut writers) = (LandedLogs::new(testing::store()), writers());
     for at in hours {
-        run(&mut store, &mut writers, at);
+        run(&mut logged.store, &mut writers, at);
+        logged.record_landed_rows();
     }
-    (store, writers)
+    (logged, writers)
 }
 
 fn cell<R: replay_data::rows::Fields>(store: &Store, table: TableId, key: u128, name: &str) -> Option<i64> {
@@ -425,8 +528,40 @@ fn cell<R: replay_data::rows::Fields>(store: &Store, table: TableId, key: u128, 
     view.number(column::<R>(name), view.slot(key).expect("a row"))
 }
 
-fn spend(store: &Store, holder: u32, currency: u8, ordinal: u32, name: &str) -> Option<i64> {
-    cell::<Total>(store, TableId::PowerSpendTotals, total_key(holder, currency, ordinal), name)
+fn spend(logged: &LandedLogs, holder: u32, currency: u8, ordinal: u32, name: &str) -> Option<i64> {
+    if ordinal == Total::GAINS {
+        let entry = logged.gains.get(&(holder, currency))?;
+        return match name {
+            "gained" => i64::try_from(entry.gained).ok(),
+            "capped" => i64::try_from(entry.capped).ok(),
+            "gain_days" => Some(entry.gain_days),
+            "gain_unknown_days" => Some(entry.gain_unknown_days),
+            "unmatched" => Some(entry.unmatched),
+            _ => None,
+        };
+    }
+    let day = logged.days.get(&(holder, currency, ordinal));
+    let payment = logged.payments.get(&(holder, currency, ordinal));
+    if day.is_none() && payment.is_none() {
+        return None;
+    }
+    match name {
+        "days" => Some(day.map_or(0, |d| d.days)),
+        "day_payments" => Some(day.map_or(0, |d| d.day_payments)),
+        "day_charge" => Some(day.map_or(0, |d| d.day_charge)),
+        "day_unknown" => Some(day.map_or(0, |d| d.day_unknown)),
+        "days_uncovered" => Some(day.map_or(0, |d| d.days_uncovered)),
+        "credits" => Some(day.map_or(0, |d| d.credits)),
+        "first_day" => day.and_then(|d| d.first_day).map(i64::from),
+        "last_day" => day.and_then(|d| d.last_day).map(i64::from),
+        "known" => Some(payment.map_or(0, |p| p.known)),
+        "payments" => Some(payment.map_or(0, |p| p.payments)),
+        "unknown" => Some(payment.map_or(0, |p| p.unknown)),
+        "uncovered" => Some(payment.map_or(0, |p| p.uncovered)),
+        "latest_hour" => payment.and_then(|p| p.latest_hour).map(i64::from),
+        "latest_sequence" => payment.and_then(|p| p.latest_sequence).map(|s| s as i64),
+        _ => None,
+    }
 }
 
 fn cost_items(store: &Store) -> Vec<u32> {
@@ -453,10 +588,9 @@ fn a_payment_counts_under_its_items_typed_operands_and_a_country_no_link_resolve
     assert_eq!(spend(&store, 10, POLITICAL, 0, "latest_sequence"), Some(15));
     assert_eq!(spend(&store, 10, POLITICAL, 0, "uncovered"), Some(0));
     assert_eq!(spend(&store, 10, POLITICAL, 1, "payments"), Some(1));
-    assert_eq!(spend(&store, 10, POLITICAL, 2, "balances"), Some(1), "an addition is a balance row of its item, no payment");
-    assert_eq!(spend(&store, 10, POLITICAL, 2, "payments"), Some(0));
+    assert!(!store.has_item_activity(10, POLITICAL, 2), "an addition logs as an instant gain, not a payment");
+    assert_eq!(spend(&store, 10, POLITICAL, Total::GAINS, "gained"), Some(Q), "focus addition logs to PowerSpendGains");
     assert_eq!(spend(&store, NONE, POLITICAL, 0, "payments"), Some(1));
-    assert_eq!(spend(&store, 10, POLITICAL, 0, "gained"), None, "an item row holds no gains");
     assert_eq!(cell::<Item>(&store, TableId::PowerItems, item_key(10, 0), "first_sequence"), Some(15));
     assert_eq!(cell::<Item>(&store, TableId::PowerItems, item_key(10, 0), "first_read"), Some(1));
 }
@@ -465,7 +599,7 @@ fn a_payment_counts_under_its_items_typed_operands_and_a_country_no_link_resolve
 fn a_runs_first_hour_lists_what_the_game_held_and_none_of_it_is_counted() {
     let (store, _) = through(0..=0);
     let coverage = |store: &Store, name: &str| cell::<Coverage>(store, TableId::PowerSpendCoverage, 10, name);
-    for table in [TableId::PowerSpendTotals, TableId::PowerItems, TableId::PowerDayParts, TableId::PowerHolds, TableId::PowerSpendDays] {
+    for table in [TableId::PowerSpendTotals, TableId::PowerItems, TableId::PowerDayParts, TableId::PowerHolds, TableId::PowerSpendDays, TableId::PowerSpendPayments, TableId::PowerSpendGains] {
         assert!(keys(&store, table).is_empty(), "{table:?}: the payment and the day listed at attach are a backlog");
     }
     assert_eq!((coverage(&store, "political"), coverage(&store, "command"), coverage(&store, "reason")), (Some(0), Some(0), Some(i64::from(Coverage::BACKLOG))));
@@ -496,78 +630,87 @@ fn every_abilitys_upkeep_is_one_item_and_identity_ignores_where_a_payment_was_re
 
 #[test]
 fn a_recurring_item_merges_its_payments_by_native_day_and_counts_an_uncovered_day_once() {
-    let mut total = tally::item(10, POLITICAL, 0);
     let mut seen = ItemDays::default();
-    let payment = |hour: i32, covered: bool| Payment { recurring: true, upkeep: true, hour, read: hour + 1, sequence: hour as u64, ordinal: 0, charge: Some(i128::from(Q)), covered, realized: Some(-i128::from(Q)), count: 1 };
+    let payment = |hour: i32, covered: bool| Payment { recurring: true, hour, sequence: hour as u64, ordinal: 0, charge: Some(i128::from(Q)), covered, realized: Some(-i128::from(Q)), count: 1 };
     let mut deltas = Vec::new();
+    let mut day_event = DayEvent::default();
     for (hour, covered) in [(0, true), (5, false), (7, false), (24, true), (3, true)] {
-        deltas.push(tally::pay(&mut total, &mut seen, &payment(hour, covered)));
+        let pay = payment(hour, covered);
+        let delta = tally::count_day(&mut seen, &pay);
+        if let Some((_, new_day, newly_uncovered)) = delta {
+            day_event.pay(&pay, new_day, newly_uncovered);
+        }
+        deltas.push(delta);
     }
     assert_eq!(deltas, [Some((0, true, false)), Some((0, false, true)), Some((0, false, false)), Some((24, true, false)), Some((0, false, false))]);
-    let number = |cell: Recorded<i64>| match cell {
-        Recorded::Value(value) => Some(value),
-        Recorded::NotRecorded => None,
-    };
-    assert_eq!(number(total.days), Some(2), "hours 0, 5, 7 and the late 3 are day 0; 24 is day 24");
-    assert_eq!(number(total.day_payments), Some(5));
-    assert_eq!(number(total.day_entries), Some(2), "upkeep's day is one entry");
-    assert_eq!(number(total.days_uncovered), Some(1), "day 0 is uncovered once");
-    assert_eq!(number(total.day_charge), Some(5 * Q));
-    assert_eq!(number(total.realized_lost), Some(-5 * Q));
-    assert_eq!(total.last_day, Recorded::Value(Some(24)));
-    assert_eq!(total.first_day, Recorded::Value(Some(0)));
-    assert_eq!(number(total.payments), Some(0), "a recurring payment is no one-off");
-    let mut overflow = tally::item(10, POLITICAL, 1);
-    let mut once_seen = ItemDays::default();
+    assert_eq!(day_event.days, 2, "hours 0, 5, 7 and the late 3 are day 0; 24 is day 24");
+    assert_eq!(day_event.payments, 5);
+    assert_eq!(day_event.uncovered, 1, "day 0 is uncovered once");
+    assert_eq!(day_event.charge, Recorded::Value(5 * Q));
+    assert_eq!(day_event.realized_lost, Recorded::Value(-5 * Q));
+    let mut overflow = PaymentEvent::default();
     for _ in 0..2 {
-        tally::pay(&mut overflow, &mut once_seen, &Payment { recurring: false, charge: Some(i128::from(i64::MAX)), ..payment(0, true) });
+        overflow.pay(&Payment { recurring: false, charge: Some(i128::from(i64::MAX)), ..payment(0, true) });
     }
     assert_eq!(overflow.known, Recorded::NotRecorded, "a sum past i64 is not recorded, never wrapped");
-    tally::pay(&mut overflow, &mut once_seen, &Payment { recurring: false, ..payment(1, true) });
+    overflow.pay(&Payment { recurring: false, ..payment(1, true) });
     assert_eq!(overflow.known, Recorded::NotRecorded, "and stays so");
 }
 
 #[test]
 fn aggregate_settlement_matches_repeated_payments_in_constant_steps() {
-    for (recurring, upkeep, charge, covered, count) in [
-        (true, false, Some(5 * Q), true, 7_i64),
-        (true, false, Some(5 * Q), false, 7),
-        (true, false, None, false, 7),
-        (true, true, Some(3 * Q), false, 4),
-        (false, false, Some(5 * Q), true, 7),
-        (false, false, None, false, 7),
+    for (recurring, charge, covered, count) in [
+        (true, Some(5 * Q), true, 7_i64),
+        (true, Some(5 * Q), false, 7),
+        (true, None, false, 7),
+        (false, Some(5 * Q), true, 7),
+        (false, None, false, 7),
     ] {
-        let mut batched = tally::item(10, POLITICAL, 0);
-        let mut batched_seen = ItemDays::default();
-        let make = |charge, count| Payment { recurring, upkeep, hour: 24, read: 25, sequence: 50, ordinal: 3, charge, covered, realized: None, count };
-        tally::pay(&mut batched, &mut batched_seen, &make(charge.map(i128::from), count));
-        let mut looped = tally::item(10, POLITICAL, 0);
-        let mut looped_seen = ItemDays::default();
-        for at in 0..count {
-            let piece = if at == 0 { charge.map(i128::from) } else { charge.map(|_| 0) };
-            tally::pay(&mut looped, &mut looped_seen, &make(piece, 1));
+        let make = |charge, count| Payment { recurring, hour: 24, sequence: 50, ordinal: 3, charge, covered, realized: None, count };
+        if recurring {
+            let mut batched = DayEvent::default();
+            let mut batched_seen = ItemDays::default();
+            let p = make(charge.map(i128::from), count);
+            if let Some((_, new_day, newly_uncovered)) = tally::count_day(&mut batched_seen, &p) {
+                batched.pay(&p, new_day, newly_uncovered);
+            }
+            let mut looped = DayEvent::default();
+            let mut looped_seen = ItemDays::default();
+            for at in 0..count {
+                let piece = if at == 0 { charge.map(i128::from) } else { charge.map(|_| 0) };
+                let p = make(piece, 1);
+                if let Some((_, new_day, newly_uncovered)) = tally::count_day(&mut looped_seen, &p) {
+                    looped.pay(&p, new_day, newly_uncovered);
+                }
+            }
+            assert_eq!((batched.days, batched.payments, batched.charge, batched.unknown, batched.uncovered, batched.realized_unknown), (looped.days, looped.payments, looped.charge, looped.unknown, looped.uncovered, looped.realized_unknown));
+            assert_eq!(batched_seen, looped_seen);
+        } else {
+            let mut batched = PaymentEvent::default();
+            batched.pay(&make(charge.map(i128::from), count));
+            let mut looped = PaymentEvent::default();
+            for at in 0..count {
+                let piece = if at == 0 { charge.map(i128::from) } else { charge.map(|_| 0) };
+                looped.pay(&make(piece, 1));
+            }
+            assert_eq!((batched.known, batched.payments, batched.unknown, batched.uncovered, batched.latest), (looped.known, looped.payments, looped.unknown, looped.uncovered, looped.latest));
         }
-        assert_eq!(batched, looped);
-        assert_eq!(batched_seen, looped_seen);
     }
-    let mut big = tally::item(10, POLITICAL, 2);
+    let mut big = DayEvent::default();
     let mut big_seen = ItemDays::default();
     let large = MAX_BATCH_PAYMENTS as i64;
-    let result = tally::pay(&mut big, &mut big_seen, &Payment { recurring: true, upkeep: false, hour: 48, read: 49, sequence: 90, ordinal: 0, charge: Some(i128::from(Q)), covered: false, realized: None, count: large });
+    let pay = Payment { recurring: true, hour: 48, sequence: 90, ordinal: 0, charge: Some(i128::from(Q)), covered: false, realized: None, count: large };
+    let result = tally::count_day(&mut big_seen, &pay);
     assert_eq!(result, Some((48, true, true)));
-    assert_eq!(big.day_payments, Recorded::Value(large));
-    assert_eq!(big.day_entries, Recorded::Value(large));
-    assert_eq!(big.realized_unknown, Recorded::Value(large));
-    assert_eq!(big.days, Recorded::Value(1));
-    assert_eq!(big.days_uncovered, Recorded::Value(1));
-    assert_eq!(big.day_charge, Recorded::Value(Q));
-    let mut credits = tally::item(10, POLITICAL, 3);
-    tally::count(&mut credits, true, large);
-    tally::unknown(&mut credits, large);
-    assert_eq!((credits.credits, credits.unknown), (Recorded::Value(large), Recorded::Value(large)));
-    let mut gains = tally::gains(10, POLITICAL);
-    tally::unmatched(&mut gains, large);
-    assert_eq!(gains.unmatched, Recorded::Value(large));
+    big.pay(&pay, true, true);
+    assert_eq!((big.payments, big.realized_unknown, big.days, big.uncovered, big.charge), (large, large, 1, 1, Recorded::Value(Q)));
+    let mut credits = PaymentEvent::default();
+    credits.unknown_credit(large);
+    assert_eq!((credits.payments, credits.unknown), (0, large));
+    let mut gains = Vec::new();
+    push_gain(&mut gains, Some(0), Some(0), 0, 0, large);
+    assert_eq!(gains.len(), 1);
+    assert_eq!(gains[0].unmatched, large);
 }
 
 #[test]
@@ -581,14 +724,13 @@ fn a_daily_gain_is_its_gross_and_what_the_cap_kept_and_command_powers_deficit_is
 #[test]
 fn a_day_counts_once_when_it_ends_from_its_last_revision() {
     let (open, _) = through(0..=47);
-    assert!(testing::rows(&open, TableId::PowerSpendTotals).iter().all(|(key, _)| *key as u32 != Total::GAINS), "day 24 is open: its gains are the daily row's");
+    assert_eq!(spend(&open, 10, POLITICAL, Total::GAINS, "gain_days"), Some(0), "day 24 is open: no daily gain counted yet");
     let costs = cost_items(&open);
     assert_eq!(costs.len(), 2, "the relation and the organisation upkeep are two items");
-    assert!(costs.iter().all(|&ordinal| open.view(TableId::PowerSpendTotals.index()).slot(total_key(10, POLITICAL, ordinal)).is_none()), "an open day's costs are its parts");
+    assert!(costs.iter().all(|&ordinal| !open.has_item_activity(10, POLITICAL, ordinal)), "an open day's costs are its parts");
     let (store, _) = through(0..=48);
-    assert_eq!(spend(&store, 10, POLITICAL, Total::GAINS, "gained"), Some(3 * Q + Q / 10), "day 24 counted once, from its last revision");
+    assert_eq!(spend(&store, 10, POLITICAL, Total::GAINS, "gained"), Some(Q + 3 * Q + Q / 10), "hour 1 focus gain plus day 24 counted once from its last revision");
     assert_eq!(spend(&store, 10, POLITICAL, Total::GAINS, "gain_days"), Some(1));
-    assert_eq!(spend(&store, 10, POLITICAL, Total::GAINS, "known"), None, "a gains row holds no item columns");
     let relation = costs[0];
     assert_eq!(spend(&store, 10, POLITICAL, relation, "day_payments"), Some(1), "ordinal 0 counted once though its day was published again");
     assert_eq!(spend(&store, 10, POLITICAL, relation, "days"), Some(1));
@@ -733,12 +875,8 @@ fn the_first_hour_after_a_blocked_one_reconciles_each_open_batch_with_its_curren
     assert_eq!((covered(&grown, relation), covered(&grown, organisation)), (Some(true), Some(false)), "an unchanged part keeps the coverage it proved, and a new one needs a capture since its day began");
     assert_eq!(cell::<Part>(&grown, TableId::PowerDayParts, relation, "read"), Some(168));
     for name in ["day_payments", "day_charge", "days"] {
-        for key in [total_key(10, POLITICAL, costs[0]), total_key(10, POLITICAL, costs[1]), total_key(30, POLITICAL, 0), total_key(30, POLITICAL, 1), total_key(40, POLITICAL, 0)] {
-            let total = |store: &Store| {
-                let view = store.view(TableId::PowerSpendTotals.index());
-                view.slot(key).and_then(|slot| view.number(column::<Total>(name), slot))
-            };
-            assert_eq!(total(&grown), total(&before), "reconciling settles no closed day again ({name})");
+        for (holder, ordinal) in [(10, costs[0]), (10, costs[1]), (30, 0), (30, 1), (40, 0)] {
+            assert_eq!(spend(&grown, holder, POLITICAL, ordinal, name), spend(&before, holder, POLITICAL, ordinal, name), "reconciling settles no closed day again ({name})");
         }
     }
 }
@@ -758,16 +896,12 @@ fn a_country_that_changes_holders_mid_day_takes_its_open_batch_with_it() {
     assert_eq!(held(&deleted, 10), Vec::<u128>::new());
     let (next, _) = through(0..=240);
     for ordinal in cost_items(&store) {
-        let days = |store: &Store| {
-            let view = store.view(TableId::PowerSpendTotals.index());
-            view.slot(total_key(10, POLITICAL, ordinal)).and_then(|slot| view.number(column::<Total>("days"), slot))
-        };
-        assert_eq!(days(&next), days(&store), "day 216 settles nothing under the old holder");
+        assert_eq!(spend(&next, 10, POLITICAL, ordinal, "days"), spend(&store, 10, POLITICAL, ordinal, "days"), "day 216 settles nothing under the old holder");
     }
-    assert!(next.view(TableId::PowerSpendTotals.index()).slot(total_key(50, POLITICAL, 1)).is_none(), "nor the deleted cost under the new one");
+    assert!(!next.has_item_activity(50, POLITICAL, 1), "nor the deleted cost under the new one");
     assert_eq!((spend(&next, 50, POLITICAL, 0, "days"), spend(&next, 50, POLITICAL, 0, "day_charge")), (Some(1), Some(Q / 2)));
     let (overnight, _) = through(0..=OVERNIGHT);
-    assert!(overnight.view(TableId::PowerSpendTotals.index()).slot(total_key(50, POLITICAL, 1)).is_none(), "a cost removed in a blocked hour before midnight is withdrawn before its day settles");
+    assert!(!overnight.has_item_activity(50, POLITICAL, 1), "a cost removed in a blocked hour before midnight is withdrawn before its day settles");
     assert_eq!((spend(&overnight, 50, POLITICAL, 0, "days"), spend(&overnight, 50, POLITICAL, 0, "day_charge")), (Some(2), Some(Q)));
     let (replaced, _) = through(0..=REPLACED);
     assert_eq!((spend(&replaced, 50, POLITICAL, 0, "day_unknown"), spend(&replaced, 50, POLITICAL, 1, "day_unknown")), (Some(1), Some(1)), "a batch replaced by the next day's while the ledger was blocked settles its day as unknown");
@@ -783,8 +917,13 @@ fn a_country_that_changes_holders_mid_day_takes_its_open_batch_with_it() {
     assert_eq!((spent(&relinked, 0), spent(&relinked, 1)), (Some(Q / 4), Some(Q / 10)), "until its holder publishes it again");
     let (waiting, _) = through(0..=DEFERRED_BLOCKED);
     let (deferred, _) = through(0..=DEFERRED);
+    assert_eq!(
+        deferred.view(TableId::PowerSpendDays.index()).status(),
+        Status::Unavailable { reason: 1 },
+        "an unavailable midnight roll hour still marks PowerSpendDays unavailable"
+    );
     for ordinal in [0, 1] {
-        let unknown = |store: &Store| spend(store, 50, POLITICAL, ordinal, "day_unknown");
+        let unknown = |store: &LandedLogs| spend(store, 50, POLITICAL, ordinal, "day_unknown");
         assert_eq!(unknown(&deferred).zip(unknown(&waiting)).map(|(after, before)| after - before), Some(1), "a day that closes while its reconciliation waits for the cost rows settles as unknown");
     }
     let (swapped, _) = through(0..=SWAPPED);
@@ -894,11 +1033,13 @@ fn a_resume_in_the_middle_writes_what_a_run_never_stopped_writes() {
         for table in TABLES.iter().map(|output| output.table()) {
             assert_eq!(testing::rows(&resumed, table), testing::rows(&unbroken, table), "{table:?} resumed after hour {stop}");
         }
-        assert_eq!(
-            testing::listed(&resumed, TableId::PowerSpendDays),
-            testing::listed(&unbroken, TableId::PowerSpendDays),
-            "PowerSpendDays listed rows resumed after hour {stop}"
-        );
+        for table in [TableId::PowerSpendDays, TableId::PowerSpendPayments, TableId::PowerSpendGains] {
+            assert_eq!(
+                testing::listed(&resumed, table),
+                testing::listed(&unbroken, table),
+                "{table:?} listed rows resumed after hour {stop}"
+            );
+        }
     }
 }
 
@@ -929,11 +1070,12 @@ fn its_blob_holds_hours_links_recovery_settled_days_and_open_batches_and_a_damag
         settled: [(1, runs), (2, DayRuns(vec![(48, 48)]))].into(),
         item_days: [((10, POLITICAL, 0), ItemDays { counted: item_counted, uncovered: item_uncovered })].into(),
         batches: [(key, batch)].into(),
+        seen_changes: [(1, (1, 5))].into(),
         ..PowerLedger::default()
     };
     let mut blob = Bytes::new();
     ledger.save(&mut blob).unwrap();
-    assert!(blob.bytes().len() <= 80, "two hours, a flag, links, mismatch, settled runs, item days and one open batch");
+    assert!(blob.bytes().len() <= 96, "two hours, a flag, links, mismatch, settled runs, item days, one open batch and seen changes");
     let mut loaded = PowerLedger::default();
     loaded.load(blob.bytes()).unwrap();
     assert!(loaded.rebuild && loaded.recover);
@@ -943,6 +1085,7 @@ fn its_blob_holds_hours_links_recovery_settled_days_and_open_batches_and_a_damag
     assert_eq!(loaded.settled, ledger.settled);
     assert_eq!(loaded.item_days, ledger.item_days);
     assert_eq!(loaded.batches, ledger.batches);
+    assert_eq!(loaded.seen_changes, ledger.seen_changes);
     assert_eq!(loaded.raw_batches(1), [key]);
     assert_eq!(loaded.holder_batches(10), [key]);
     assert_eq!(loaded.aliases.get(&10).map(Vec::as_slice), Some(&[1, 2][..]), "the holders are rebuilt from the links");
@@ -1050,12 +1193,13 @@ fn setup_base(store: &mut Store, hour: i32, countries: &[(u32, u32)], witnessed:
     }
 }
 
-fn run_custom(end: i32, f: impl Fn(&mut Store, i32)) -> (Store, Writers) {
-    let (mut store, mut writers) = (testing::store(), writers());
+fn run_custom(end: i32, f: impl Fn(&mut Store, i32)) -> (LandedLogs, Writers) {
+    let (mut logged, mut writers) = (LandedLogs::new(testing::store()), writers());
     for at in 0..=end {
-        step_with(&mut store, &mut writers, at, |s, h| f(s, h));
+        step_with(&mut logged.store, &mut writers, at, |s, h| f(s, h));
+        logged.record_landed_rows();
     }
-    (store, writers)
+    (logged, writers)
 }
 
 fn assert_resumes_match(stops: &[i32], end: i32, f: impl Fn(&mut Store, i32)) {
@@ -1073,11 +1217,13 @@ fn assert_resumes_match(stops: &[i32], end: i32, f: impl Fn(&mut Store, i32)) {
         for table in TABLES.iter().map(|output| output.table()) {
             assert_eq!(testing::rows(&resumed, table), testing::rows(&unbroken, table), "{table:?} resumed after hour {stop}");
         }
-        assert_eq!(
-            testing::listed(&resumed, TableId::PowerSpendDays),
-            testing::listed(&unbroken, TableId::PowerSpendDays),
-            "PowerSpendDays listed rows resumed after hour {stop}"
-        );
+        for table in [TableId::PowerSpendDays, TableId::PowerSpendPayments, TableId::PowerSpendGains] {
+            assert_eq!(
+                testing::listed(&resumed, table),
+                testing::listed(&unbroken, table),
+                "{table:?} listed rows resumed after hour {stop}"
+            );
+        }
     }
 }
 
@@ -1123,6 +1269,23 @@ fn late_revision_of_a_settled_day_does_not_settle_again() {
                 put_daily(store, hour, &daily(72, 3 * Q, Q / 4, 72));
                 testing::put(store, TableId::CountryPowerDailyCosts, &cost(72, 0, PowerDailyCostKind::Relation, Q / 4, 72), TEXTS).unwrap();
             }
+            120 => {
+                put_daily(store, hour, &daily(120, 3 * Q, Q / 2 - Q / 10, 120));
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 0, PowerDailyCostKind::Relation, Q / 2, 120), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 1, PowerDailyCostKind::MioResearch, -Q / 10, 120), TEXTS).unwrap();
+            }
+            143 => {
+                store.status(TableId::CountryLinks.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
+            }
+            144 => {
+                complete(store, TableId::CountryLinks);
+                store.status(TableId::CountryPowerChanges.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
+                store.status(TableId::CountryPowerDailyCosts.index(), Status::Truncated { missing: 1 }, true, Some(hour), false).unwrap();
+            }
+            145 => {
+                complete(store, TableId::CountryPowerChanges);
+                complete(store, TableId::CountryPowerDailyCosts);
+            }
             _ => {}
         }
     };
@@ -1151,6 +1314,11 @@ fn late_revision_of_a_settled_day_does_not_settle_again() {
     );
     let (withheld, _) = run_custom(96, scenario);
     assert_eq!(
+        withheld.view(TableId::PowerSpendDays.index()).status(),
+        Status::Unavailable { reason: 1 },
+        "an unavailable midnight roll hour still marks PowerSpendDays unavailable"
+    );
+    assert_eq!(
         (spend(&withheld, 10, POLITICAL, 0, "days"), spend(&withheld, 10, POLITICAL, 0, "day_payments"), spend(&withheld, 10, POLITICAL, 0, "day_unknown"), spend(&withheld, 10, POLITICAL, 0, "day_charge")),
         (Some(2), Some(2), Some(1), Some(Q / 2)),
         "day 72 closes as unknown while recovery waits for daily costs"
@@ -1163,7 +1331,23 @@ fn late_revision_of_a_settled_day_does_not_settle_again() {
             "a late revision after unknown-withheld settlement does not settle day 72 again ({name})"
         );
     }
-    assert_resumes_match(&[48, 49, 96], 97, scenario);
+    let (withheld_both, _) = run_custom(144, scenario);
+    assert_eq!(
+        withheld_both.view(TableId::PowerSpendDays.index()).status(),
+        Status::Unavailable { reason: 1 },
+        "simultaneous changes unavailability and daily-cost truncation still marks PowerSpendDays unavailable"
+    );
+    assert_eq!(
+        withheld_both.view(TableId::PowerSpendPayments.index()).status(),
+        Status::Unavailable { reason: 1 },
+        "CountryPowerChanges unavailability still marks PowerSpendPayments unavailable even when an unknown negative daily credit lands"
+    );
+    assert_eq!(
+        (spend(&withheld_both, 10, POLITICAL, 0, "days"), spend(&withheld_both, 10, POLITICAL, 0, "day_unknown"), spend(&withheld_both, 10, POLITICAL, 1, "unknown")),
+        (Some(3), Some(2), Some(1)),
+        "day 120 still lands both its unknown positive day and its unknown negative credit"
+    );
+    assert_resumes_match(&[48, 49, 96, 144], 145, scenario);
 }
 
 #[test]
@@ -1216,7 +1400,9 @@ fn no_holder_identity_is_followed_across_unlink_publish_and_relink() {
         }
     };
     let held = |store: &Store, holder: u32| keys(store, TableId::PowerDayParts).into_iter().filter(|&key| (key >> 40) as u32 == holder).collect::<Vec<_>>();
-    let totals_of = |store: &Store, holder: u32| keys(store, TableId::PowerSpendTotals).into_iter().filter(|&key| (key >> 40) as u32 == holder && key as u32 != Total::GAINS).collect::<Vec<_>>();
+    let has_holder_activity = |logged: &LandedLogs, holder: u32| {
+        logged.days.keys().any(|&(h, _, _)| h == holder) || logged.payments.keys().any(|&(h, _, _)| h == holder)
+    };
     let (h25, _) = run_custom(25, scenario);
     assert!(held(&h25, NONE).is_empty(), "country 2 moved from NONE to 20 and country 1's link loss opened nothing under NONE");
     assert_eq!(cell::<Part>(&h25, TableId::PowerDayParts, part_key(20, POLITICAL, 0), "spent"), Some(Q / 2), "country 2's batch moved from NONE to 20 without republishing");
@@ -1228,14 +1414,14 @@ fn no_holder_identity_is_followed_across_unlink_publish_and_relink() {
     assert!(held(&h27, NONE).is_empty(), "relinking and publishing withdraws the copy under NONE");
     assert_eq!(cell::<Part>(&h27, TableId::PowerDayParts, part_key(10, POLITICAL, 0), "spent"), Some(Q / 5));
     let (h48, _) = run_custom(48, scenario);
-    assert!(totals_of(&h48, NONE).is_empty(), "nothing settles under NONE once both countries linked");
+    assert!(!has_holder_activity(&h48, NONE), "nothing settles under NONE once both countries linked");
     assert_eq!((spend(&h48, 10, POLITICAL, 0, "days"), spend(&h48, 10, POLITICAL, 0, "day_payments"), spend(&h48, 10, POLITICAL, 0, "day_charge")), (Some(1), Some(1), Some(Q / 5)));
     assert_eq!((spend(&h48, 20, POLITICAL, 0, "days"), spend(&h48, 20, POLITICAL, 0, "day_payments"), spend(&h48, 20, POLITICAL, 0, "day_charge")), (Some(1), Some(1), Some(Q / 2)));
     let (h51, _) = run_custom(51, scenario);
     assert!(held(&h51, NONE).is_empty(), "relinking to a different holder moves the unlinked batch from NONE");
     assert_eq!(cell::<Part>(&h51, TableId::PowerDayParts, part_key(30, POLITICAL, 0), "spent"), Some(Q / 3));
     let (h72, _) = run_custom(72, scenario);
-    assert!(totals_of(&h72, NONE).is_empty(), "nothing settles under NONE for day 48 either");
+    assert!(!has_holder_activity(&h72, NONE), "nothing settles under NONE for day 48 either");
     assert_eq!((spend(&h72, 10, POLITICAL, 0, "days"), spend(&h72, 10, POLITICAL, 0, "day_charge")), (Some(1), Some(Q / 5)), "holder 10 did not settle day 48");
     assert_eq!((spend(&h72, 30, POLITICAL, 0, "days"), spend(&h72, 30, POLITICAL, 0, "day_payments"), spend(&h72, 30, POLITICAL, 0, "day_charge")), (Some(1), Some(1), Some(Q / 4)));
     assert_resumes_match(&[24, 26, 50], 72, scenario);
@@ -1471,12 +1657,12 @@ fn unlinked_deletions_blocked_unlinks_and_same_holder_relinks_follow_the_batch()
     let view = h27.view(TableId::PowerDayParts.index());
     assert_eq!(view.bool(column::<Part>("covered"), view.slot(part_key(30, POLITICAL, 0)).expect("a row")), Some(false), "while preserving the coverage break from the link loss");
     let (h48, _) = run_custom(48, scenario);
-    assert!(h48.view(TableId::PowerSpendTotals.index()).slot(total_key(10, POLITICAL, 1)).is_none(), "withdrawn item contributes zero payments on holder 10");
-    assert!(h48.view(TableId::PowerSpendTotals.index()).slot(total_key(NONE, POLITICAL, 1)).is_none(), "and zero payments on NONE");
+    assert!(!h48.has_item_activity(10, POLITICAL, 1), "withdrawn item contributes zero payments on holder 10");
+    assert!(!h48.has_item_activity(NONE, POLITICAL, 1), "and zero payments on NONE");
     assert_eq!((spend(&h48, NONE, POLITICAL, 0, "day_payments"), spend(&h48, NONE, POLITICAL, 0, "day_charge")), (Some(2), Some(Q / 4 + Q / 2)));
     assert_eq!((spend(&h48, 30, POLITICAL, 0, "day_payments"), spend(&h48, 30, POLITICAL, 0, "day_charge"), spend(&h48, 30, POLITICAL, 0, "day_unknown")), (Some(1), Some(Q / 2), Some(0)));
     let (h72, _) = run_custom(72, scenario);
-    assert!(h72.view(TableId::PowerSpendTotals.index()).slot(total_key(10, POLITICAL, 0)).is_none(), "midnight recovery with unlink and revised write settles no unknown payment on holder 10");
+    assert!(!h72.has_item_activity(10, POLITICAL, 0), "midnight recovery with unlink and revised write settles no unknown payment on holder 10");
     assert_eq!(
         (spend(&h72, NONE, POLITICAL, 0, "days"), spend(&h72, NONE, POLITICAL, 0, "day_payments"), spend(&h72, NONE, POLITICAL, 0, "day_charge"), spend(&h72, NONE, POLITICAL, 0, "day_unknown")),
         (Some(2), Some(3), Some(Q / 4 + Q / 2 + Q / 3), Some(0)),
@@ -1531,7 +1717,7 @@ fn confirmed_empty_days_from_outset_and_zero_revision_recovery_reject_stale_revi
     };
     let (h48, _) = run_custom(48, scenario);
     assert!(
-        h48.view(TableId::PowerSpendTotals.index()).slot(total_key(10, POLITICAL, 0)).is_none(),
+        !h48.has_item_activity(10, POLITICAL, 0),
         "a fresh zero-cost daily row with an empty cost table confirms day 24 empty and blocks stale revisions"
     );
     assert_eq!(
@@ -1541,7 +1727,7 @@ fn confirmed_empty_days_from_outset_and_zero_revision_recovery_reject_stale_revi
     );
     let (h49, _) = run_custom(49, scenario);
     assert!(
-        h49.view(TableId::PowerSpendTotals.index()).slot(total_key(20, POLITICAL, 0)).is_none(),
+        !h49.has_item_activity(20, POLITICAL, 0),
         "a positive cost revised to zero during recovery confirms day 24 empty and blocks stale revisions"
     );
     assert_resumes_match(&[24, 25, 26, 48], 49, scenario);
@@ -1768,7 +1954,7 @@ fn ordinary_zero_revision_with_late_witness_confirms_empty_and_blocks_stale_revi
     };
     let (h48, _) = run_custom(48, scenario);
     assert!(
-        h48.view(TableId::PowerSpendTotals.index()).slot(total_key(10, POLITICAL, 0)).is_none(),
+        !h48.has_item_activity(10, POLITICAL, 0),
         "an ordinary explicit-zero revision with a fresh daily zero and current-hour cost witness confirms day 24 empty even when spending was not covered since midnight"
     );
     assert_resumes_match(&[27], 48, scenario);
@@ -1809,12 +1995,12 @@ fn midnight_recovery_deletion_only_with_unlink_moves_survivor_and_withdraws_dele
     };
     let (h48, _) = run_custom(48, scenario);
     assert!(
-        h48.view(TableId::PowerSpendTotals.index()).slot(total_key(10, POLITICAL, 0)).is_none()
-            && h48.view(TableId::PowerSpendTotals.index()).slot(total_key(10, POLITICAL, 1)).is_none(),
+        !h48.has_item_activity(10, POLITICAL, 0)
+            && !h48.has_item_activity(10, POLITICAL, 1),
         "deletion-only midnight recovery with unlink settles nothing on the old holder"
     );
     assert!(
-        h48.view(TableId::PowerSpendTotals.index()).slot(total_key(NONE, POLITICAL, 1)).is_none(),
+        !h48.has_item_activity(NONE, POLITICAL, 1),
         "tail item B is withdrawn rather than settled under NONE"
     );
     assert_eq!(
@@ -1908,11 +2094,11 @@ fn re_read_unchanged_daily_zero_confirms_empty_when_witness_or_recovery_arrives(
     );
     let (h48, _) = run_custom(48, scenario);
     assert!(
-        h48.view(TableId::PowerSpendTotals.index()).slot(total_key(10, POLITICAL, 0)).is_none(),
+        !h48.has_item_activity(10, POLITICAL, 0),
         "an unchanged daily zero confirmed once its witness arrives must block stale post-midnight revisions"
     );
     assert!(
-        h48.view(TableId::PowerSpendTotals.index()).slot(total_key(20, POLITICAL, 0)).is_none(),
+        !h48.has_item_activity(20, POLITICAL, 0),
         "a staggered daily zero landing during a blocked hour and re-read unchanged on recovery must block stale post-midnight revisions"
     );
     assert_eq!(
@@ -1956,11 +2142,61 @@ fn staggered_zero_confirmation_clears_mismatch_and_blocks_stale_revisions() {
     );
     let (h48, _) = run_custom(48, scenario);
     assert!(
-        h48.view(TableId::PowerSpendTotals.index()).slot(total_key(10, POLITICAL, 0)).is_none(),
+        !h48.has_item_activity(10, POLITICAL, 0),
         "a stale positive revision after midnight must not settle a day confirmed empty via a staggered zero update"
     );
     assert!(keys(&h48, TableId::PowerSpendDays).is_empty());
     assert_resumes_match(&[24, 26, 27], 48, scenario);
+}
+
+#[test]
+fn daily_costs_unavailable_keeps_payments_and_gains_complete_and_logs_instant_gains() {
+    let scenario = |store: &mut Store, hour: i32| {
+        setup_base(store, hour, &[(1, 10)], &[1]);
+        let held = testing::rows(store, TableId::CountryPowerChanges);
+        for (key, _) in held {
+            testing::remove(store, TableId::CountryPowerChanges, key).unwrap();
+        }
+        if hour == 5 {
+            store.status(TableId::CountryPowerDailyCosts.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
+            testing::put(store, TableId::CountryPowerChanges, &idea(1, 10, 5, 7, Q), TEXTS).unwrap();
+            testing::put(
+                store,
+                TableId::CountryPowerChanges,
+                &CountryPowerChangeRow {
+                    country: 1,
+                    sequence: 11,
+                    epoch: 1,
+                    hour: 5,
+                    currency: PowerCurrency::Political,
+                    operation: PowerOperation::Add,
+                    balance_before_raw: 1995 * Q,
+                    realized_delta_raw: Recorded::Value(5 * Q),
+                    requested_delta_raw: Some(20 * Q),
+                    cause: PowerCause::Focus,
+                    site: PowerSite::AddPoliticalPower,
+                    ..Default::default()
+                },
+                TEXTS,
+            )
+            .unwrap();
+        } else if hour == 6 {
+            store.status(TableId::CountryPowerDailyCosts.index(), Status::Complete, true, Some(hour), true).unwrap();
+        }
+    };
+    let (h5, _) = run_custom(5, scenario);
+    assert_eq!(h5.view(TableId::PowerSpendDays.index()).status(), Status::Unavailable { reason: 1 });
+    assert_eq!(h5.view(TableId::PowerDayParts.index()).status(), Status::Unavailable { reason: 1 });
+    assert_eq!(h5.view(TableId::PowerSpendPayments.index()).status(), Status::Complete, "CountryPowerDailyCosts unavailability must not drop one-off payments");
+    assert_eq!(h5.view(TableId::PowerSpendGains.index()).status(), Status::Complete, "CountryPowerDailyCosts unavailability must not drop gains");
+    assert_eq!(spend(&h5, 10, POLITICAL, 0, "payments"), Some(1));
+    assert_eq!(spend(&h5, 10, POLITICAL, 0, "known"), Some(Q));
+    assert_eq!(spend(&h5, 10, POLITICAL, Total::GAINS, "gained"), Some(20 * Q));
+    assert_eq!(spend(&h5, 10, POLITICAL, Total::GAINS, "capped"), Some(15 * Q));
+    let (h6, _) = run_custom(6, scenario);
+    assert!(keys(&h6, TableId::PowerSpendPayments).is_empty(), "log rows live only their read hour");
+    assert!(keys(&h6, TableId::PowerSpendGains).is_empty(), "gain log rows live only their read hour");
+    assert_resumes_match(&[5], 6, scenario);
 }
 
 #[test]
@@ -2041,4 +2277,289 @@ fn shared_holder_mismatch_stays_isolated_and_overflowing_sum_is_uncovered() {
     let view27 = h27.view(TableId::PowerDayParts.index());
     assert_eq!(view27.bool(column::<Part>("covered"), view27.slot(part_key(10, POLITICAL, 0)).expect("a row")), Some(true), "and country 2's own balanced part on holder 10 kept its coverage");
     assert_resumes_match(&[24, 25, 26], 27, scenario);
+}
+
+#[test]
+fn republished_changes_are_deduped_large_gains_split_daily_gains_survive_change_outage_and_idle_stays_unavailable() {
+    let half = 1_i64 << 62;
+    let grant = |seq: u64, amount: i64| CountryPowerChangeRow {
+        country: 1,
+        epoch: 7,
+        sequence: seq,
+        hour: 3,
+        currency: PowerCurrency::Political,
+        operation: PowerOperation::Add,
+        balance_before_raw: 0,
+        realized_delta_raw: Recorded::Value(amount),
+        requested_delta_raw: Some(amount),
+        cause: PowerCause::Focus,
+        site: PowerSite::AddPoliticalPower,
+        ..Default::default()
+    };
+    let charge_row = |seq: u64, amount: i64| CountryPowerChangeRow {
+        country: 1,
+        epoch: 7,
+        sequence: seq,
+        hour: 2,
+        currency: PowerCurrency::Political,
+        operation: PowerOperation::Subtract,
+        balance_before_raw: 100 * Q,
+        realized_delta_raw: Recorded::Value(-amount),
+        requested_delta_raw: Some(-amount),
+        cause: PowerCause::Decision,
+        site: PowerSite::AddPoliticalPower,
+        ..Default::default()
+    };
+    let scenario = |store: &mut Store, hour: i32| {
+        setup_base(store, hour, &[(1, 10)], &[1]);
+        match hour {
+            2 => {
+                testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &charge_row(11, 25 * Q), TEXTS).unwrap();
+            }
+            3 => {
+                testing::remove(store, TableId::CountryPowerChanges, (1_u128 << 64) | 10).unwrap();
+                testing::remove(store, TableId::CountryPowerChanges, (1_u128 << 64) | 11).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &grant(20, half), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &grant(21, half), TEXTS).unwrap();
+            }
+            4 => {
+                testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &charge_row(11, 25 * Q), TEXTS).unwrap();
+            }
+            _ => {}
+        }
+    };
+    let (h3, _) = run_custom(3, scenario);
+    let gain_keys = keys(&h3, TableId::PowerSpendGains);
+    assert_eq!(gain_keys.len(), 2, "two 2^62 gains in one bucket split across two PowerSpendGains entries instead of overflowing to NotRecorded");
+    let total_gained: i128 = gain_keys
+        .iter()
+        .map(|&key| i128::from(cell::<SpendGain>(&h3, TableId::PowerSpendGains, key, "gained").expect("each split entry is exact")))
+        .sum();
+    assert_eq!(total_gained, i128::from(half) * 2);
+    assert_eq!(h3.gains[&(10, POLITICAL)].gained, i128::from(5 * Q) + i128::from(half) * 2);
+    let (h4, _) = run_custom(4, scenario);
+    assert!(keys(&h4, TableId::PowerSpendGains).is_empty(), "republishing an instant gain with the same country, sequence and epoch must not count it twice");
+    assert!(keys(&h4, TableId::PowerSpendPayments).is_empty(), "republishing a charge with the same country, sequence and epoch must not count it twice");
+    let charge_ordinal = keys(&h4, TableId::PowerItems)
+        .into_iter()
+        .find(|&key| (key >> 32) as u32 == 10 && cell::<Item>(&h4, TableId::PowerItems, key, "cause") == Some(i64::from(PowerCause::Decision as u16)))
+        .expect("decision item recorded") as u32;
+    assert_eq!(spend(&h4, 10, POLITICAL, charge_ordinal, "payments"), Some(1));
+    assert_eq!(spend(&h4, 10, POLITICAL, charge_ordinal, "known"), Some(25 * Q));
+    assert_resumes_match(&[2, 3], 4, scenario);
+
+    let daily_during_outage = |store: &mut Store, hour: i32| {
+        setup_base(store, hour, &[(1, 10)], &[1]);
+        if hour == 24 {
+            put_daily(store, hour, &daily(24, 3 * Q, Q, 50));
+        } else if hour == 48 {
+            store.status(TableId::CountryPowerChanges.index(), Status::Unavailable { reason: 1 }, false, None, false).unwrap();
+            put_daily(store, hour, &daily(48, 4 * Q, Q, 60));
+        }
+    };
+    let (d48, _) = run_custom(48, daily_during_outage);
+    assert_eq!(d48.view(TableId::PowerSpendPayments.index()).status(), Status::Unavailable { reason: 1 });
+    assert_eq!(d48.view(TableId::PowerSpendGains.index()).status(), Status::Complete, "a closed daily gain keeps PowerSpendGains readable despite CountryPowerChanges outage");
+    assert_eq!(spend(&d48, 10, POLITICAL, Total::GAINS, "gained"), Some(3 * Q));
+
+    let idle_unavailable = |store: &mut Store, hour: i32| {
+        setup_base(store, hour, &[], &[]);
+        if hour >= 2 {
+            store.status(TableId::CountryPowerChanges.index(), Status::Unavailable { reason: 1 }, false, None, false).unwrap();
+        }
+    };
+    let (u1, _) = run_custom(1, idle_unavailable);
+    for derived in [TableId::PowerDayParts, TableId::PowerSpendDays, TableId::PowerSpendPayments, TableId::PowerSpendGains] {
+        assert_eq!(u1.view(derived.index()).status(), Status::Complete, "writer runs cleanly and becomes idle at hour 1");
+    }
+    let (u3, _) = run_custom(3, idle_unavailable);
+    for derived in [TableId::PowerDayParts, TableId::PowerSpendDays, TableId::PowerSpendPayments, TableId::PowerSpendGains] {
+        assert_eq!(
+            u3.view(derived.index()).status(),
+            Status::Unavailable { reason: 1 },
+            "second consecutive idle unavailable hour must keep {derived:?} unavailable"
+        );
+    }
+
+    let startup_outage = |store: &mut Store, hour: i32| {
+        let complete = |store: &mut Store, table: TableId| store.status(table.index(), Status::Complete, true, Some(hour), true).unwrap();
+        match hour {
+            0 => {
+                for table in [TableId::Countries, TableId::CountryPowerDaily, TableId::CountryPowerDailyCosts, TableId::CountryCommandPower, TableId::CountryPowerChanges, TableId::PoliticsCaptureCoverage] {
+                    complete(store, table);
+                }
+                testing::put(store, TableId::Countries, &CountryRow { id: 1, canonical_slot: 10, ..Default::default() }, TEXTS).unwrap();
+                store.status(TableId::CountryLinks.index(), Status::Unavailable { reason: 1 }, false, None, false).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+            }
+            1 => {
+                complete(store, TableId::CountryLinks);
+                testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 1, canonical_slot: 10 }, TEXTS).unwrap();
+                testing::remove(store, TableId::CountryPowerChanges, (1_u128 << 64) | 10).unwrap();
+            }
+            2 => {
+                testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+            }
+            _ => {}
+        }
+    };
+    let (s0, _) = run_custom(0, startup_outage);
+    assert_eq!(s0.view(TableId::PowerSpendGains.index()).status(), Status::Unavailable { reason: 1 });
+    let (s2, _) = run_custom(2, startup_outage);
+    assert!(keys(&s2, TableId::PowerSpendGains).is_empty(), "a pre-attachment backlog grant captured while CountryLinks was unavailable on hour 0 must not be counted if republished after recovery");
+    assert_eq!(spend(&s2, 10, POLITICAL, Total::GAINS, "gained"), None);
+    assert_resumes_match(&[0, 1], 2, startup_outage);
+
+    let later_outage = |store: &mut Store, hour: i32| {
+        let complete = |store: &mut Store, table: TableId| store.status(table.index(), Status::Complete, true, Some(hour), true).unwrap();
+        match hour {
+            0 => {
+                setup_base(store, hour, &[(1, 10)], &[1]);
+            }
+            1 => {
+                store.status(TableId::Countries.index(), Status::Unavailable { reason: 1 }, false, None, false).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+            }
+            2 => {
+                complete(store, TableId::Countries);
+                testing::put(store, TableId::Countries, &CountryRow { id: 1, canonical_slot: 20, ..Default::default() }, TEXTS).unwrap();
+                testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 1, canonical_slot: 20 }, TEXTS).unwrap();
+                testing::remove(store, TableId::CountryPowerChanges, (1_u128 << 64) | 10).unwrap();
+            }
+            3 => {
+                testing::put(store, TableId::CountryPowerChanges, &grant(10, 5 * Q), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &grant(11, 7 * Q), TEXTS).unwrap();
+            }
+            _ => {}
+        }
+    };
+    let (l1, _) = run_custom(1, later_outage);
+    assert_eq!(l1.view(TableId::PowerSpendGains.index()).status(), Status::Unavailable { reason: 1 });
+    let (l3, _) = run_custom(3, later_outage);
+    let l3_gains = keys(&l3, TableId::PowerSpendGains);
+    assert_eq!(l3_gains.len(), 1, "only the fresh grant after recovery should be emitted for holder 20");
+    assert_eq!(cell::<SpendGain>(&l3, TableId::PowerSpendGains, l3_gains[0], "gained"), Some(7 * Q));
+    assert_eq!(spend(&l3, 10, POLITICAL, Total::GAINS, "gained"), None);
+    assert_eq!(spend(&l3, 20, POLITICAL, Total::GAINS, "gained"), Some(7 * Q));
+    assert_resumes_match(&[0, 1, 2], 3, later_outage);
+}
+
+#[test]
+fn seen_changes_high_water_mark_bounds_saved_state_size_and_round_trips() {
+    let mut ledger = PowerLedger::default();
+    assert!(ledger.see_change(1, 1, 5));
+    let mut small = Bytes::new();
+    ledger.save(&mut small).unwrap();
+    for step in 2..=200_u64 {
+        assert!(ledger.see_change(1, 1, step * 5));
+    }
+    assert_eq!(ledger.seen_changes.len(), 1, "many spaced sequences for one country keep a single mark");
+    assert_eq!(ledger.seen_changes.get(&1), Some(&(1, 1000)));
+    let mut after_many = Bytes::new();
+    ledger.save(&mut after_many).unwrap();
+    assert!(
+        after_many.bytes().len() <= small.bytes().len() + 4,
+        "saved state size must stay bounded with event count: small={} after_many={}",
+        small.bytes().len(),
+        after_many.bytes().len()
+    );
+    let mut loaded = PowerLedger::default();
+    loaded.load(after_many.bytes()).unwrap();
+    assert_eq!(loaded.seen_changes, ledger.seen_changes);
+
+    let mut dup = Bytes::new();
+    for _ in 0..8 {
+        dup.varint(0).unwrap();
+    }
+    dup.varint(2).unwrap();
+    for _ in 0..2 {
+        dup.varint(1).unwrap();
+        dup.varint(1).unwrap();
+        dup.varint(5).unwrap();
+    }
+    assert!(loaded.load(dup.bytes()).is_err(), "duplicate country mark in saved state must fail load");
+}
+
+#[test]
+fn seen_changes_ordering_rejects_at_or_below_mark_and_accepts_newer_epoch_lower_sequence() {
+    let grant = |epoch: u64, sequence: u64, amount: i64| CountryPowerChangeRow {
+        country: 1,
+        sequence,
+        epoch,
+        hour: 1,
+        currency: PowerCurrency::Political,
+        operation: PowerOperation::Add,
+        balance_before_raw: 0,
+        realized_delta_raw: Recorded::Value(amount),
+        requested_delta_raw: Some(amount),
+        cause: PowerCause::Focus,
+        site: PowerSite::AddPoliticalPower,
+        ..Default::default()
+    };
+    let decision = |epoch: u64, sequence: u64, cost_raw: i64| CountryPowerChangeRow {
+        country: 1,
+        sequence,
+        epoch,
+        hour: 1,
+        currency: PowerCurrency::Political,
+        operation: PowerOperation::Subtract,
+        balance_before_raw: cost_raw,
+        realized_delta_raw: Recorded::Value(-cost_raw),
+        requested_delta_raw: Some(-cost_raw),
+        cause: PowerCause::Decision,
+        site: PowerSite::AddPoliticalPower,
+        identity: PowerIdentity { item_token: Some(7), ..Default::default() },
+        ..Default::default()
+    };
+    let scenario = |store: &mut Store, hour: i32| {
+        setup_base(store, hour, &[(1, 10)], &[1]);
+        match hour {
+            1 => {
+                testing::put(store, TableId::CountryPowerChanges, &grant(2, 50, 3 * Q), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &decision(2, 55, 10 * Q), TEXTS).unwrap();
+            }
+            2 => {
+                testing::remove(store, TableId::CountryPowerChanges, (1_u128 << 64) | 50).unwrap();
+                testing::remove(store, TableId::CountryPowerChanges, (1_u128 << 64) | 55).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &grant(2, 55, 9 * Q), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &grant(2, 20, 8 * Q), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &decision(2, 15, 7 * Q), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &grant(1, 999, 6 * Q), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &decision(1, 998, 5 * Q), TEXTS).unwrap();
+            }
+            3 => {
+                for seq in [15_u64, 20, 55, 998, 999] {
+                    testing::remove(store, TableId::CountryPowerChanges, (1_u128 << 64) | u128::from(seq)).unwrap();
+                }
+                testing::put(store, TableId::CountryPowerChanges, &grant(3, 5, 4 * Q), TEXTS).unwrap();
+                testing::put(store, TableId::CountryPowerChanges, &decision(3, 10, 15 * Q), TEXTS).unwrap();
+            }
+            _ => {}
+        }
+    };
+    let (h1, _) = run_custom(1, scenario);
+    let decision_ordinal = keys(&h1, TableId::PowerItems)
+        .into_iter()
+        .filter(|&key| (key >> 32) as u32 == 10 && cell::<Item>(&h1, TableId::PowerItems, key, "cause") == Some(PowerCause::Decision as i64))
+        .map(|key| key as u32)
+        .next()
+        .expect("decision item");
+    assert_eq!(spend(&h1, 10, POLITICAL, Total::GAINS, "gained"), Some(3 * Q));
+    assert_eq!(spend(&h1, 10, POLITICAL, decision_ordinal, "payments"), Some(1));
+    assert_eq!(spend(&h1, 10, POLITICAL, decision_ordinal, "known"), Some(10 * Q));
+
+    let (h2, _) = run_custom(2, scenario);
+    assert!(keys(&h2, TableId::PowerSpendGains).is_empty(), "same-epoch equal/lower sequence and older-epoch rows must not emit gains");
+    assert!(keys(&h2, TableId::PowerSpendPayments).is_empty(), "same-epoch equal/lower sequence and older-epoch rows must not emit payments");
+    assert_eq!(spend(&h2, 10, POLITICAL, Total::GAINS, "gained"), Some(3 * Q));
+    assert_eq!(spend(&h2, 10, POLITICAL, decision_ordinal, "payments"), Some(1));
+    assert_eq!(spend(&h2, 10, POLITICAL, decision_ordinal, "known"), Some(10 * Q));
+
+    let (h3, _) = run_custom(3, scenario);
+    assert_eq!(spend(&h3, 10, POLITICAL, Total::GAINS, "gained"), Some(7 * Q), "a newer epoch with a lower sequence must be counted");
+    assert_eq!(spend(&h3, 10, POLITICAL, decision_ordinal, "payments"), Some(2));
+    assert_eq!(spend(&h3, 10, POLITICAL, decision_ordinal, "known"), Some(25 * Q));
+    assert_resumes_match(&[1, 2], 3, scenario);
 }

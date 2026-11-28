@@ -34,7 +34,7 @@ use crate::{
     value::{EncodeValue, Value},
 };
 
-pub const LOGS: [TableId; 17] = [
+pub const LOGS: [TableId; 19] = [
     TableId::CombatLogBattleModifiers,
     TableId::OperationCompletions,
     TableId::PeaceSettlements,
@@ -52,6 +52,8 @@ pub const LOGS: [TableId; 17] = [
     TableId::LeaderTraitGains,
     TableId::LeaderCommands,
     TableId::PowerSpendDays,
+    TableId::PowerSpendPayments,
+    TableId::PowerSpendGains,
 ];
 
 pub fn logs() -> [bool; TABLE_COUNT] {
@@ -1001,6 +1003,8 @@ LandDivisionDamage = 525 => LandDivisionDamage(LandDivisionDamageRow),
 }
 derived {
 DivisionKills = 526 => DivisionKill(DivisionKillsRow),
+PowerSpendPayments = 527 => PowerSpendPayment(PowerSpendPaymentRow),
+PowerSpendGains = 528 => PowerSpendGain(PowerSpendGainRow),
 }
 }
 const VARIANT_STATS_PRE_WITNESS_SCHEMA: [Kind; 13] = [

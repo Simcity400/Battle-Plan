@@ -56,6 +56,8 @@ replay_rows::row_ops! {
     LeaderTraitGains => LeaderTraitGainRow,
     PowerSpendTotals => PowerSpendTotalRow,
     PowerSpendDays => PowerSpendDayRow,
+    PowerSpendPayments => PowerSpendPaymentRow,
+    PowerSpendGains => PowerSpendGainRow,
     PowerItems => PowerItemRow,
     PowerDayParts => PowerDayPartRow,
     PowerHolds => PowerHoldRow,

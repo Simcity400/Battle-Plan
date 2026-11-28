@@ -90,7 +90,7 @@ fn read(source: &Weak<Source>, mut options: ContentOptions) {
     if let Some(source) = source.upgrade() {
         source.resolve_bound(&mut options);
     }
-    let steps: [fn(&Source, &ContentOptions, Arc<Catalogue>); 4] = [
+    let steps: [fn(&Source, &ContentOptions, Arc<Catalogue>); 5] = [
         |_, _, catalogue| warm_guis(&catalogue),
         |source, _, catalogue| drop(politics_content::warm(source, catalogue)),
         |_, _, catalogue| {
@@ -99,6 +99,11 @@ fn read(source: &Weak<Source>, mut options: ContentOptions) {
             }
         },
         |_, _, catalogue| catalogue.read_readers(),
+        |source, _, catalogue| {
+            if let Some(Ok(content)) = politics_content::warm(source, catalogue) {
+                source.in_scope(|| drop(content.power_content()));
+            }
+        },
     ];
     for step in steps {
         let Some(source) = source.upgrade() else {
@@ -144,6 +149,8 @@ mod tests {
                  NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
             ),
             ("common/ideas/work.txt", "ideas={country={mod_a={}}}"),
+            ("common/buildings/work.txt", "buildings={mod_building={}}"),
+            ("common/terrain/work.txt", "categories={mod_terrain={}}"),
         ];
         all.extend_from_slice(files);
         let (_catalogue, folder) = catalogue::tests::folder_catalogue(&all);
@@ -181,7 +188,8 @@ mod tests {
         let warmed = politics_content::held(&source, &catalogue).expect("read ahead");
         let read = politics_content::politics_content(&source, &options).unwrap();
         assert!(Arc::ptr_eq(&warmed, &read));
-        assert_eq!(politics_content::content_loads(&source), 1);
+        assert!(read.power_content().is_ok());
+        assert_eq!(politics_content::content_loads(&source), 2);
         assert!(catalogue.guis_loaded());
         assert!(catalogue.scripted_content().unwrap().effects_read());
         assert!(catalogue.readers_read());
