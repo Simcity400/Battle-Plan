@@ -485,6 +485,7 @@ if (sweep) {
       const framesCell = `${w.main.n} (${ms1(w.seconds)} s)`;
       const notes = [];
       if (w.detail) notes.push(w.detail);
+      if (w.lagReason) notes.push(w.lagReason);
       if (w.belowBaselineNoise) notes.push('below baseline noise');
       if (w.lowFrameCount) notes.push(`low sample: ${w.main.n} frames in ${ms1(w.seconds)} s`);
       if (w.correctnessErrors?.length) notes.push(...w.correctnessErrors);

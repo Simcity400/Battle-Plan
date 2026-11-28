@@ -572,8 +572,10 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
       .map(([product, count]) => [product, seconds > 0 ? count / seconds : count]));
     const requestsPerSec = seconds > 0 ? liveQueries.length / seconds : null;
     const cacheHitsPerSec = seconds > 0 ? cacheHits.length / seconds : null;
-    let lagP95Hours = null, futureFrames = 0;
-    if (playingPictures.length) {
+    let lagP95Hours = null, lagReason = null, futureFrames = 0;
+    if (w.kind === 'map') {
+      lagReason = 'Displayed lag unmeasured because native map status covers only some presented frames';
+    } else if (playingPictures.length) {
       const lags = [];
       for (const r of playingPictures) {
         const target = Math.floor(r.fixedHour ?? r.head);
@@ -637,7 +639,7 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
       seconds, clockHps: clock.hps, main, mainDelta, interval, worker,
       commits, commitsPerSec,
       requests: liveQueries.length, requestsPerSec, requestsByProduct, requestCountsByProduct, cacheHitsPerSec,
-      lagP95Hours, futureFrames,
+      lagP95Hours, ...(lagReason ? { lagReason } : {}), futureFrames,
       exact, exactError, auditSamples: inWindowAudit.length, postWindowAuditErrors,
       lostRecords: lost, complete, pass, correctnessErrors, incompleteReasons: [...new Set(incompleteReasons)],
       belowBaselineNoise, lowFrameCount,

@@ -696,6 +696,18 @@ test('per-widget cost ranking combines net main-thread p95 and drawing-lane serv
   assert.deepEqual(rankWidgetCosts([report.widgets[2], report.widgets[1], report.widgets[0]]).map(w => w.kind),
     ['worker-heavy', 'main-heavy', 'refused-widget']);
 
+  const campaignMap = summarizeWidgetCosts([
+    { ...windows[1], kind: 'map', view: 'default', widget: 'campaign-map' },
+  ], [
+    ...records,
+    { t: 'map_state', at: 6000, view: 'campaign-map', hour: 100, loading: false, blank: false },
+    { t: 'map_state', at: 7500, view: 'campaign-map', hour: 2240, loading: true, blank: false },
+  ], { baselines: [emptyStart, emptyEnd] }).widgets[0];
+  assert.equal(campaignMap.lagP95Hours, null);
+  assert.match(campaignMap.lagReason, /native map/i);
+  assert.equal(campaignMap.exact, 'not-audited');
+  assert.equal(campaignMap.main.n, 40);
+
   const loading = { firstHour: 100, lastHour: 124, frames: 1 };
   const resumed = summarizeWidgetCosts([{ ...windows[0], outcome: 'loading-recovered', loading }], records, { baselines: [emptyStart, emptyEnd] }).widgets[0];
   assert.equal(resumed.outcome, 'loading-recovered');
