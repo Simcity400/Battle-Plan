@@ -2,7 +2,7 @@ use super::{
     DatedGroupFilter, PieceWindow, Sample, SlotIndex, StackInput, TensionValueMode, collect_change_hours, is_complete, lookup_run, lookup_slot,
 };
 use engine_stability::{cthreat_source, cworld_threat};
-use std::collections::{HashMap, VecDeque};
+use std::{borrow::Cow, collections::{HashMap, HashSet, VecDeque}};
 
 const WORLD_SCALE: f64 = (cthreat_source::FIXED_POINT_SCALE / cworld_threat::SCALAR_DIVISOR) as f64;
 const COUNTRY_SCALE: f64 = cthreat_source::FIXED_POINT_SCALE as f64;
@@ -133,6 +133,7 @@ impl Curve {
 pub(super) struct Plot {
     world: Curve,
     slots: HashMap<u32, Curve>,
+    changes: ChangeHours,
 }
 
 impl Plot {
@@ -197,7 +198,8 @@ impl Plot {
             }
         }
         let columns: Vec<_> = shown.iter().map(|slot| &self.slots[slot]).collect();
-        let (hours, reduced) = self.hours(&columns, other, first, last, limit);
+        self.changes.select(first, limit, shown);
+        let (hours, reduced) = self.changes.sample(&self.world, &columns, other, last);
         let sample = |hour, until: Option<i32>| {
             let world = self.world.at(hour);
             let mut raw_sum = Some(0i128);
@@ -250,23 +252,55 @@ impl Plot {
             .collect();
         (samples, reduced, sample(last, None))
     }
+}
 
-    fn hours(&self, columns: &[&Curve], other: bool, first: i32, last: i32, limit: usize) -> (Vec<i32>, bool) {
-        let curves = || std::iter::once(&self.world).chain(columns.iter().copied());
-        let next = |from| curves().filter_map(|curve| curve.next(from)).min().filter(|&at| at <= last);
-        let mut hours = vec![first];
-        let mut hour = first;
-        while let Some(at) = hour.checked_add(1).and_then(next) {
-            hours.push(at);
-            hour = at;
-            if limit >= 4 && hours.len() > limit {
-                break;
+#[derive(Default)]
+struct ChangeHours {
+    first: i32,
+    limit: usize,
+    slots: HashSet<u32>,
+    through: i32,
+    hours: Vec<i32>,
+}
+
+impl ChangeHours {
+    fn select(&mut self, first: i32, limit: usize, slots: &[u32]) {
+        if self.hours.is_empty() || self.first != first || self.limit != limit
+            || self.slots.len() != slots.len() || slots.iter().any(|slot| !self.slots.contains(slot))
+        {
+            self.first = first;
+            self.limit = limit;
+            self.slots.clear();
+            self.slots.extend(slots.iter().copied());
+            self.through = first;
+            self.hours.clear();
+            self.hours.push(first);
+        }
+    }
+
+    fn exact(&mut self, last: i32, mut next: impl FnMut(i32) -> Option<i32>) -> Option<&[i32]> {
+        if last > self.through {
+            let mut hour = self.through;
+            while hour < last && (self.limit < 4 || self.hours.len() <= self.limit) {
+                let Some(at) = hour.checked_add(1).and_then(&mut next).filter(|&at| at <= last) else { break };
+                self.hours.push(at);
+                hour = at;
             }
+            self.through = last;
         }
-        if limit < 4 || hours.len() <= limit {
-            return (hours, false);
+        let count = self.hours.partition_point(|&hour| hour <= last);
+        (self.limit < 4 || count <= self.limit).then_some(&self.hours[..count])
+    }
+
+    fn sample(&mut self, world: &Curve, columns: &[&Curve], other: bool, last: i32) -> (Cow<'_, [i32]>, bool) {
+        let first = self.first;
+        let limit = self.limit;
+        let curves = || std::iter::once(world).chain(columns.iter().copied());
+        let next = |from| curves().filter_map(|curve| curve.next(from)).min();
+        if let Some(hours) = self.exact(last, next) {
+            return (Cow::Borrowed(hours), false);
         }
-        hours.truncate(1);
+        let mut hours = vec![first];
         let step = ((i64::from(last) - i64::from(first)) / limit as i64).max(1);
         let final_hour = curves()
             .filter_map(|curve| {
@@ -275,7 +309,7 @@ impl Plot {
             })
             .max()
             .unwrap_or(first);
-        let mut edge = self.world.rest_edges.partition_point(|&h| h <= first);
+        let mut edge = world.rest_edges.partition_point(|&h| h <= first);
         let mut hour = first;
         while hour < final_hour {
             let mut keep = final_hour;
@@ -289,7 +323,7 @@ impl Plot {
                 }
             }
             while other
-                && let Some(&at) = self.world.rest_edges.get(edge)
+                && let Some(&at) = world.rest_edges.get(edge)
                 && at <= keep
             {
                 edge += 1;
@@ -301,6 +335,40 @@ impl Plot {
             hours.push(keep);
             hour = keep;
         }
-        (hours, true)
+        (Cow::Owned(hours), true)
     }
+}
+
+#[test]
+fn world_tension_reuses_change_hours_across_edges_and_seeks() {
+    use std::cell::Cell;
+
+    let mut changes = ChangeHours::default();
+    let visited = Cell::new(0);
+    let next = |first: i32| {
+        visited.set(visited.get() + 1);
+        Some(first + first.rem_euclid(2))
+    };
+    changes.select(10, 4, &[1, 2]);
+    assert_eq!(changes.exact(14, next), Some([10, 12, 14].as_slice()));
+    assert_eq!(visited.replace(0), 2);
+
+    changes.select(10, 4, &[2, 1]);
+    assert_eq!(changes.exact(16, next), Some([10, 12, 14, 16].as_slice()));
+    assert_eq!(visited.replace(0), 1);
+    assert_eq!(changes.exact(18, next), None);
+    assert_eq!(visited.replace(0), 1);
+
+    assert_eq!(changes.exact(20, next), None);
+    assert_eq!(changes.exact(12, next), Some([10, 12].as_slice()));
+    assert_eq!(changes.exact(24, next), None);
+    assert_eq!(visited.replace(0), 0);
+
+    changes.select(12, 4, &[1, 2]);
+    assert_eq!(changes.exact(16, next), Some([12, 14, 16].as_slice()));
+    assert_eq!(visited.replace(0), 2);
+    changes.select(12, 4, &[2, 3]);
+    assert_eq!(changes.exact(16, |_| None), Some([12].as_slice()));
+    changes.select(12, 5, &[2, 3]);
+    assert_eq!(changes.exact(20, next), Some([12, 14, 16, 18, 20].as_slice()));
 }
