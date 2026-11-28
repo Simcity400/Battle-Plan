@@ -59,6 +59,9 @@ pub struct ShipsSunkTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub classes: Option<Vec<u32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub row_names: Option<bool>,
     pub limit: u32,
 }
 
@@ -85,6 +88,12 @@ pub struct SinkingRow {
     pub sea_zone: Option<String>,
     pub sinking_cause: ShipSinkingAttribution,
     pub battle: ShipSinkingBattle,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub title_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -247,6 +256,8 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
                 sea_zone: (entry.province_present != 0).then(|| named.places.get(&entry.province).cloned()).flatten(),
                 sinking_cause: named.attribution_for(&entry, content, &mut refused),
                 battle,
+                title: None,
+                title_missing: None,
             },
         });
     }
@@ -260,13 +271,13 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
 #[derive(Default)]
 struct Branches(HashMap<u64, (Result<Arc<Catalogue>, String>, Arc<Tail>)>);
 
-struct Prepared {
+pub struct Prepared {
     tail: Arc<Tail>,
     selection: Option<Selection>,
     kinds: Option<Vec<u16>>,
 }
 
-fn prepare(
+pub fn prepare(
     source: &Source,
     query: &Query<'_>,
     load: &LoadContext,
@@ -301,7 +312,7 @@ fn prepare(
     Ok(Prepared { tail, selection, kinds })
 }
 
-fn reply(prepared: &Prepared, holders: &Holders, params: &ShipsSunkTailParams, hour: i32) -> io::Result<ShipsSunkTailReply> {
+pub fn reply(prepared: &Prepared, holders: &Holders, params: &ShipsSunkTailParams, hour: i32) -> io::Result<ShipsSunkTailReply> {
     let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
     let tail = &prepared.tail;
     let answer = tail.index.ask(
@@ -370,7 +381,7 @@ impl Product for ShipsSunkTail {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = ShipsSunkTailParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, offset, classes, "classes[]", limit];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, offset, classes, "classes[]", rowNames, limit];
     type Reply = ShipsSunkTailReply;
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {

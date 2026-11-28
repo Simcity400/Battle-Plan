@@ -1067,12 +1067,16 @@ pub struct Roster {
 }
 
 pub struct DescriptorJob<'a> {
-    descriptors: &'a Descriptors,
+    roster: &'a Roster,
 }
 
 impl DescriptorJob<'_> {
     pub fn view(&self) -> DescriptorView<'_> {
-        self.descriptors.into()
+        (&self.roster.descriptors).into()
+    }
+
+    pub fn refused_declaration(&self, entity: &str) -> Option<String> {
+        self.roster.refused_below(self.view(), entity, &BTreeSet::new())
     }
 }
 
@@ -1089,11 +1093,15 @@ struct ParsedFile {
 
 impl Roster {
     pub fn descriptor_job(&self) -> DescriptorJob<'_> {
-        DescriptorJob { descriptors: &self.descriptors }
+        DescriptorJob { roster: self }
     }
 
     pub fn has_entity(&self, name: &str) -> bool {
         self.descriptors.entities.contains_key(name)
+    }
+
+    pub fn entity_names(&self) -> impl Iterator<Item = &str> {
+        self.descriptors.entities.keys().map(String::as_str)
     }
 
     pub fn mesh_definitions(&self) -> &BTreeMap<String, MeshDefinition> {
@@ -1323,10 +1331,15 @@ impl Roster {
     }
 
     pub fn refused_declaration(&self, entity: &str) -> Option<String> {
-        self.refused_below(entity, &BTreeSet::new())
+        self.descriptor_job().refused_declaration(entity)
     }
 
-    fn refused_below(&self, entity: &str, ancestors: &BTreeSet<String>) -> Option<String> {
+    fn refused_below(
+        &self,
+        descriptors: DescriptorView<'_>,
+        entity: &str,
+        ancestors: &BTreeSet<String>,
+    ) -> Option<String> {
         let mut ancestors = ancestors.clone();
         if !ancestors.insert(entity.to_owned()) {
             return Some(format!("attachment cycle through {entity}"));
@@ -1334,7 +1347,6 @@ impl Roster {
         if let Some(flaw) = self.unreadable(entity) {
             return Some(format!("it {flaw}"));
         }
-        let descriptors = &self.descriptors;
         let inherited = descriptors.inherit(entity)?;
         if let Some(state) = inherited
             .states
@@ -1365,7 +1377,7 @@ impl Roster {
             }
         }
         for attachment in &inherited.attachments {
-            if let Some(reason) = self.refused_below(&attachment.entity, &ancestors) {
+            if let Some(reason) = self.refused_below(descriptors, &attachment.entity, &ancestors) {
                 return Some(format!(
                     "its attached entity {} is refused: {reason}",
                     attachment.entity

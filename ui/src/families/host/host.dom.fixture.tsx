@@ -394,6 +394,7 @@ let currentState = {
   secondMounted: false,
   genericMounted: false,
   genericBlocked: false,
+  genericKeepFollowing: false,
   genericBodyFocus: false,
   genericListbox: false,
   genericEmptyToRows: false,
@@ -661,6 +662,7 @@ function renderApp() {
                   bounds={BOUNDS}
                   onActivate={action => { genericActivated.push(action); }}
                   blockedState={currentState.genericBlocked ? <div data-blocked="true">Not yet</div> : null}
+                  keepFollowingWhenBlocked={currentState.genericKeepFollowing}
                   onViewportChange={viewport => { genericViewports.push(viewport.width); }}
                 />
               </div>
@@ -1162,6 +1164,20 @@ window.hostDom = {
     body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     const view = pipeline.view(pipeG);
     const activated = genericActivated[0] ?? null;
+
+    currentState = { ...currentState, genericBlocked: true, genericKeepFollowing: true };
+    renderApp();
+    const duringGap = subsForPipe(pipeG);
+    const gapShown = !!container!.querySelector('[data-slot="generic"] [data-blocked="true"]');
+    genericActivated = [];
+    body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    const activatedDuringGap = genericActivated.length;
+    currentState = { ...currentState, genericBlocked: false, genericKeepFollowing: false };
+    renderApp();
+    const afterGap = subsForPipe(pipeG);
+    const pictureAfterGap = !!container!.querySelector('[data-slot="generic"] [data-family-visible]');
+    body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    const activatedAfterGap = genericActivated.length - activatedDuringGap;
     clock.setPlaying(false);
 
     currentState = { ...currentState, genericBlocked: true };
@@ -1174,6 +1190,11 @@ window.hostDom = {
     return {
       blockedMeasured,
       blockedShown,
+      gapShown,
+      pictureAfterGap,
+      subscriptions: { before: subsG, duringGap, afterGap },
+      activatedDuringGap,
+      activatedAfterGap,
       description,
       clearedDescription,
       activatedId: activated?.installedId ?? null,

@@ -204,7 +204,7 @@ export class Session {
     return this.app.evaluate(`new Promise(resolve => { const end = performance.now() + ${timeout};
       const test = () => { let ok = false; try { ok = !!(${expression}); } catch {} if (ok || performance.now() > end) resolve(ok); else requestAnimationFrame(test); }; test(); })`, timeout + 30_000);
   }
-  watch() { return this.app.evaluate('__e2e.watch()'); }
+  watch(playback = false) { return this.app.evaluate(`__e2e.watch(${playback})`); }
   async unwatch() {
     const shown = await this.app.evaluate('__e2e.unwatch()');
     return [...(shown.ms > 0 ? [`showed a loading placeholder for ${Math.round(shown.ms)} ms (${shown.where.join(', ')})`] : []),

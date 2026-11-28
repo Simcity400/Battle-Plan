@@ -206,6 +206,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly exactReadView: ((hour: number, rowWindow: FamilyRowWindow | null, artResolutions?: ArtResolutions) => Promise<BoundedReadView | null>) | undefined;
   readonly stripPlan?: Pick<StripWidget, 'key' | 'fixed' | 'supported' | 'keyframe' | 'track' | 'tiles' | 'identity'> & { tilesSettled(): boolean };
   readonly bodyStatus: FamilyBodyStatus;
+  readonly keepFollowingWhenBlocked?: boolean;
   readonly bannerFailure: BannerFailureInfo | null;
   readonly nameFailureDetail: string | undefined;
   readonly groupWarnings: readonly string[];
@@ -1221,6 +1222,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
     return !plan?.refused && compiledFollow.refused ? { kind: 'refused', reason: compiledFollow.refused, technical: compiledFollow.refused } : null;
   })();
+  const tileReason = pixelBinnedKey ? currentTiled?.topRefused || tileUnrecorded?.reason : null;
+  const tileOutcome = tileReason ? { kind: 'not-recorded' as const, reason: tileReason } : null;
   const outcome = ((): FamilyBodyStatus | null => {
     if (history && spanBody) return spanBody;
     if (isFilter) {
@@ -1250,10 +1253,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       }
     }
 
-    if (pixelBinnedKey) {
-      if (currentTiled?.topRefused) return { kind: 'not-recorded', reason: currentTiled.topRefused };
-      if (tileUnrecorded?.reason) return { kind: 'not-recorded', reason: tileUnrecorded.reason };
-    }
+    if (tileOutcome) return tileOutcome;
     const refusal = plan?.refused ?? (following ? compiledFollow.unavailable : null);
     return refusal ? { kind: 'refused', reason: refusal } : null;
   })();
@@ -1306,6 +1306,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     exactReadView,
     stripPlan,
     bodyStatus,
+    keepFollowingWhenBlocked: following && tileOutcome !== null && bodyStatus === tileOutcome && compiledFollow.subscriptions.length > 0,
     bannerFailure,
     nameFailureDetail,
     groupWarnings: groups.data?.warnings ?? [],

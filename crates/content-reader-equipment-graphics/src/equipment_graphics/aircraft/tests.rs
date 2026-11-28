@@ -204,6 +204,14 @@ fn modded(root: &Root) -> PathBuf {
 }
 
 fn catalogue(layers: &ResolvedLayers, designs: &[(String, String)]) -> Catalogue {
+    with_catalogue_inputs(layers, designs, Catalogue::build)
+}
+
+fn with_catalogue_inputs<T>(
+    layers: &ResolvedLayers,
+    designs: &[(String, String)],
+    read: impl FnOnce(&Inputs<'_>) -> T,
+) -> T {
     content_reader_script::test_game::enter();
     let roster = layers.descriptor_roster().unwrap();
     let equipment = equipment::Database::load_complete(layers).unwrap();
@@ -212,12 +220,38 @@ fn catalogue(layers: &ResolvedLayers, designs: &[(String, String)]) -> Catalogue
         continents: BTreeSet::new(),
     };
     let pools = Content::load(layers, &names).unwrap();
-    Catalogue::build(&Inputs {
+    read(&Inputs {
         roster: &roster,
         equipment: &equipment,
         pools: &pools,
         designs,
     })
+}
+
+#[test]
+fn picker_reads_only_the_bodies_for_its_aircraft() {
+    let root = Root::new("picker_bodies");
+    let (vanilla, extra) = (vanilla(&root), modded(&root));
+    let stack = layers(&[(&vanilla, &[]), (&extra, &[])]);
+    with_catalogue_inputs(&stack, &[], |inputs| {
+        let mut all_reads = Vec::new();
+        let all = Catalogue::build_entries(inputs, true, |name| {
+            all_reads.push(name.to_owned());
+            refusal(inputs.roster, name)
+        });
+        let mut picker_reads = Vec::new();
+        let picker = Catalogue::build_entries(inputs, false, |name| {
+            picker_reads.push(name.to_owned());
+            refusal(inputs.roster, name)
+        });
+        let aircraft: Vec<_> = all.entries.iter().filter(|entry| entry.aircraft()).cloned().collect();
+
+        assert_eq!(all_reads.len(), all.entries.len());
+        assert_eq!(picker_reads, aircraft.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>());
+        assert!(picker_reads.len() < all_reads.len());
+        assert_eq!(picker.entries, aircraft);
+        assert_eq!(picker.diagnostics, all.diagnostics);
+    });
 }
 
 fn entry<'a>(catalogue: &'a Catalogue, name: &str) -> &'a Entry {

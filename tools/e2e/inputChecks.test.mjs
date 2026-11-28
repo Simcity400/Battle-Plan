@@ -158,7 +158,7 @@ test('createOutcomeWatcher scans once on playing transition, stops polling, and 
   assert.equal(result.b.outcome, 'content');
 });
 
-test('playback outcome watcher distinguishes recovered loading, persistent loading and failure', () => {
+test('playback outcome watcher distinguishes recovered loading, persistent loading, held pictures and failure', () => {
   assert.deepEqual(classifyWidgetSnapshot({ probeState: 'loading' }, true), { outcome: 'loading', detail: 'still loading' });
   assert.deepEqual(classifyWidgetSnapshot({ domState: 'loading', errorDetail: 'section failed' }, true), { outcome: 'error', detail: 'section failed' });
   assert.deepEqual(classifyWidgetSnapshot({ domState: 'loading', unavailableText: 'refused' }, true), { outcome: 'refusal', detail: 'refused' });
@@ -166,6 +166,7 @@ test('playback outcome watcher distinguishes recovered loading, persistent loadi
   const grid = { querySelectorAll: () => [widget] };
   const observation = { selector: '.fh-overlay div.widget-state', text: 'Loading spending…', bodyStatus: 'loading', metaMode: 'picture', installedBinding: 12 };
   const loading = { frames: 2, firstHour: 100, lastHour: 148, observation };
+  const held = { selector: 'div.fh-frame', bodyStatus: 'ready', metaMode: 'picture', installedBinding: 12 };
   for (const final of ['content', 'loading', 'error', 'later-loading']) {
     let state = 'loading';
     let hour = 100;
@@ -214,6 +215,16 @@ test('playback outcome watcher distinguishes recovered loading, persistent loadi
     }
     assert.equal(raf, undefined, 'the watcher cancels its animation frame');
   }
+  let hour = 100;
+  const watcher = createOutcomeWatcher({
+    grid, isPlaying: () => true, readHour: () => hour,
+    classify: () => hour === 100 ? { outcome: 'content', detail: null, held } : { outcome: 'content', detail: null },
+    observe: () => () => {},
+  });
+  hour = 148;
+  const outcome = watcher.end().spending;
+  assert.deepEqual(outcome, { outcome: 'content', detail: null, held: { hour: 100, ...held } });
+  assert.deepEqual(mergeWidgetOutcomes([{ id: 'spending', outcome: 'content' }], { spending: outcome })[0].held, outcome.held);
 });
 
 test('measureIdleCost returns bounds on success and records a failure without throwing when pause or speed fails', async () => {
@@ -296,6 +307,39 @@ test('browser widget classifier expression delegates directly to classifyWidgetS
     source: 'probe', selector: '.fh-overlay div.widget-state', text: 'Loading spending…', domState: null,
     bodyStatus: 'loading', metaMode: 'picture', installedBinding: 12,
   });
+  assert.deepEqual(classify(makeNode({}, { state: 'content', held: {
+    ...element, classList: ['fh-frame'], textContent: 'Recorded value',
+    closest: selector => selector === '.fh-frame' ? frame : null,
+  } }), true), {
+    outcome: 'content', detail: null,
+    held: { source: 'held-picture', selector: 'div.fh-frame', text: 'Recorded value', domState: null,
+      bodyStatus: 'loading', metaMode: 'picture', installedBinding: 12 },
+  });
+});
+
+test('the final playback snapshot keeps a held picture and catches newly visible loading', async () => {
+  const windowEnd = '} else await sleep(PLAY_SECONDS * 1000);';
+  const first = source.indexOf(windowEnd) + windowEnd.length;
+  const snapshot = source.slice(first, source.indexOf('await pausePlayback()', first));
+  const finish = new Function(`return async (app, dashboardInventory, mergeWidgetOutcomes, widgets) => {
+    ${snapshot}
+    return widgets;
+  }`)();
+  const calls = [];
+  const app = { evaluate: async expr => {
+    calls.push(typeof expr === 'string' ? 'end watcher' : 'snapshot');
+    return typeof expr === 'string' ? { failed: { outcome: 'error', detail: 'original failure' } } : expr;
+  } };
+  const inventory = playback => ['held', 'loading', 'failed'].map(id => ({
+    id, ...classifyWidgetSnapshot({ probeState: id === 'held' && playback ? 'content' : 'loading' }, playback),
+  }));
+  const widgets = ['held', 'loading', 'failed'].map(id => ({ id, outcome: 'content' }));
+  assert.deepEqual(await finish(app, inventory, mergeWidgetOutcomes, widgets), [
+    { id: 'held', outcome: 'content' },
+    { id: 'loading', outcome: 'error', detail: 'still loading' },
+    { id: 'failed', outcome: 'error', detail: 'original failure' },
+  ]);
+  assert.deepEqual(calls, ['snapshot', 'end watcher'], 'the watcher covers the final snapshot');
 });
 
 test('playback unsettled probe ignores hidden screen-reader aria-busy mirrors while flagging visible loading widgets', () => {

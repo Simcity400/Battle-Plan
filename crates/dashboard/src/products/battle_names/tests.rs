@@ -215,3 +215,68 @@ fn named_battle_rows_match_the_brokers_at_the_recorded_hours() {
         assert_eq!(row["placeMissing"].as_str(), state.missing.as_deref());
     }
 }
+
+#[test]
+fn named_ship_sinkings_match_the_battle_broker_in_followed_and_exact_pages() {
+    use dashboard_base::test_fixtures::{source, source_with_content, visual_mods};
+    use dashboard_naval::registrations::NAVAL_SUNK_TAIL;
+    use replay_data::rows::{NavalCombatRow, SunkShipEntry, SunkShipsRow, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    use serde_json::json;
+
+    let game = visual_mods::Machine::new("named_sinking_rows");
+    let frames = (100..=103).map(|hour| {
+        let mut frame = source(1, hour, Some(1));
+        let combat = if hour < 102 { 20 } else { 22 };
+        let entries = match hour {
+            101 | 102 => vec![SunkShipEntry { battle: combat, sink_hour: hour, ship_name: b"Meridian".to_vec(), ..Default::default() }],
+            _ => Vec::new(),
+        };
+        for (table, rows) in [
+            (TableId::NavalCombats, TableRows::NavalCombats(vec![NavalCombatRow { id: combat, province: 3, ..Default::default() }])),
+            (TableId::SunkShips, TableRows::SunkShips(vec![SunkShipsRow { entries }])),
+        ] {
+            frame.metrics.table_ns[table.index()] = 1;
+            *frame.tables[table.index()] = TableView::Complete(rows);
+        }
+        frame
+    }).collect();
+    let (source, load) = source_with_content(frames, &game.root);
+    let source = Arc::new(source);
+    let cancel = AtomicBool::new(false);
+    let binding = load.content.as_ref().unwrap().presentation.binding();
+    let build = Arc::<Build>::default();
+    let mut refused = named(Key::Naval(22, 102), 102, "");
+    refused.1 = Err("Battle province not recorded".into());
+    assert!(build.names.set(Arc::new(number(vec![
+        named(Key::Naval(20, 100), 100, "Battle of Copper Hollow"), refused,
+    ]))).is_ok());
+    build.ready.publish(Ok(()));
+    *source.state::<Ahead>().lock().unwrap() = Ahead(binding.generation, HashMap::from([(1, build)]));
+
+    let product = crate::products::find("ships-sunk-tail").unwrap();
+    let panel = crate::panel::open(&source, &load, &json!({"panel":"ships-sunk-tail","branchId":"1","rowNames":true,"limit":1})).unwrap();
+    let advance = &panel.exact().unwrap().advance;
+    for hour in 100..=103 {
+        let plain = json!({"branchId":"1","limit":1,"hour":hour});
+        assert_eq!((product.load)(&source, "plain", plain.clone(), &load, &cancel).unwrap(),
+            (NAVAL_SUNK_TAIL.load)(&source, "plain", plain.clone(), &load, &cancel).unwrap());
+        let mut request = plain;
+        request["rowNames"] = true.into();
+        let exact = source.in_scope(|| product.answer(&source, request, &load, &cancel)).unwrap();
+        let followed = advance(hour, false, &cancel, None);
+        assert_eq!(followed.value.as_ref().as_ref().unwrap(), &exact);
+        let rows = exact["rows"].as_array().unwrap();
+        if hour == 100 {
+            assert!(rows.is_empty());
+            continue;
+        }
+        let row = &rows[0];
+        let key = if hour == 101 { "combat:20:100" } else { "combat:22:102" };
+        assert_eq!(row["battle"]["id"], key);
+        let titles = BattleNames::load(&source, &BattleNamesParams { branch_id: "1".into(), battles: vec![key.into()] }, &load, &cancel).unwrap();
+        assert_eq!(row["title"].as_str(), titles.titles[key].name.as_deref());
+        assert_eq!(row["titleMissing"].as_str(), titles.titles[key].missing.as_deref());
+        if hour == 103 { assert!(!followed.fresh, "a quiet step holds the named reply"); }
+    }
+}

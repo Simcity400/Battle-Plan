@@ -318,12 +318,16 @@ impl Content {
     }
 
     pub fn catalogue(&self, designs: &[(String, String)]) -> aircraft::Catalogue {
-        aircraft::Catalogue::build(&aircraft::Inputs {
+        aircraft::Catalogue::build(&self.inputs(designs))
+    }
+
+    fn inputs<'a>(&'a self, designs: &'a [(String, String)]) -> aircraft::Inputs<'a> {
+        aircraft::Inputs {
             roster: &self.roster,
             equipment: &self.equipment,
             pools: &self.pools,
             designs,
-        })
+        }
     }
 }
 
@@ -399,7 +403,8 @@ impl Built {
         designs: &[(String, String)],
         mods: &BTreeMap<String, String>,
     ) -> Self {
-        let listing = content.catalogue(designs);
+        let shown = content.roster.descriptor_job();
+        let listing = aircraft::Catalogue::build_for_picker(&content.inputs(designs), &shown);
         let equipment = &content.equipment;
         let spelled = |folded: &str| {
             equipment
@@ -420,11 +425,10 @@ impl Built {
         let below = content
             .recorded
             .as_ref()
-            .map(|(layers, roster)| (roster, Suppliers::new(layers, mods)));
+            .map(|(layers, roster)| (roster, roster.descriptor_job(), Suppliers::new(layers, mods)));
         let mut entries: Vec<Listed> = listing
             .entries
             .into_iter()
-            .filter(aircraft::Entry::aircraft)
             .map(|entry| {
                 let mut titles: Vec<String> = Vec::new();
                 let mut add = |text: Option<String>| {
@@ -448,20 +452,20 @@ impl Built {
                         | aircraft::Reference::ClonedBy { .. } => {}
                     }
                 }
-                let recorded = below.as_ref().filter(|(roster, _)| {
-                    let entity = roster.descriptors.entities.contains_key(&entry.name);
+                let recorded = below.as_ref().filter(|(roster, job, _)| {
+                    let entity = roster.has_entity(&entry.name);
                     let registered = match entry.refusal.as_ref().map(|refusal| refusal.kind) {
                         Some(aircraft::RefusalKind::Declaration) => entity,
                         Some(aircraft::RefusalKind::Unregistered) => {
-                            entity || roster.descriptors.meshes.contains_key(&entry.name)
+                            entity || roster.mesh_definitions().contains_key(&entry.name)
                         }
                         Some(aircraft::RefusalKind::NoGeometry) | None => false,
                     };
-                    registered && aircraft::refusal(roster, &entry.name).is_none()
+                    registered && aircraft::refusal_in(job, &entry.name).is_none()
                 });
                 let (descriptors, suppliers) = match recorded {
-                    Some((roster, suppliers)) => (&roster.descriptors, suppliers),
-                    None => (&content.roster.descriptors, &suppliers),
+                    Some((_, job, suppliers)) => (job.view(), suppliers),
+                    None => (shown.view(), &suppliers),
                 };
                 let files: Vec<&[u8]> = match descriptors.inherit(&entry.name) {
                     Some(entity) => entity
@@ -486,8 +490,8 @@ impl Built {
                 };
                 let entry = AircraftEntry {
                     kind: match entry.kind {
-                        _ if recorded.is_some_and(|(roster, _)| {
-                            roster.descriptors.entities.contains_key(&entry.name)
+                        _ if recorded.is_some_and(|(roster, _, _)| {
+                            roster.has_entity(&entry.name)
                         }) =>
                         {
                             AircraftKind::Entity

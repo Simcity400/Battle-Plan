@@ -50,13 +50,17 @@ pub struct Refusal {
 }
 
 pub fn refusal(roster: &mesh::Roster, name: &str) -> Option<Refusal> {
-    if let Some(reason) = roster.refused_declaration(name) {
+    refusal_in(&roster.descriptor_job(), name)
+}
+
+pub fn refusal_in(job: &mesh::DescriptorJob<'_>, name: &str) -> Option<Refusal> {
+    if let Some(reason) = job.refused_declaration(name) {
         return Some(Refusal {
             kind: RefusalKind::Declaration,
             reason,
         });
     }
-    let descriptors = &roster.descriptors;
+    let descriptors = job.view();
     let no_geometry = |reason: String| {
         Some(Refusal {
             kind: RefusalKind::NoGeometry,
@@ -64,7 +68,7 @@ pub fn refusal(roster: &mesh::Roster, name: &str) -> Option<Refusal> {
         })
     };
     match descriptors.inherit(name) {
-        Some(_) if draws(roster, name, &mut BTreeSet::new()) => None,
+        Some(_) if draws(descriptors, name, &mut BTreeSet::new()) => None,
         Some(entity) => {
             let root = match (entity.mesh, entity.unbound_mesh) {
                 (Some(mesh), _) | (None, Some(mesh)) => {
@@ -86,11 +90,10 @@ pub fn refusal(roster: &mesh::Roster, name: &str) -> Option<Refusal> {
     }
 }
 
-fn draws<'a>(roster: &'a mesh::Roster, name: &'a str, seen: &mut BTreeSet<&'a str>) -> bool {
+fn draws<'a>(descriptors: mesh::DescriptorView<'a>, name: &'a str, seen: &mut BTreeSet<&'a str>) -> bool {
     if !seen.insert(name) {
         return false;
     }
-    let descriptors = &roster.descriptors;
     let Some(entity) = descriptors.inherit(name) else {
         return false;
     };
@@ -100,7 +103,7 @@ fn draws<'a>(roster: &'a mesh::Roster, name: &'a str, seen: &mut BTreeSet<&'a st
         || entity
             .attachments
             .iter()
-            .any(|attachment| draws(roster, &attachment.entity, seen))
+            .any(|attachment| draws(descriptors, &attachment.entity, seen))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,13 +135,25 @@ pub struct Catalogue {
 
 impl Catalogue {
     pub fn build(inputs: &Inputs<'_>) -> Self {
+        let job = inputs.roster.descriptor_job();
+        Self::build_entries(inputs, true, |name| refusal_in(&job, name))
+    }
+
+    pub fn build_for_picker(inputs: &Inputs<'_>, job: &mesh::DescriptorJob<'_>) -> Self {
+        Self::build_entries(inputs, false, |name| refusal_in(job, name))
+    }
+
+    fn build_entries(
+        inputs: &Inputs<'_>,
+        include_non_aircraft: bool,
+        mut refuse: impl FnMut(&str) -> Option<Refusal>,
+    ) -> Self {
         let Inputs {
             roster,
             equipment,
             pools,
             designs,
         } = *inputs;
-        let descriptors = &roster.descriptors;
         let mut diagnostics = Vec::new();
         let keys = PlaneKeys::read(equipment, &mut diagnostics);
         let mut references: BTreeMap<String, BTreeSet<Reference>> = BTreeMap::new();
@@ -163,10 +178,9 @@ impl Catalogue {
                 );
             }
         }
-        for name in descriptors
-            .entities
-            .keys()
-            .chain(roster.unreadable_names.keys())
+        for name in roster
+            .entity_names()
+            .chain(roster.unreadable_names.keys().map(String::as_str))
         {
             for (key, prefix) in ladder_keys(name, &keys.ladder) {
                 refer(
@@ -207,7 +221,7 @@ impl Catalogue {
         }
         let referenced: Vec<String> = references
             .keys()
-            .filter(|name| descriptors.entities.contains_key(*name))
+            .filter(|name| roster.has_entity(name))
             .cloned()
             .collect();
         let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -249,27 +263,25 @@ impl Catalogue {
                 }
             }
         }
-        let mut names: BTreeMap<&str, Kind> = descriptors
-            .meshes
+        let mut names: BTreeMap<&str, Kind> = roster
+            .mesh_definitions()
             .keys()
             .map(|name| (name.as_str(), Kind::Mesh))
             .collect();
         names.extend(
-            descriptors
-                .entities
-                .keys()
-                .map(|name| (name.as_str(), Kind::Entity)),
+            roster.entity_names().map(|name| (name, Kind::Entity)),
         );
         for name in references.keys() {
             names.entry(name).or_insert(Kind::Unregistered);
         }
         let entries = names
             .into_iter()
+            .filter(|&(name, _)| include_non_aircraft || references.contains_key(name))
             .map(|(name, kind)| Entry {
                 name: name.to_owned(),
                 kind,
                 references: references.get(name).cloned().unwrap_or_default(),
-                refusal: refusal(roster, name),
+                refusal: refuse(name),
             })
             .collect();
         if !roster.unreadable.is_empty() {

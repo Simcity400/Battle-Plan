@@ -96,13 +96,14 @@ function Details({ runtime, track, battle, hour }: { readonly runtime: WidgetRun
   </div>;
 }
 
-export default function NavalBattleWindow({ opened, track, runtime, anchor, returnFocus, onClose }: {
+export default function NavalBattleWindow({ opened, track, runtime, anchor, returnFocus, onClose, title }: {
   readonly opened: OpenedNavalBattle;
   readonly track: BoundTrack;
   readonly runtime: WidgetRuntime;
   readonly anchor: RefObject<HTMLDivElement | null>;
   readonly returnFocus?: string;
   readonly onClose: () => void;
+  readonly title?: ReactNode;
 }) {
   const { subject } = opened;
   const { row } = subject;
@@ -145,7 +146,7 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, retu
     return <BattleGameWindow key={row.key} runtime={runtime} track={track} clock={clock} kind="naval" combat={combat} result={result} lead={lead} live={live} until={until} ended={ended} />;
   };
 
-  return <BattleViewer subject={row.key} title={<BattleTitleHeading client={runtime.client} track={track} battle={row.key} />} day={day} closeLabel="Close battle viewer" anchor={anchor}
+  return <BattleViewer subject={row.key} title={title ?? <BattleTitleHeading client={runtime.client} track={track} battle={row.key} />} day={day} closeLabel="Close battle viewer" anchor={anchor}
     returnFocus={returnFocus ?? mirrorRowSelector(row.key)} runtime={runtime} track={track} province={row.province} span={span} unplayable={unplayable}
     gaps={gaps} fallbackHour={first} startHour={opened.start} onClose={onClose}
     details={() => <Details runtime={runtime} track={track} battle={row.detailId} hour={row.detailHour ?? opened.hour} />}
