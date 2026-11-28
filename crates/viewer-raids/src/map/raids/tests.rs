@@ -1736,7 +1736,7 @@ mod launch_gate {
             "common/units/equipment/a.txt",
             "equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } convoy = { is_archetype = yes type = convoy } }",
         )])
-        .0;
+        .0.into();
         assets.defines = RaidDefines {
             base_max_command_power: 73 * 100_000,
             naval_invasion_priority: 1,
@@ -1923,7 +1923,7 @@ mod launch_gate {
             "common/units/equipment/a.txt",
             "equipments = { transport_plane = { is_archetype = yes type = air_transport } }",
         )])
-        .0;
+        .0.into();
         let kind = Kind {
             command_power_raw: 20 * 100_000,
             essential_equipment: vec![("transport_plane".into(), 1)],

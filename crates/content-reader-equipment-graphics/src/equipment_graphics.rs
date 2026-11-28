@@ -4,6 +4,7 @@ use content_reader_key_names::key_name_products::KeyNamesExt as _;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
+    sync::Arc,
 };
 
 use crate::{
@@ -294,7 +295,7 @@ impl SinglePlan {
 
 #[derive(Clone, Debug, Default)]
 pub struct Content {
-    buckets: BTreeMap<Bucket, BTreeMap<String, Vec<Pool>>>,
+    buckets: Arc<BTreeMap<Bucket, BTreeMap<String, Vec<Pool>>>>,
     pool_count: usize,
 }
 
@@ -381,6 +382,21 @@ fn document(bytes: &[u8], names: &Names, key_names: &KeyNames) -> io::Result<Vec
 
 impl Content {
     pub fn load(layers: &ResolvedLayers, names: &Names) -> io::Result<Self> {
+        if layers.shows_visual_mods() {
+            return Self::read(layers, names);
+        }
+        let mut key = Vec::new();
+        for roster in [&names.countries, &names.continents] {
+            key.extend((roster.len() as u64).to_le_bytes());
+            for name in roster {
+                content_reader_layers::kept::put_bytes(&mut key, name.as_bytes());
+            }
+        }
+        layers.retained_recorded_product("equipment graphic pools", 1, &key, |layers| Self::read(layers, names))
+            .map(|content| content.as_ref().clone())
+    }
+
+    fn read(layers: &ResolvedLayers, names: &Names) -> io::Result<Self> {
         let mut content = Self::default();
         let key_names = layers.key_names()?;
         for path in layers.directory_files("gfx/interface/equipmentdesigner/graphic_db", ".txt")? {
@@ -416,7 +432,7 @@ impl Content {
             ) else {
                 continue;
             };
-            let definitions = self.buckets.entry(bucket).or_default();
+            let definitions = Arc::make_mut(&mut self.buckets).entry(bucket).or_default();
             for equipment in root.value.items().unwrap_or_default() {
                 let Some(items) = equipment.value.items() else {
                     continue;
@@ -510,7 +526,7 @@ impl Content {
             }
         }
         let mut refusals = Vec::new();
-        for (bucket, definitions) in &self.buckets {
+        for (bucket, definitions) in self.buckets.iter() {
             for (equipment, pools) in definitions {
                 for (index, pool) in pools.iter().enumerate() {
                     let subject = format!(
@@ -635,7 +651,7 @@ impl Content {
             contexts.push(family);
         }
         let mut continents = Vec::new();
-        for (bucket, definitions) in &self.buckets {
+        for (bucket, definitions) in self.buckets.iter() {
             let Bucket::Continent(continent) = bucket else {
                 continue;
             };
@@ -907,7 +923,7 @@ impl Content {
             truncated: false,
         };
         let mut branches = vec![base_branch];
-        for (bucket, definitions) in &self.buckets {
+        for (bucket, definitions) in self.buckets.iter() {
             if !matches!(bucket, Bucket::Continent(_)) {
                 continue;
             }
@@ -1009,7 +1025,7 @@ impl Content {
         }
         let continent_cutoff = unknown_continent.and_then(|why| {
             let mut best: Option<(std::cmp::Reverse<i64>, usize, u8)> = None;
-            for (bucket, definitions) in &self.buckets {
+            for (bucket, definitions) in self.buckets.iter() {
                 if !matches!(bucket, Bucket::Continent(_)) {
                     continue;
                 }
@@ -1492,8 +1508,7 @@ mod tests {
                 pool = { icons = { second } limit = { tag = AAA } } } }",
         )
         .unwrap();
-        for pool in pools
-            .buckets
+        for pool in Arc::make_mut(&mut pools.buckets)
             .get_mut(&Bucket::Default)
             .unwrap()
             .get_mut("plane")

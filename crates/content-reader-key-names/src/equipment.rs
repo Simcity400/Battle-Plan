@@ -689,14 +689,18 @@ impl Database {
         Ok(database)
     }
 
-    pub fn load_complete(layers: &ResolvedLayers) -> io::Result<Self> {
-        let database = Self::load(layers)?;
+    pub fn shared_complete(layers: &ResolvedLayers) -> io::Result<Arc<Self>> {
+        let database = Self::shared(layers)?;
         match &database.lost {
             Some(lost) => Err(content_reader_parser::fields::invalid(format!(
                 "the equipment database cannot be followed past {lost}"
             ))),
             None => Ok(database),
         }
+    }
+
+    pub fn load_complete(layers: &ResolvedLayers) -> io::Result<Self> {
+        Self::shared_complete(layers).map(|database| database.as_ref().clone())
     }
 
     pub fn get(&self, name: impl AsRef<[u8]>) -> Option<usize> {

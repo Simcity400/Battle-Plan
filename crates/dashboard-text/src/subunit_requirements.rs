@@ -116,7 +116,7 @@ impl Content {
         let mut content = Self {
             equipment: layers
                 .derived::<crate::catalogue::CachedResult<Database>>()
-                .get_or_init(|| Database::load_complete(layers))?,
+                .get_or_init_shared(|| Database::shared_complete(layers))?,
             ..Self::default()
         };
         for path in content_reader_key_names::unit_leader::sub_unit_files(layers)? {

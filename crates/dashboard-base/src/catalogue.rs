@@ -742,6 +742,6 @@ pub fn equipment_units(catalogue: &Catalogue) -> Result<Arc<content_reader_key_n
         .content
         .layers
         .derived::<CachedResult<content_reader_key_names::equipment::Database>>()
-        .get_or_init(|| content_reader_key_names::equipment::Database::load_complete(&catalogue.content.layers))
+        .get_or_init_shared(|| content_reader_key_names::equipment::Database::shared_complete(&catalogue.content.layers))
         .map_err(|error| error.to_string())
 }

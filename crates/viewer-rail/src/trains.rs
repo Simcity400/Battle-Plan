@@ -103,7 +103,7 @@ pub struct TrainAssets {
     pub library: ModelLibrary,
     pub cultures: Cultures,
     database: train_gfx::Database,
-    equipment: content_reader_key_names::equipment::Database,
+    equipment: Arc<content_reader_key_names::equipment::Database>,
     pub defines: TrainDefines,
     routes: RouteCache,
 }
@@ -190,7 +190,7 @@ impl TrainAssets {
                 ),
             ));
         }
-        let equipment = content_reader_key_names::equipment::Database::load_complete(layers)?;
+        let equipment = content_reader_key_names::equipment::Database::shared_complete(layers)?;
         let names: Vec<String> = database
             .wagons
             .iter()
@@ -2457,7 +2457,7 @@ mod tests {
                 train_equipment_1 = { archetype = TRAIN_EQUIPMENT } orphan = { } }",
         )]);
         let assets = TrainAssets {
-            equipment,
+            equipment: Arc::new(equipment),
             ..assets()
         };
         let key = assets.equipment_key("Train_Equipment_1").unwrap();

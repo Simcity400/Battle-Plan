@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, io, sync::Arc};
 
 use super::{
     fonts::{FontEvent, Fonts, TextColors},
-    sprites::{self, Plain, SpriteFacts, Sprites},
+    sprites::{self, Plain, SpriteFacts, SpriteFile, Sprites},
 };
 use content_reader_image::native;
 use content_reader_layers::{ResolvedLayers, content::ArtFileRead};
@@ -24,8 +24,8 @@ pub enum Lookup<'a> {
 #[derive(Clone, Debug, Default)]
 pub struct Registry {
     base: Option<Arc<Self>>,
-    pub files: Vec<(String, Sprites)>,
-    sprites: BTreeMap<Vec<u8>, (usize, usize)>,
+    pub files: Vec<SpriteFile>,
+    sprites: Arc<BTreeMap<Vec<u8>, (usize, usize)>>,
     pub fonts: Arc<Fonts>,
     pub text_colors: Arc<TextColors>,
     pub cursor_offset: [i32; 2],
@@ -41,7 +41,8 @@ impl Registry {
             .map(|registry| registry.as_ref().clone())
     }
 
-    pub fn from_files(files: Vec<(String, Sprites)>) -> Self {
+    pub fn from_files(files: Vec<(String, impl Into<Arc<Sprites>>)>) -> Self {
+        let files: Vec<SpriteFile> = files.into_iter().map(|(path, file)| (path, file.into())).collect();
         let mut sprites = BTreeMap::new();
         let mut text_colors = TextColors::new();
         let mut cursor_offset = [0; 2];
@@ -69,7 +70,7 @@ impl Registry {
         Self {
             base: None,
             files,
-            sprites,
+            sprites: Arc::new(sprites),
             fonts: Arc::new(fonts),
             text_colors: Arc::new(text_colors),
             cursor_offset,
@@ -344,14 +345,14 @@ mod tests {
             cause: super::super::Cause::Unread,
             node: 0,
         };
-        base.files[0].1.sprites[0].refusals.push(refusal.clone());
+        Arc::make_mut(&mut base.files[0].1).sprites[0].refusals.push(refusal.clone());
         let base = Arc::new(base);
         let runtime = read_sprites(br#"spriteTypes = {
             spriteType = { name = fixture_overridden textureFile = "gfx/runtime.tga" }
             spriteType = { name = fixture_new textureFile = "gfx/new.tga" }
         }"#);
         let mut files = base.files.clone();
-        files.push(("runtime sprites".into(), runtime.clone()));
+        files.push(("runtime sprites".into(), Arc::new(runtime.clone())));
         let appended = Registry::from_files(files);
         let overlay = Registry::with_sprites(Arc::clone(&base), "runtime sprites".into(), runtime.sprites);
         assert_eq!(overlay.visible_sprites(), appended.visible_sprites());

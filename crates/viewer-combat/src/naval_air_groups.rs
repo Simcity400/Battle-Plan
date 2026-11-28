@@ -26,7 +26,7 @@ impl Content {
     pub(super) fn load(
         layers: &ResolvedLayers,
         warnings: &mut Vec<String>,
-        equipment: content_reader_key_names::equipment::Database,
+        equipment: std::sync::Arc<content_reader_key_names::equipment::Database>,
     ) -> Self {
         let requests: Vec<_> = SCREENING_MODIFIERS
             .iter()
@@ -42,7 +42,7 @@ impl Content {
             ));
             None
         } else {
-            Some(std::sync::Arc::new(equipment))
+            Some(equipment)
         };
         let mut content = match static_modifiers::read(layers, &requests) {
             Ok(read) => {

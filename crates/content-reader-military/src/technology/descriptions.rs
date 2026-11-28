@@ -22,7 +22,7 @@ pub struct Catalog {
     pub definitions: Vec<Definition>,
     by_name: BTreeMap<Vec<u8>, usize>,
     pub categories: BTreeMap<Token, Vec<u8>>,
-    pub equipment: content_reader_key_names::equipment::Database,
+    pub equipment: std::sync::Arc<content_reader_key_names::equipment::Database>,
     pub tactics: Option<Result<crate::combat_tactics::Database, String>>,
     pub effect_refusal: Option<String>,
     pub notes: Vec<String>,
@@ -45,7 +45,7 @@ impl Catalog {
             equipment: names.effects.equipment.clone(),
         };
         let mut catalog = Self {
-            equipment: content_reader_key_names::equipment::Database::load_complete(layers)?,
+            equipment: content_reader_key_names::equipment::Database::shared_complete(layers)?,
             ..Self::default()
         };
         for path in layers.directory_files("common/technology_tags", ".txt")? {

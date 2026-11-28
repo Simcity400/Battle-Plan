@@ -100,7 +100,7 @@ impl Content {
         let read = self.equipment.get_or_init(|| {
             let cat = self.catalogue.as_ref().map_err(|_| "Garrison equipment needs the recorded content stack".to_owned())?;
             let layers = &cat.content.layers;
-            layers.derived::<CachedResult<Database>>().get_or_init(|| Database::load_complete(layers)).map_err(|why| why.to_string())
+            layers.derived::<CachedResult<Database>>().get_or_init_shared(|| Database::shared_complete(layers)).map_err(|why| why.to_string())
         });
         read.as_deref().map_err(Clone::clone)
     }

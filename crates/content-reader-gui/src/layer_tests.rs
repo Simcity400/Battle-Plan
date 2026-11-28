@@ -152,6 +152,7 @@ fn a_mods_interface_file_with_refusals_reads_the_recordings_file() {
         "recorded/interface/z.gfx",
         br#"spriteTypes = { spriteType = { name = "GFX_a" texturefile = "gfx/recorded.dds" } }"#,
     );
+    machine.write("base/gfx/map.gfx", b"objectTypes = { }");
     let zeros = ["0"; 12].join(" ");
     machine.write(
         "art/interface/z.gfx",
@@ -190,6 +191,9 @@ fn a_mods_interface_file_with_refusals_reads_the_recordings_file() {
     let presentation = layers.presentation();
     let window = Registry::load(presentation).unwrap();
     let map = Registry::from_files(read_object_layers(presentation).unwrap());
+    let file_names = |registry: &Registry| registry.files.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
+    assert_eq!(file_names(&window), ["interface/a.gfx", "interface/b.gfx", "interface/z.gfx"]);
+    assert_eq!(file_names(&map), ["interface/a.gfx", "interface/b.gfx", "interface/z.gfx", "gfx/map.gfx"]);
     for registry in [&window, &map] {
         assert_eq!(registry.sprite_file(b"GFX_a"), Some("interface/z.gfx"));
         let sprite = registry.sprite(b"GFX_a").unwrap();

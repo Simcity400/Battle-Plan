@@ -212,7 +212,7 @@ pub struct CachedContent {
     max_railway_level: Option<i32>,
     raids:
         content_reader_layers::content::diagnostics::Once<Result<content_reader_raids::raids::Catalog, String>>,
-    equipment: Option<content_reader_key_names::equipment::Database>,
+    equipment: Option<Arc<content_reader_key_names::equipment::Database>>,
     autonomy_states: Option<content_reader_politics::autonomy::AutonomyStates>,
     state_categories: Option<content_reader_state_categories::state_categories::Database>,
     division_names: Option<content_reader_division_names::division_names::Database>,
@@ -275,7 +275,7 @@ impl CachedContent {
             content_reader_politics::power_balance::read_descriptions(layers)
         });
         let equipment = alongside(threads, || {
-            content_reader_key_names::equipment::Database::load_complete(layers)
+            content_reader_key_names::equipment::Database::shared_complete(layers)
         });
         let autonomy_states = alongside(threads, || content_reader_politics::autonomy::read(layers));
         let state_categories = alongside(threads, || {
@@ -494,7 +494,7 @@ impl CachedContent {
             buildings: self.buildings.as_ref(),
             resources: self.resources.as_deref(),
             max_railway_level: self.max_railway_level,
-            equipment: self.equipment.as_ref(),
+            equipment: self.equipment.as_deref(),
             autonomy_states: self.autonomy_states.as_ref(),
             state_categories: self.state_categories.as_ref(),
             division_names: self.division_names.as_ref(),

@@ -63,6 +63,10 @@ impl<T> CachedResult<T> {
     }
 
     pub fn get_or_init(&self, read: impl FnOnce() -> io::Result<T>) -> io::Result<Arc<T>> {
+        self.get_or_init_shared(|| read().map(Arc::new))
+    }
+
+    pub fn get_or_init_shared(&self, read: impl FnOnce() -> io::Result<Arc<T>>) -> io::Result<Arc<T>> {
         let mut value = self.value.lock().unwrap_or_else(|error| error.into_inner());
         if value.is_none() {
             #[cfg(any(test, feature = "test-support"))]
@@ -72,7 +76,7 @@ impl<T> CachedResult<T> {
             match result {
                 Ok(loaded) => {
                     *self.noted.lock().unwrap_or_else(|error| error.into_inner()) = noted;
-                    *value = Some(Ok(Arc::new(loaded)));
+                    *value = Some(Ok(loaded));
                 }
                 Err(error) if is_kept_error(&error) => {
                     *self.noted.lock().unwrap_or_else(|error| error.into_inner()) = noted;

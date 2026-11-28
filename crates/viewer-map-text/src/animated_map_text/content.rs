@@ -40,7 +40,7 @@ impl Assets {
         (defines, graphics): (&Defines, &Defines),
         map: [u32; 2],
         decode: Decode,
-        files: &[(String, sprites::Sprites)],
+        files: &[sprites::SpriteFile],
     ) -> Self {
         let registry = sprites::object_registry(files);
         let file_refusals = files
