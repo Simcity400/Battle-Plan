@@ -3286,6 +3286,30 @@ fn paused_cross_piece_join_seeks_once_and_covered_redeclare_does_not() {
 }
 
 #[test]
+fn retiring_a_reader_releases_its_unused_states_from_shared_steps() {
+    let (pages, _) = recording(Writing::at(3), 1, &[(0, BLOCK)]);
+    let timeline = Timeline::whole(&*pages).unwrap();
+    let playhead = Playhead::new(pages, timeline, settings(), None).unwrap();
+    let log = Log::default();
+    let first = playhead.declare(every(&[0]), Some(kept(1, &log))).unwrap();
+    let second = playhead.declare(every(&[0]), Some(kept(2, &log))).unwrap();
+    let mut active = playhead.consumer(second);
+    let retired = playhead.consumer(first);
+    active.set_blocking(true);
+    playhead.seek(0);
+    playhead.wait_until(|| playhead.newest().is_some());
+    let mut steps = Vec::new();
+    active.take(0, &mut steps);
+    let step = steps.iter().find(|step| step.reset()).expect("the initial reset");
+    assert!(super::lock(&step.states).iter().any(|state| state.reader == first));
+
+    playhead.retire(first);
+    playhead.wait_declarations().unwrap();
+    assert!(retired.state(step, 0).is_none());
+    assert!(active.state(step, 0).is_some());
+}
+
+#[test]
 fn paused_gap_seek_column_expansion_clears_join_without_stalling() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
     let timeline = Timeline::new(&*pages, vec![super::Piece { run: 0, first: 0, last: 3 }, super::Piece { run: 0, first: 5, last: 24 }]).unwrap();
