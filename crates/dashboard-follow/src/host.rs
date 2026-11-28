@@ -298,7 +298,7 @@ struct PanelJob {
 }
 
 impl PanelJob {
-    fn start<E: Send + Sync + 'static>(self, read: PanelRead, mut product: StepProduct, work: Arc<Work<StepProduct>>, owner: &Arc<E>, get: fn(&E) -> &Playhead) {
+    fn start<E: Send + Sync + 'static>(self, read: PanelRead, product: StepProduct, work: Arc<Work<StepProduct>>, owner: &Arc<E>, get: fn(&E) -> &Playhead) {
         if let PanelRead::Seed(hour) = read {
             let (clock, route, seek) = self.stamp;
             let mut reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
@@ -314,32 +314,35 @@ impl PanelJob {
             }
         }
         let owner = Arc::downgrade(owner);
-        run_panel(move || {
-            let head = || owner.upgrade().map(|owner| {
+        run_panel(move || self.run(read, product, work, move || {
+            owner.upgrade().map(|owner| {
                 let playhead = get(&owner);
                 (playhead.epoch(), playhead.head(Instant::now()))
-            });
-            match read {
-                PanelRead::Seed(hour) => self.seed(&mut product, hour, head),
-                PanelRead::CatchUp { through, quantum } => {
-                    if let Some((_, _, mut hour)) = product.last {
-                        while hour < through {
-                            hour = hour.saturating_add(quantum).min(through);
-                            if !self.read_one(&mut product, hour, false, false, true, &head) {
-                                product.resend = true;
-                                product.joined = true;
-                                break;
-                            }
+            })
+        }));
+    }
+
+    fn run(self, read: PanelRead, mut product: StepProduct, work: Arc<Work<StepProduct>>, head: impl Fn() -> Option<(u64, Hour)> + Send + 'static) {
+        match read {
+            PanelRead::Seed(hour) => self.seed(&mut product, hour, head),
+            PanelRead::CatchUp { through, quantum } => {
+                if let Some((_, _, mut hour)) = product.last {
+                    while hour < through {
+                        hour = hour.saturating_add(quantum).min(through);
+                        if !self.read_one(&mut product, hour, false, false, true, &head) {
+                            product.resend = true;
+                            product.joined = true;
+                            break;
                         }
                     }
                 }
             }
-            let id = product.id;
-            work.put(product);
-            if !self.token.load(Ordering::Acquire) || self.reads.lock().unwrap_or_else(PoisonError::into_inner).tokens.contains_key(&id) {
-                (self.wake)();
-            }
-        });
+        }
+        let id = product.id;
+        work.put(product);
+        if !self.token.load(Ordering::Acquire) || self.reads.lock().unwrap_or_else(PoisonError::into_inner).tokens.contains_key(&id) {
+            (self.wake)();
+        }
     }
 
     fn seed(&self, product: &mut StepProduct, hour: Hour, current_head: impl Fn() -> Option<(u64, Hour)>) {
@@ -1093,6 +1096,36 @@ fn a_retired_product_read_cannot_publish_its_seed() {
     let new = current.tokens[&4].clone();
     current.remove(4);
     assert!(new.load(Ordering::Acquire));
+}
+
+#[cfg(test)]
+#[test]
+fn a_paused_panel_catches_up_to_the_head_without_computing_past_its_credit() {
+    let (head, epoch, route, seek) = (10, 1, 1, 1);
+    let future = panel::dated::encoded(0, route, seek, 2, head + 1, panel::dated::DATA, &[1; 2048]);
+    let push = Arc::new(Push::with_budget(playhead::ByteBudget::new(crate::answer::charge(&future) * 4)));
+    push.clock(route, seek, head, false);
+    push.offer_kind(PANEL, future);
+    assert!(push.try_take().is_some());
+
+    let reads = Arc::new(Mutex::new(ProductReads { epoch, seek, ..Default::default() }));
+    reads.lock().unwrap().register(4);
+    let token = reads.lock().unwrap().tokens[&4].clone();
+    let sampled = Arc::new(Mutex::new(Vec::new()));
+    let recorded = sampled.clone();
+    let product = StepProduct {
+        id: 4, pending_seed: None, started_on: Some((epoch, seek)), last: Some((epoch, seek, head - 1)), joined: false, wire: Default::default(), cells: Vec::new(), class: (0, 1), host: None, followed: None, input: None, resend: false,
+        read: Arc::new(move |hour, _, _, _| {
+            recorded.lock().unwrap().push(hour);
+            panel::ProductRead { value: Arc::new(Ok(serde_json::json!(hour))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new(), from: hour }
+        }),
+    };
+    let job = PanelJob { stamp: (0, route, seek), session: push.session(), epoch, token, reads, push: push.clone(), wake: Arc::new(|| {}) };
+    job.run(PanelRead::CatchUp { through: head + 1, quantum: 1 }, product, Arc::new(Work::new(None)), move || Some((epoch, head)));
+    assert_eq!(*sampled.lock().unwrap(), [head]);
+    let (_, bytes, ..) = push.try_take().expect("the head answer fits while future replies hold credit");
+    assert_eq!(panel::dated::records(&bytes).unwrap()[0].hour, head);
+    assert!(push.try_take().is_none(), "the parked catch-up has offered nothing past the head");
 }
 
 #[cfg(test)]
