@@ -1418,7 +1418,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     gui_elapsed = (gui_elapsed + 1.0 / 60.0).min(f64::from(options.settle));
                     continue;
                 }
-                if document.icons.lazy.version() == before {
+                if window.loading_title() { std::thread::sleep(std::time::Duration::from_millis(16)); }
+                else if document.icons.lazy.version() == before {
                     break drawn;
                 }
             };

@@ -515,8 +515,7 @@ pub fn battles(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io
             lanes::history(recording, span.run, TableId::LandCombats, &[columns.combat[0]], Keys::These(&keys), span.first, span.last)?
         };
         for (key, battle) in found {
-            let observed = battle.live.first().map(|&(hour, _)| hour).into_iter().chain(battle.end.as_ref().map(|end| end.written)).min();
-            let Some(observed) = observed else { continue };
+            let observed = battle.live.first().map(|&(hour, _)| hour).into_iter().chain(battle.end.as_ref().map(|end| end.written)).min().expect("battle has a live or ended observation");
             let changes: Vec<_> = province.keys.binary_search_by_key(&u128::from(key.0), |(id, _)| *id).ok().into_iter()
                 .flat_map(|i| &province.keys[i].1).map(|step| {
                     let value = match step.cells.as_deref() { Some([Cell::Number(value)]) => u32::try_from(*value).ok(), _ => None };

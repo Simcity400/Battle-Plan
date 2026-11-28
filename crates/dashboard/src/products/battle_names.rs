@@ -169,11 +169,10 @@ pub fn ahead(source: &Arc<Source>, branch: u64, load: &LoadContext) -> io::Resul
         let (source, load, pending) = (Arc::downgrade(source), LoadContext { content: Some(content.clone()) }, Arc::clone(&build));
         dashboard_base::products::read_ahead::spawn("battle titles ahead", move || {
             job_priority::background_thread();
-            if let Some(source) = source.upgrade() {
-                let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source.in_scope(|| read(&source, branch, &load, &false.into()))))
-                    .unwrap_or_else(|_| Err(io::Error::other("Battle title preparation failed")));
-                let _ = pending.set(made);
-            }
+            let Some(source) = source.upgrade() else { return };
+            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source.in_scope(|| read(&source, branch, &load, &false.into()))))
+                .unwrap_or_else(|_| Err(io::Error::other("Battle title preparation failed")));
+            let _ = pending.set(made);
         })?;
         slot.insert(build);
     }
@@ -250,12 +249,8 @@ impl Product for BattleNames {
             let held = state.lock().unwrap_or_else(PoisonError::into_inner);
             (held.0 == content.presentation.binding().generation).then(|| held.1.get(&branch).cloned()).flatten()
         });
-        let names = match build {
-            Some(build) => match result(&build)? {
-                Some(names) => names,
-                None => return Ok(BattleNamesReply { titles: BTreeMap::new(), loading: Some("Loading battle titles…".into()), warnings: Vec::new() }),
-            },
-            None => read(source, branch, load, cancelled)?,
+        let Some(names) = build.as_ref().map_or_else(|| read(source, branch, load, cancelled).map(Some), result)? else {
+            return Ok(BattleNamesReply { titles: BTreeMap::new(), loading: Some("Loading battle titles…".into()), warnings: Vec::new() });
         };
         let titles = params.battles.iter().map(|key| {
             let title = match names.get(key) {

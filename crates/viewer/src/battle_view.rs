@@ -295,7 +295,7 @@ impl BattleView {
             return state;
         };
         state.close_requests = (held.close_requests > 0).then_some(held.close_requests);
-        if held.window.loading_art() { return state; }
+        if held.window.loading_art() || held.window.loading_title() { return state; }
         let hour = match (&held.refused, held.shown) {
             (Some((hour, _)), _) => Some(*hour),
             (None, Some(shown)) => {
@@ -450,7 +450,7 @@ impl Held {
         let why = [matches!(prepared, Prepared::Read(_)), self.drew != Some((extent, version)), input.is_some(), animating && since.is_none_or(|since| since >= ANIMATION_FRAME)];
         let redraw = match prepared {
             Prepared::Read(_) => true,
-            Prepared::Kept => why[1] || why[2] || why[3],
+            Prepared::Kept => why[1] || why[2] || why[3] || self.window.loading_title(),
             Prepared::Loading | Prepared::Closed => false,
         };
         if redraw {
@@ -463,7 +463,7 @@ impl Held {
             self.animated = self.window.gui_active().then(Instant::now);
             if self.drew.is_none() {
                 ctx.request_repaint();
-            } else if self.animated.is_some() {
+            } else if self.animated.is_some() || self.window.loading_title() {
                 ctx.request_repaint_after(ANIMATION_FRAME);
             }
             if !self.window.is_open() {

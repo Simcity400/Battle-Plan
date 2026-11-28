@@ -688,8 +688,7 @@ impl Inner {
             read_feed_scope_ahead(&source, self.content_for(&source, dashboard_base::source::Work::Ahead));
             read_air_observed_ahead(&source);
             if let Some(branch) = source.replay_ref().timelines().map(|timelines| timelines.main) {
-                let load = LoadContext { content: source.admit(dashboard_base::source::Work::Recorded) };
-                let _ = crate::products::battle_names::ahead(&source, branch, &load);
+                let _ = crate::products::battle_names::ahead(&source, branch, &LoadContext { content: source.admit(dashboard_base::source::Work::Recorded) });
             }
             source
                 .name_countries(self.content().as_ref())
