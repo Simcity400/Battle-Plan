@@ -231,6 +231,14 @@ function projectBattalionsStack(readView: BoundedReadView, options: ArmySizeBrea
   }
 
   const warnings = [...new Set([...options.auxWarnings, ...reply.warnings])];
+  const through = reply.nextChange === null ? floorHour : Math.min(floorHour, reply.nextChange - 1);
+  const readHour = Math.min(through, reply.hour);
+  const unproven = through < floorHour ? 'Army breakdown is not recorded at this hour.' : null;
+  const gaps: ChartGap[] = [
+    ...options.gaps,
+    ...reply.missing.map(span => span.lastHour === reply.hour && through > reply.hour ? { ...span, lastHour: through } : span),
+    ...(unproven ? [{ firstHour: through + 1, lastHour: floorHour, reason: unproven }] : []),
+  ];
   if (!reply.available && reply.runs.length === 0) {
     return {
       kind: 'army-size',
@@ -240,9 +248,9 @@ function projectBattalionsStack(readView: BoundedReadView, options: ArmySizeBrea
       extent: options.extent,
       yAxis: baseAxis,
       series: [],
-      gaps: options.gaps.length > 0 ? options.gaps : undefined,
+      gaps: gaps.length > 0 ? gaps : undefined,
       warnings,
-      empty: { message: reply.missing[0]?.reason ?? 'Army breakdown is not recorded.', kind: 'unavailable' as const },
+      empty: { message: unproven ?? reply.missing[0]?.reason ?? 'Army breakdown is not recorded.', kind: 'unavailable' as const },
       auditRows: [],
     };
   }
@@ -277,9 +285,9 @@ function projectBattalionsStack(readView: BoundedReadView, options: ArmySizeBrea
 
   const colours = assignGroupColours(bandSpecs.map(spec => spec.key), options.surface);
   const hoverDetail = buildBattalionHoverDetail(readView, options.subject!, reply, colours);
-  const headRun = runAtHour(reply.runs, floorHour);
-  const headMix = mixAtHour(reply.mix, floorHour);
-  const headMissing = missingAtHour(reply, floorHour);
+  const headRun = unproven ? null : runAtHour(reply.runs, readHour);
+  const headMix = unproven ? null : mixAtHour(reply.mix, readHour);
+  const headMissing = unproven ?? missingAtHour(reply, readHour);
 
   if (bandSpecs.length === 0) {
     if (headMissing !== null && headRun === null) {
@@ -291,7 +299,7 @@ function projectBattalionsStack(readView: BoundedReadView, options: ArmySizeBrea
         extent: options.extent,
         yAxis: baseAxis,
         series: [],
-        gaps: [...options.gaps, ...reply.missing],
+        gaps,
         hoverDetail,
         warnings,
         empty: { message: headMissing, kind: 'unavailable' as const },
@@ -308,7 +316,7 @@ function projectBattalionsStack(readView: BoundedReadView, options: ArmySizeBrea
       extent: options.extent,
       yAxis: baseAxis,
       series: [],
-      gaps: [...options.gaps, ...reply.missing],
+      gaps,
       hoverDetail,
       warnings,
       empty: headMissing
@@ -321,18 +329,18 @@ function projectBattalionsStack(readView: BoundedReadView, options: ArmySizeBrea
   const cutsSet = new Set<number>();
   for (const run of reply.mix) {
     cutsSet.add(run.firstHour);
-    if (run.lastHour < floorHour) cutsSet.add(run.lastHour + 1);
+    if (run.lastHour < readHour) cutsSet.add(run.lastHour + 1);
   }
   for (const run of reply.runs) {
     cutsSet.add(run[0]);
     const last = run[2] ?? run[0];
-    if (last < floorHour) cutsSet.add(last + 1);
+    if (last < readHour) cutsSet.add(last + 1);
   }
   for (const span of reply.missing) {
     cutsSet.add(span.firstHour);
-    if (span.lastHour < floorHour) cutsSet.add(span.lastHour + 1);
+    if (span.lastHour < readHour) cutsSet.add(span.lastHour + 1);
   }
-  const cuts = [...cutsSet].filter(h => h <= floorHour).sort((a, b) => a - b);
+  const cuts = [...cutsSet].filter(h => h <= readHour).sort((a, b) => a - b);
 
   const hours: number[] = [];
   const bandValues: (number | null)[][] = bandSpecs.map(() => []);
@@ -364,6 +372,7 @@ function projectBattalionsStack(readView: BoundedReadView, options: ArmySizeBrea
     });
     totalValues.push(stackSum);
   }
+  if (unproven) pushNull(through + 1);
 
   const headTotalVal = headRun?.[1] ?? null;
   let headPartsSum = 0;
@@ -388,11 +397,6 @@ function projectBattalionsStack(readView: BoundedReadView, options: ArmySizeBrea
         : null,
     };
   });
-
-  const gaps: ChartGap[] = [
-    ...options.gaps,
-    ...reply.missing.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour, reason: span.reason })),
-  ];
 
   const auditRows: FamilyAuditRow[] = [];
   if (headTotalVal !== null) {
@@ -423,7 +427,7 @@ function projectBattalionsStack(readView: BoundedReadView, options: ArmySizeBrea
       hours,
       bands,
       step: true,
-      total: { values: totalValues },
+      total: { values: totalValues, ...(unproven ? { missingReason: hours.map(at => at > through ? unproven : null) } : {}) },
     },
     gaps: gaps.length > 0 ? gaps : undefined,
     hoverDetail,

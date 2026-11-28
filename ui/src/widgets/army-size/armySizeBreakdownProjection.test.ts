@@ -168,6 +168,25 @@ test('army-size breakdown projects stacked unit groups, distinct unresolved keys
     model.auditRows?.map(r => [r.key, r.value]),
     [['__total__', '8'], ['unknown:mod_unit_b', '4'], ['group:alpha_inf', '2'], ['unknown:mod_unit_a', '1'], ['__unattributed__', '1']],
   );
+  const heldView = createBoundedReadView({
+    hour: displayedHour(138),
+    panels: new Map([['breakdown', reply]]),
+    identity: fakeIdentity(),
+  });
+  const held = armySizeBreakdownProjection.project(heldView, opts);
+  assert.deepEqual(held.auditRows, model.auditRows, 'the proven hold preserves totals and group counts');
+  assert.deepEqual(held.stack, model.stack, 'the held reply introduces no break at its last recorded hour');
+  const expired = armySizeBreakdownProjection.project(createBoundedReadView({
+    hour: displayedHour(140),
+    panels: new Map([['breakdown', reply]]),
+    identity: fakeIdentity(),
+  }), opts);
+  assert.deepEqual(expired.auditRows?.map(r => [r.key, r.value]), [['__total__', 'Army breakdown is not recorded at this hour.']]);
+  assert.deepEqual(expired.gaps?.at(-1), { firstHour: 140, lastHour: 140, reason: 'Army breakdown is not recorded at this hour.' });
+  const expiredLayout = layoutTimeChart(expired, 600, 260, 'sans-serif', t => t.length * 6);
+  const expiredItems = deriveTimeChartTooltip(expired, expiredLayout, 'plot:140')?.payload?.items ?? [];
+  assert.ok(expiredItems.some(item => item.missingReason === 'Army breakdown is not recorded at this hour.'));
+  assert.ok(expiredItems.every(item => item.value === undefined));
 
   const layout = layoutTimeChart(model, 600, 260, 'sans-serif', t => t.length * 6);
   const tip = deriveTimeChartTooltip(model, layout, 'plot:115');
@@ -208,7 +227,7 @@ test('army-size breakdown reports unavailable for unrecorded head or explicitly 
     warnings: [],
   };
   const unreadModel = armySizeBreakdownProjection.project(
-    createBoundedReadView({ hour: displayedHour(125), panels: new Map<string, unknown>([['breakdown', unreadReply]]), identity: fakeIdentity() }),
+    createBoundedReadView({ hour: displayedHour(127), panels: new Map<string, unknown>([['breakdown', unreadReply]]), identity: fakeIdentity() }),
     {
       subject: countryKey(7),
       measure: 'battalions',
@@ -226,6 +245,7 @@ test('army-size breakdown reports unavailable for unrecorded head or explicitly 
   assert.equal(unreadModel.empty?.kind, 'unavailable');
   assert.equal(unreadModel.empty?.message, 'Battalions were not recorded at these hours');
   assert.deepEqual(unreadModel.auditRows, []);
+  assert.equal(unreadModel.gaps?.[0]?.lastHour, 127);
 
   const refusedMeasure = armySizeBreakdownProjection.project(
     createBoundedReadView({ hour: displayedHour(125), panels: new Map(), identity: fakeIdentity() }),
