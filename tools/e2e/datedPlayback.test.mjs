@@ -696,6 +696,33 @@ test('per-widget cost ranking combines net main-thread p95 and drawing-lane serv
   assert.deepEqual(rankWidgetCosts([report.widgets[2], report.widgets[1], report.widgets[0]]).map(w => w.kind),
     ['worker-heavy', 'main-heavy', 'refused-widget']);
 
+  const mapWindow = { ...windows[1], kind: 'map', view: 'default', widget: 'campaign-map', session: 'costs' };
+  const mapState = { t: 'map_state', at: 7500, view: 'campaign-map', hour: 2240, loading: true, blank: false, follow: true, drawn_at: 7495, session: 'costs' };
+  const mapPage = [
+    ...records,
+    { t: 'map_state', at: 6000, view: 'campaign-map', hour: 100, loading: false, blank: false },
+    mapState,
+    { ...mapState, at: 7508 },
+    { ...mapState, at: 7520, drawn_at: 7515, hour: 9999 },
+  ];
+  const native = [
+    { t: 'map_open', map: 1, role: 'main' },
+    { t: 'map', map: 1, frame: 5, at: 7500, work_ms: 10 },
+    { t: 'map_present', map: 1, frame: 5, at: 7510 },
+    { t: 'map', map: 1, frame: 6, at: 7520, work_ms: 10 },
+    { t: 'map_present', map: 1, frame: 7, at: 7530 },
+  ].map(r => ({ ...r, session: 'costs' }));
+  const baselines = [emptyStart, emptyEnd];
+  const campaignMap = summarizeWidgetCosts([mapWindow], mapPage, { baselines }).widgets[0];
+  assert.equal(campaignMap.lagP95Hours, null);
+  assert.match(campaignMap.lagReason, /native map/i);
+  assert.equal(campaignMap.exact, 'not-audited');
+  assert.equal(campaignMap.main.n, 40);
+  const measuredMap = summarizeWidgetCosts([mapWindow], mapPage, { baselines, mapRecords: native }).widgets[0];
+  assert.equal(measuredMap.lagP95Hours, 34, 'measure at native presentation, including a drawn hour still settling');
+  assert.deepEqual(measuredMap.lagCoverage, { matched: 1, presents: 2 });
+  assert.equal(measuredMap.futureFrames, 0, 'a draw with no native present cannot supply a frame hour');
+
   const loading = { firstHour: 100, lastHour: 124, frames: 1 };
   const resumed = summarizeWidgetCosts([{ ...windows[0], outcome: 'loading-recovered', loading }], records, { baselines: [emptyStart, emptyEnd] }).widgets[0];
   assert.equal(resumed.outcome, 'loading-recovered');

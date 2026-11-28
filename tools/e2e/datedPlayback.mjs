@@ -423,6 +423,30 @@ function checkCostClock(w, winRecords) {
   return { ok: true, hps: pace.hps, elapsedSec, reason: null };
 }
 
+function nativeMapLag(w, records, mapRecords) {
+  const native = forSession(mapRecords, w.session);
+  const main = new Set(native.filter(r => r.t === 'map_open' && r.role === 'main').map(r => r.map));
+  const frameKey = r => `${r.map}:${r.frame}`;
+  const presents = new Map(native.filter(r => r.t === 'map_present' && main.has(r.map)
+    && w.from != null && w.to != null && r.at >= w.from && r.at <= w.to).map(r => [frameKey(r), r.at]));
+  const draws = native.filter(r => r.t === 'map' && Number.isFinite(r.work_ms) && presents.get(frameKey(r)) >= r.at);
+  const ticks = records.filter(r => r.t === 'tick');
+  const samples = new Map();
+  for (const r of records) {
+    if (r.t !== 'map_state' || r.view !== w.widget || !r.follow || r.blank || !Number.isFinite(r.hour) || !Number.isFinite(r.drawn_at)) continue;
+    const matching = draws.filter(draw => draw.at - draw.work_ms <= r.drawn_at && r.drawn_at <= draw.at);
+    if (matching.length !== 1) continue;
+    const key = frameKey(matching[0]);
+    if (samples.has(key)) continue;
+    const at = presents.get(key);
+    const tick = ticks.findLast(r => r.at <= at);
+    if (!tick?.playing) continue;
+    const head = Math.floor(tick.hour + Math.max(0, at - (tick.composedAt ?? tick.at)) * tick.speed / 1000);
+    if (Number.isFinite(head)) samples.set(key, head - r.hour);
+  }
+  return { ages: [...samples.values()], coverage: { matched: samples.size, presents: presents.size } };
+}
+
 function countUnauditedPictures(paintedInWindow, auditedSamples) {
   const auditedKeys = new Set(auditedSamples.filter(rendered).map(s => `${s.generation ?? 0}\u0000${s.placement}\u0000${s.owner}\u0000${s.at}`));
   const paintedChecks = new Map();
@@ -447,7 +471,7 @@ function countUnauditedPictures(paintedInWindow, auditedSamples) {
   return unauditedPictures;
 }
 
-export function summarizeWidgetCosts(windows, records, { baseline = null, baselines = null, profile = null, confinement = null } = {}) {
+export function summarizeWidgetCosts(windows, records, { baseline = null, baselines = null, profile = null, confinement = null, mapRecords = [] } = {}) {
   const sorted = (records ?? []).toSorted((a, b) => a.at - b.at);
   const diff = (a, b) => Number.isFinite(a) && Number.isFinite(b) ? a - b : null;
   const frameStatsOf = (w, winRecords) => {
@@ -572,8 +596,14 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
       .map(([product, count]) => [product, seconds > 0 ? count / seconds : count]));
     const requestsPerSec = seconds > 0 ? liveQueries.length / seconds : null;
     const cacheHitsPerSec = seconds > 0 ? cacheHits.length / seconds : null;
-    let lagP95Hours = null, futureFrames = 0;
-    if (playingPictures.length) {
+    let lagP95Hours = null, lagReason = null, lagCoverage = null, futureFrames = 0;
+    if (w.kind === 'map') {
+      const { ages, coverage } = nativeMapLag(w, winRecords, mapRecords);
+      lagP95Hours = p95(ages);
+      futureFrames = ages.filter(age => age < 0).length;
+      lagCoverage = coverage;
+      if (!coverage.matched) lagReason = 'No native map hour matched a confirmed present during playback';
+    } else if (playingPictures.length) {
       const lags = [];
       for (const r of playingPictures) {
         const target = Math.floor(r.fixedHour ?? r.head);
@@ -637,7 +667,7 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
       seconds, clockHps: clock.hps, main, mainDelta, interval, worker,
       commits, commitsPerSec,
       requests: liveQueries.length, requestsPerSec, requestsByProduct, requestCountsByProduct, cacheHitsPerSec,
-      lagP95Hours, futureFrames,
+      lagP95Hours, ...(lagReason ? { lagReason } : {}), ...(lagCoverage ? { lagCoverage } : {}), futureFrames,
       exact, exactError, auditSamples: inWindowAudit.length, postWindowAuditErrors,
       lostRecords: lost, complete, pass, correctnessErrors, incompleteReasons: [...new Set(incompleteReasons)],
       belowBaselineNoise, lowFrameCount,
