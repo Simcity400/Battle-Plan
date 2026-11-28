@@ -85,6 +85,18 @@ impl std::fmt::Debug for Table {
 }
 
 impl Table {
+    const ENTRY_BYTES: usize = 2 * size_of::<u64>();
+
+    pub fn pack<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        entries: impl ExactSizeIterator<Item = (K, V)>,
+        payload_bytes: usize,
+    ) -> io::Result<Self> {
+        let header = size_of::<u64>() + Self::ENTRY_BYTES * entries.len();
+        let mut bytes = Vec::with_capacity(header + payload_bytes);
+        Self::write(&mut bytes, entries);
+        Self::read(&Arc::new(bytes), 0).map(|(table, _)| table)
+    }
+
     pub fn write<K: AsRef<[u8]>, V: AsRef<[u8]>>(
         out: &mut Vec<u8>,
         entries: impl ExactSizeIterator<Item = (K, V)>,
@@ -92,7 +104,7 @@ impl Table {
         let count = entries.len();
         out.extend((count as u64).to_le_bytes());
         let ends = out.len();
-        out.resize(ends + 16 * count, 0);
+        out.resize(ends + Self::ENTRY_BYTES * count, 0);
         let data = out.len();
         let mut written = 0;
         for (index, (key, value)) in entries.enumerate() {
@@ -100,7 +112,7 @@ impl Table {
             let key_end = ((out.len() - data) as u64).to_le_bytes();
             out.extend_from_slice(value.as_ref());
             let value_end = ((out.len() - data) as u64).to_le_bytes();
-            let at = ends + 16 * index;
+            let at = ends + Self::ENTRY_BYTES * index;
             out[at..at + 8].copy_from_slice(&key_end);
             out[at + 8..at + 16].copy_from_slice(&value_end);
             written += 1;
@@ -113,7 +125,7 @@ impl Table {
         let count = usize::try_from(input.u64()?).map_err(|_| damaged())?;
         let ends = input.at();
         let data = count
-            .checked_mul(16)
+            .checked_mul(Self::ENTRY_BYTES)
             .and_then(|length| ends.checked_add(length))
             .filter(|data| *data <= bytes.len())
             .ok_or_else(damaged)?;
