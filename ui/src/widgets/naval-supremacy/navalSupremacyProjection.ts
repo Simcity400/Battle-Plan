@@ -356,6 +356,7 @@ function supremacySources(ctx: FamilyPlanContext, shares: boolean): SourcePlan {
       coverage: { mode: 'population', form: 'top', limit: top },
     },
     tile: {
+      panel: 'naval-supremacy',
       params: { ...base, ...rankMissing },
       coverage: { mode: 'population', form: 'all' },
     },

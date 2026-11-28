@@ -129,7 +129,7 @@ test('shares and timeline both follow today and only timeline asks for history',
     const plan = declaration.sources(ctx, { following: true, staticSpan: null } as never);
     assert.deepEqual(plan.entries.map(entry => entry.name), declaration === supremacySharesDeclaration ? ['now'] : ['now', 'tile:0', 'tile:1']);
     assert.ok(plan.entries.every(({ name, read }) => read.shape === 'point' &&
-      (name === 'now' ? read.followQuery?.panel === 'naval-supremacy' : read.followQuery === null)));
+      read.followQuery?.panel === 'naval-supremacy' && (name === 'now' || read.dayTile === true)));
   }
 });
 

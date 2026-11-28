@@ -61,11 +61,11 @@ test('heat timelines follow the head and read only closed days with reusable ran
     });
     assert.equal(refused, null);
     const convoy = declaration === convoyHealthDeclaration;
-    assert.deepEqual(subscriptions.map(sub => sub.name), convoy ? plan.entries.map(entry => entry.name) : ['now'], declaration.kind);
     const entries = unitEntries(plan, true, subscriptions);
     const ask = (hour: number) => askUnits(entries, { following: true, trackOffset: 0, hour, playback, content: 0 });
     const hour = DAY_TILE_HOURS + 24;
     if (convoy) {
+      assert.deepEqual(subscriptions.map(sub => sub.name), plan.entries.map(entry => entry.name), declaration.kind);
       for (const played of [firstHour, hour - 1, hour, hour + 24, hour + 48]) {
         assert.deepEqual(ask(played), [], 'playback must not ask for a history tile as a new day closes');
       }
@@ -86,6 +86,24 @@ test('heat timelines follow the head and read only closed days with reusable ran
       }), expected, 'audit');
       continue;
     }
+    if (declaration === supremacyTimelineDeclaration) {
+      assert.deepEqual(subscriptions.map(sub => sub.name), ['now', ...plan.entries.slice(1).map(entry => entry.name)]);
+      assert.equal(subscriptions.length, 58);
+      assert.deepEqual(subscriptions[1]?.query, { panel: 'naval-supremacy', branchId: '1', country: 'AAA', firstHour, lastHour: DAY_TILE_HOURS - 1 });
+      for (const hour of [firstHour, 24, DAY_TILE_HOURS - 1, DAY_TILE_HOURS, DAY_TILE_HOURS + 24, lastHour]) {
+        assert.equal(ask(hour).length, 0, 'a followed tile never makes an exact playback request');
+      }
+      const options = { following: false, timeMode: 'follow' as const, branch: ctx.branch, staticSpan: null, window: null, gate };
+      const history = exactEntries(plan).slice(1);
+      const exact = (tile: number, hour: number) => buildExactRequests(history[tile]!, gate.recorded(hour)!, options)?.asks[0]?.request.params;
+      assert.equal(exact(0, 23), undefined);
+      assert.deepEqual(exact(0, 24), { branchId: '1', country: 'AAA', firstHour, lastHour: 23 });
+      assert.deepEqual(exact(0, DAY_TILE_HOURS), { branchId: '1', country: 'AAA', firstHour, lastHour: DAY_TILE_HOURS - 1 });
+      assert.equal(exact(1, DAY_TILE_HOURS + 23), undefined);
+      assert.deepEqual(exact(1, DAY_TILE_HOURS + 24), { branchId: '1', country: 'AAA', firstHour: DAY_TILE_HOURS, lastHour: DAY_TILE_HOURS + 23 });
+      continue;
+    }
+    assert.deepEqual(subscriptions.map(sub => sub.name), ['now'], declaration.kind);
     const firstDay = ask(firstHour);
     assert.ok(firstDay.every(unit => unit.key === null), 'nothing is closed on the first day');
     assert.deepEqual(firstDay[0]?.idle, [-Infinity, 23], 'the first closed day becomes available at midnight');
