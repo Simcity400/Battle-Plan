@@ -143,7 +143,7 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
     kind: 'game-score',
     validate: validateGameScore,
     nextChange: (readView, options) => nextGameScoreChange(readView.hour, options),
-    incrementalLive: options => options.top == null,
+    incrementalLive: () => true,
     rank: true,
     rankMarkers: options => options.rankMarkers,
     columns: (reply): readonly DeclarativeColumnSpec<GameScoreRow, GameScoreProjectionOptions>[] => {

@@ -21,6 +21,35 @@ test('game score reply validation rejects malformed cells and column hints fall 
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { gameScoreProjection } from './gameScoreProjection.ts';
 
+test('Game score reuses Top rows while the followed panel holds their order', () => {
+  const options = { all: false, membership: null, top: 2, by: 'army' as const, factions: false, factionRuns: null, rankMarkers: false };
+  const reply = { ...REPLY, top: { tags: ['GER', 'ENG'], missing: null } };
+  let reads = 0;
+  const scores = (army: Record<string, number>) => ({
+    get(key: string) {
+      reads++;
+      const [tag, part] = key.split('\0');
+      return part === 'army' ? army[tag!] : 50;
+    },
+    missing: () => 'Not recorded',
+  });
+  const live = scores({ GER: 300, ENG: 200, ITA: 100 });
+  const view = (hour: number, panel: GameScoreReply, values = live) => createBoundedReadView({
+    hour, panels: new Map([['main', panel]]), live: new Map([['main', values]]),
+  });
+  const first = gameScoreProjection.project(view(10, reply), options);
+  assert.deepEqual(first.rows.map(row => row.key), ['GER', 'ENG']);
+  assert.ok(reads > 0);
+  reads = 0;
+  const held = gameScoreProjection.project(view(11, reply), options);
+  assert.equal(reads, 0, 'an unchanged Top panel reads no cells again');
+  assert.equal(held.rows, first.rows);
+  assert.equal(held.changedKeys?.size, 0);
+
+  const changed = gameScoreProjection.project(view(12, { ...reply, top: { tags: ['ENG', 'ITA'], missing: null } }, scores({ ENG: 400, ITA: 350, GER: 300 })), options);
+  assert.deepEqual(changed.rows.map(row => row.key), ['ENG', 'ITA']);
+});
+
 test('game-score projection resolves slot tag runs at the projected hour and honours faction rename bounds without latest-name fallback', () => {
   const rep: GameScoreReply = {
     missing: null,
