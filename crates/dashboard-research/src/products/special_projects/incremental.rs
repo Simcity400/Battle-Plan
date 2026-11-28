@@ -8,6 +8,7 @@ pub(super) struct Follow {
     pub holding: Holding,
     through: Option<i32>,
     links: HashMap<u32, RunLinks>,
+    window: Option<(Piece, PieceRows)>,
 }
 
 impl Follow {
@@ -16,7 +17,7 @@ impl Follow {
     }
 
     pub fn new(first: i32) -> Self {
-        Self { facts: Facts::new(first), holding: Holding::default(), through: None, links: HashMap::new() }
+        Self { facts: Facts::new(first), holding: Holding::default(), through: None, links: HashMap::new(), window: None }
     }
 
     pub fn to(&mut self, query: &Query<'_>, country: &Country, hour: i32, cancelled: &AtomicBool) -> io::Result<()> {
@@ -35,15 +36,24 @@ impl Follow {
         let mut through = limit;
         for piece in pieces.into_iter().filter(|piece| piece.last >= from && piece.first <= hour) {
             let mut piece = Piece { first: piece.first.max(from), ..piece };
-            let links = links_of(query, &mut self.links, piece.run)?;
-            let read = match read_piece(query, links, &piece) {
-                Err(_) if piece.last > hour => {
-                    piece.last = hour;
-                    read_piece(query, links, &piece)?
+            let (window, read) = match self.window.take() {
+                Some((window, read)) if window.covers(&piece) => (window, read),
+                _ => {
+                    let links = links_of(query, &mut self.links, piece.run)?;
+                    let read = match read_piece(query, links, &piece) {
+                        Err(_) if piece.last > hour => {
+                            piece.last = hour;
+                            read_piece(query, links, &piece)?
+                        }
+                        read => read?,
+                    };
+                    (piece.clone(), read)
                 }
-                read => read?,
             };
             let last = see_piece(&mut self.facts, &piece, &read, hour, cancelled)?;
+            if last < window.last && window.last.saturating_sub(window.first) < replay_columnar::unit::BLOCK as i32 {
+                self.window = Some((window, read));
+            }
             if piece.last >= hour {
                 through = last;
             }
