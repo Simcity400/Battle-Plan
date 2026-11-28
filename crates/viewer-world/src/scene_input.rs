@@ -268,7 +268,7 @@ impl Scene {
                 self.set_radar(field, shown, hovered);
             }
             SceneInput::SetAirAssignment(field) => {
-                self.set_air_assignment(queue, field)?;
+                self.set_air_assignment(device, queue, field)?;
             }
             SceneInput::SetStrategicStyles(styles) => {
                 self.set_strategic_styles(device, queue, styles)?;

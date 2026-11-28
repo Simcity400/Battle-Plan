@@ -168,6 +168,7 @@ impl Cache {
 pub struct Static {
     strategic: PoliticalGpu,
     scratch: Arc<Scratch>,
+    stripe_pipeline: Arc<wgpu::ComputePipeline>,
     size: [u32; 2],
     field: FieldDefines,
     strategic_keys: Vec<u32>,
@@ -218,6 +219,7 @@ impl Static {
         Ok(Self {
             strategic: gpu,
             scratch,
+            stripe_pipeline: ProvinceColors::pipeline(device),
             size: gradient_size(MapSize {
                 width: map.width,
                 height: map.height,
@@ -478,6 +480,10 @@ impl View {
 
     pub fn textures(&self) -> Option<&[wgpu::Texture; 2]> {
         self.shown.as_ref().map(|state| &state.textures)
+    }
+
+    pub fn province_colors(&self, device: &wgpu::Device) -> io::Result<ProvinceColors> {
+        ProvinceColors::new(device, &self.base)
     }
 
     pub fn style_pulses(&self) -> bool {

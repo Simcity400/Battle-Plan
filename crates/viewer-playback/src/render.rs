@@ -526,7 +526,7 @@ fn dump_frame(
     request: Request<'_>,
 ) -> io::Result<()> {
     overlay.present(request.animation_time)?;
-    scene.set_air_assignment(queue, overlay.prepared().province_stripes())?;
+    scene.set_air_assignment(device, queue, overlay.prepared().province_stripes())?;
     let sprites = overlay.shown();
     scene.render(
         device,
