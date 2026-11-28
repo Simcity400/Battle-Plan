@@ -7,7 +7,7 @@ dashboard_base::register_products! {
     CONSTRUCTION_TAIL_CONSTRUCTIONLOGTAIL => crate::products::construction::tail::ConstructionLogTail; panel(crate::products::construction::tail::dated_panel),
     CONSTRUCTION_BREAKDOWN_CONSTRUCTIONBREAKDOWN => crate::products::construction::breakdown::ConstructionBreakdown; interval(at_hour, |r| r.through),
     STOCKPILE_EQUIPMENTSTOCKPILETYPES => crate::products::stockpile::EquipmentStockpileTypes; panel(crate::products::stockpile::types::panel),
-    STOCKPILE_EQUIPMENTSTOCKPILELINES => crate::products::stockpile::EquipmentStockpileLines; interval(at_hour, |r| r.hour),
+    STOCKPILE_EQUIPMENTSTOCKPILELINES => crate::products::stockpile::EquipmentStockpileLines; panel(crate::products::stockpile::lines::panel),
     EQUIPMENT_LOSSES_EQUIPMENTLOSSES => crate::products::equipment_losses::EquipmentLosses; interval(at_hour, |r| r.through),
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDTYPES => crate::products::equipment_produced::EquipmentProducedTypes,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT => crate::products::equipment_produced::EquipmentProducedAt,

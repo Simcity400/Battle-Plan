@@ -3,8 +3,9 @@ use super::{
     catalogue::{Balance, Drawn, Kind, Lines, Model, Piece, StockpileMeasure, drawn, model},
     history::Replay,
 };
-use dashboard_base::products::{Country, LoadContext, Product};
+use dashboard_base::products::{Country, Finish, LoadContext, Product, at_hour};
 use dashboard_base::{Source, span::HourSpan};
+use dashboard_follow::panel::Panel;
 use dashboard_query::{
     Query,
     chart::{ChartBucket, ChartRun, merge},
@@ -14,7 +15,7 @@ use dashboard_query::{
 use dashboard_text::metadata::check_cancel;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{io, sync::atomic::AtomicBool};
+use std::{io, sync::{Arc, atomic::AtomicBool}};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -426,8 +427,14 @@ pub struct StockpileLinesReply {
 
 dashboard_base::reply_warnings!(StockpileLinesReply);
 
-fn lines_at(source: &Source, query: &Query<'_>, params: &StockpileLinesParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<StockpileLinesReply> {
-    let chosen = chosen(source, query, &params.family, load, cancelled)?;
+fn lines_at(source: &Source, params: &StockpileLinesParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<(StockpileLinesReply, i32)> {
+    let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
+    let query = dashboard_base::queries::query(source, branch)?;
+    let chosen = chosen(source, &query, &params.family, load, cancelled)?;
+    line_reply(params, &chosen)
+}
+
+fn line_reply(params: &StockpileLinesParams, chosen: &Chosen<'_>) -> io::Result<(StockpileLinesReply, i32)> {
     let hour = params.hour.min(chosen.model.last);
     let ordinal = |key: &str| chosen.model.types.iter().position(|kind| kind.key == key).unwrap_or(chosen.model.types.len()) as u32;
     let lines = chosen
@@ -455,7 +462,18 @@ fn lines_at(source: &Source, query: &Query<'_>, params: &StockpileLinesParams, l
         Some(_) => next.into_iter().chain(next_change(all(), Shown::Stock, chosen.membership, hour, chosen.model.last)).min(),
         None => next,
     };
-    Ok(StockpileLinesReply {
+    let ai = if chosen.shown == Shown::Share {
+        membership_after(Some(&chosen.replay().ai), hour).filter(|&edge| edge > hour && edge <= chosen.model.last)
+    } else {
+        None
+    };
+    let ordered = chosen.membership.is_none_or(|spans| {
+        spans.iter().all(|span| span.first_hour <= span.last_hour)
+            && spans.windows(2).all(|pair| pair[0].last_hour < pair[1].first_hour)
+    });
+    let next = if ordered { next.into_iter().chain(ai).min() } else { hour.checked_add(1) };
+    let through = at_hour::before(next);
+    Ok((StockpileLinesReply {
         branch_id: params.branch_id.clone(),
         hour,
         measure: chosen.shown.name().to_owned(),
@@ -464,10 +482,33 @@ fn lines_at(source: &Source, query: &Query<'_>, params: &StockpileLinesParams, l
         top,
         next_change: next,
         warnings: chosen.model.warnings.clone(),
-    })
+    }, through))
 }
 
 pub struct EquipmentStockpileLines;
+
+pub fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
+    let mut request = asked.clone();
+    request.as_object_mut().ok_or("Expected Stockpile Time parameters")?.remove("panel");
+    at_hour::at_hour(&mut request, 0);
+    let params: StockpileLinesParams = dashboard_query::named::named(&request).map_err(|error| error.to_string())?;
+    EquipmentStockpileLines::validate(&params)?;
+    let source = Arc::clone(source);
+    let load = LoadContext { content: load.content.clone() };
+    let finish = Finish::new(&source, &load, EquipmentStockpileLines::CONTENT_DEPENDENT);
+    Ok(at_hour::interval_panel(source.tables(), move |hour, cancelled| {
+        let params = StockpileLinesParams { hour, ..params.clone() };
+        let mut own = Default::default();
+        let (answer, rows) = at_hour::counted(|| finish.scope(&mut own, || lines_at(&source, &params, &load, cancelled)));
+        let (mut reply, through) = answer?;
+        finish.seal(&mut reply.warnings, &own);
+        let mut value = serde_json::to_value(reply)?;
+        let fields = value.as_object_mut().expect("a stockpile lines reply is an object");
+        fields.remove("hour");
+        fields.remove("nextChange");
+        Ok((value, hour..=through, rows))
+    }))
+}
 
 impl Product for EquipmentStockpileLines {
     const KEY: &'static str = "equipment-stockpile-lines";
@@ -495,8 +536,32 @@ impl Product for EquipmentStockpileLines {
     }
 
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
-        let query = dashboard_base::queries::query(source, branch)?;
-        lines_at(source, &query, params, load, cancelled)
+        lines_at(source, params, load, cancelled).map(|(reply, _)| reply)
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn the_share_reply_expires_when_the_missing_reason_changes_to_ai_coverage() {
+    use super::catalogue::Group;
+
+    let model = Arc::new(Model {
+        replays: vec![Arc::new(Replay { ai: vec![HourSpan { first_hour: 20, last_hour: 22 }], ..Replay::default() })],
+        types: Vec::new(),
+        groups: vec![Group { kind: Kind::Type, key: "equipment".into(), variants: Vec::new(), types: Vec::new() }],
+        lines: vec![vec![Lines { stock: Vec::new(), logistics: Vec::new() }]],
+        last: 30,
+        warnings: Vec::new(),
+    });
+    let chosen = Chosen { model, shown: Shown::Share, membership: None };
+    let mut params: StockpileLinesParams = serde_json::from_value(serde_json::json!({
+        "branchId": "1", "hour": 19,
+        "family": { "kind": "equipment-stockpile", "country": 7, "measure": "share", "included": [] },
+    })).unwrap();
+    for (hour, missing, next) in [(19, BALANCE_UNREAD, 20), (20, AI_BALANCE, 23)] {
+        params.hour = hour;
+        let (reply, through) = line_reply(&params, &chosen).unwrap();
+        assert_eq!(reply.lines[0].missing.as_deref(), Some(missing));
+        assert_eq!((reply.next_change, through), (Some(next), next - 1));
     }
 }

@@ -126,6 +126,25 @@ fn followed_stockpile_lines_confirm_equal_bodies_even_when_the_proof_changes() {
         }
     }
     assert_eq!(kinds, [dated::DATA, dated::STANDS, dated::DATA, dated::STANDS, dated::STANDS]);
+
+    asked["family"]["membership"] = json!([
+        { "firstHour": first + 3, "lastHour": first + 4 },
+        { "firstHour": first, "lastHour": first },
+        { "firstHour": first + 2, "lastHour": first + 2 },
+    ]);
+    let panel = (crate::registrations::STOCKPILE_EQUIPMENTSTOCKPILELINES.panel.unwrap().open)(&source, &load, &asked).unwrap();
+    let read = panel.exact().unwrap();
+    let mut params = params;
+    params.family.membership = serde_json::from_value(asked["family"]["membership"].clone()).unwrap();
+    for hour in first..=first + 4 {
+        params.hour = hour;
+        let followed = (read.advance)(hour, hour == first, &cancelled, None);
+        let mut exact = serde_json::to_value(EquipmentStockpileLines::load(&source, &params, &load, &cancelled).unwrap()).unwrap();
+        exact.as_object_mut().unwrap().remove("hour");
+        exact.as_object_mut().unwrap().remove("nextChange");
+        assert_eq!(followed.value.as_ref(), &Ok(exact), "unordered spans at hour {hour}");
+        assert_eq!(followed.from, hour);
+    }
 }
 
 #[test]

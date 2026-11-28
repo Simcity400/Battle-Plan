@@ -95,16 +95,21 @@ test('the Time view draws the product’s main types in its order, missing as mi
   const ctx = context({ endLabels: true });
   const options = declaration.projectionOptions(ctx, { extent: [FIRST, HOUR], surface: '#111111' });
   const hoverHour = FIRST + 100;
+  const { branchId, measure, decimals, lines, top, warnings } = reply(HOUR, { guns: 50, rifles: 900, tanks: null }, { keys: ['rifles', 'tanks'], refused: null });
+  const head = { branchId, measure, decimals, lines, top, warnings };
   const readView = createBoundedReadView({
     hour: HOUR,
     series: new Map([['stock', new Map([['rifles', boundTiledSeries(tiled('rifles', 900), displayedHour(HOUR), { headValue: knownValue(900) })]])]]),
-    panels: new Map([['lines', reply(HOUR, { guns: 50, rifles: 900, tanks: null }, { keys: ['rifles', 'tanks'], refused: null })]]),
+    panels: new Map([['lines', head]]),
     hovers: new Map([['hover', { hour: hoverHour, data: reply(hoverHour, { guns: 70, rifles: 400, tanks: 3 }, null) }]]),
   });
   const model = projection.project(readView, options);
   assert.deepEqual(model.series.map(series => series.key), ['rifles', 'tanks']);
   assert.equal(model.series[0]!.name, 'Infantry equipment');
   assert.equal(model.series[0]!.endLabel?.value, '900');
+  const confirmed = projection.project(createBoundedReadView({ hour: HOUR + 1, panels: new Map([['lines', head]]) }), options);
+  assert.equal(confirmed.series[0]!.headHour, HOUR + 1);
+  assert.equal(confirmed.series[0]!.headValue, model.series[0]!.headValue);
   assert.equal(model.series[1]!.name, 'tanks');
   assert.equal(model.series[1]!.headValue, null);
   assert.equal(model.series[1]!.absentReason, 'The stockpile was not read at this hour.');
