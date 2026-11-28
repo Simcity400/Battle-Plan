@@ -1781,19 +1781,19 @@ impl Units {
 
 impl Units {
     pub fn figures_stand(&self, hour: replay_data::Hour) -> bool {
-        if self.refused.is_some() {
+        if let Some(models) = &self.models
+            && (!models.made_at(hour) || (models.refused.is_none() && models.waiting()))
+        {
+            return false;
+        }
+        if self.refused.is_some() || !self.showing {
             return true;
         }
-        if self.carried().entities > 0 {
-            return false;
-        }
-        let Some(models) = self.models.as_ref().filter(|_| self.showing) else { return true };
-        if !models.made_at(hour) {
-            return false;
-        }
-        models.refused.is_some() || (!models.waiting() && self.meshes.as_ref().is_none_or(|meshes| {
-            !meshes.waiting() && meshes.stand() && meshes.hour.is_none_or(|made| made >= hour)
-        }))
+        self.carried().entities == 0
+            && (self.models.as_ref().is_none_or(|models| models.refused.is_some())
+                || self.meshes.as_ref().is_none_or(|meshes| {
+                    !meshes.waiting() && meshes.stand() && meshes.hour.is_none_or(|made| made >= hour)
+                }))
     }
 
     pub fn figures_state(&self) -> String {

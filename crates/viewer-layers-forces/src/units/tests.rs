@@ -827,14 +827,19 @@ fn a_step_applied_every_frame_starts_a_mesh_build_once_the_one_before_answers_an
     assert_eq!(layer(&side).meshes().and_then(|meshes| meshes.get(&102).copied()), Some(102), "the newest stack's mesh, settled whole");
 }
 
-struct NoModels;
+#[derive(Default)]
+struct NoModels(Option<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>);
 
 impl super::models::Select for NoModels {
     fn choose_meshes(&self, _frame: &replay_frame::frame::DecodedFrame, _ours: u32, _kept: (&viewer_unit_models::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), _stacks: &std::collections::HashMap<u64, super::meshes::Asked>, _asked: &std::collections::HashSet<u64>, _told: &viewer_unit_models::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> std::io::Result<super::meshes::Chosen> {
         Ok(super::meshes::Chosen { meshes: Vec::new(), made: viewer_unit_models::unit_models::Made::default() })
     }
 
-    fn prepare(&self, _frame: &replay_frame::frame::DecodedFrame, _perspective: &Choice, _convoys: Option<&[viewer_unit_models::trade_routes::ConvoyLine]>, _naval: bool, _kept: &mut super::models::Kept) -> std::io::Result<viewer_unit_models::unit_models::PreparedModels> {
+    fn prepare(&self, _frame: &replay_frame::frame::DecodedFrame, _perspective: &Choice, _convoys: Option<&[viewer_unit_models::trade_routes::ConvoyLine]>, naval: bool, _kept: &mut super::models::Kept) -> std::io::Result<viewer_unit_models::unit_models::PreparedModels> {
+        if !naval && let Some(release) = &self.0 {
+            let _ = release.lock().unwrap().recv();
+            return Err(std::io::Error::other("the replacement models were withheld"));
+        }
         Ok(viewer_unit_models::unit_models::PreparedModels::drawn_by_layers())
     }
 }
@@ -843,22 +848,43 @@ impl super::models::Select for NoModels {
 fn a_view_above_the_land_cutoff_and_below_the_ships_draws_the_ships_and_no_land_figure() {
     let kinds = replay_recording::schema::schema().unwrap();
     let (entry, content) = sight_world("units-ships-only", false);
-    let mut alone = Units::new(flat()).in_window(Arc::new(NoModels) as Arc<dyn super::models::Select>);
+    let mut alone = Units::new(flat()).in_window(Arc::new(NoModels::default()));
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "units");
     alone.inputs(&over(10, 600.0), &mut inputs).unwrap();
-    let mut land = Units::new(flat()).in_window(Arc::new(NoModels) as Arc<dyn super::models::Select>);
+    let mut land = Units::new(flat()).in_window(Arc::new(NoModels::default()));
     let mut drawn = viewer_layer_core::layers::Inputs::new(&kinds, "units");
     land.inputs(&over(10, 100.0), &mut drawn).unwrap();
     assert_eq!(inputs.selected(), drawn.selected(), "the land tables are declared at every height: crossing the cutoff resets none");
     drop((land, alone));
 
-    let mut units = Units::new(flat()).in_window(Arc::new(NoModels) as Arc<dyn super::models::Select>);
+    let (release, held) = std::sync::mpsc::channel();
+    let mut units = Units::new(flat()).in_window(Arc::new(NoModels(Some(std::sync::Mutex::new(held)))));
     units.window.as_mut().expect("in the window").tables = vec![TableId::Divisions];
     let layers: Vec<Box<dyn Layer>> = vec![Box::new(Sight::new(content)), Box::new(units)];
     let mut side = playing(&entry, layers, over(10, 600.0));
-    frames_at(&mut side, Some(8), 1, "the models made at a view that draws ships and no land figure", |side| side.parts().is_some() && !side.composing() && reading(side).prepared().is_some());
+    frames_at(&mut side, Some(8), 1, "the models made at a view that draws ships and no land figure", |side| {
+        !side.composing() && side.applied() == Some(8) && reading(side).figures_stand(8)
+            && reading(side).models.as_ref().is_some_and(|models| models.made_at(8))
+    });
     assert_eq!(reading(&side).stack_count(), 0, "it holds no land figure");
     assert!(!reading(&side).uploaded(), "the field the ships are drawn with is to be uploaded");
+
+    let (published, progress) = std::sync::mpsc::channel();
+    side.views().handle().set_on_publish(Arc::new(move || {
+        if std::thread::current().name() == Some("unit models") {
+            let _ = published.send(());
+        }
+    }));
+    let choice = sight_of(&side).choice().clone();
+    let units = side.layers_mut()[1].any_mut().unwrap().downcast_mut::<Units>().unwrap();
+    units.models.as_mut().unwrap().ask(&choice, None, false);
+    let waiting = !units.figures_stand(8);
+    release.send(()).unwrap();
+    assert!(waiting, "the old naval models cannot finish a ships-only frame");
+    progress.recv().unwrap();
+    units.models.as_mut().unwrap().join(Some(8), viewer_layer_core::layers::Settling::Whole);
+    assert!(units.figures_stand(8));
+    assert!(units.models.as_ref().unwrap().refused.as_deref().unwrap().contains("the replacement models were withheld"));
 }
 
 #[derive(Default)]
