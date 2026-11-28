@@ -7,6 +7,16 @@ use replay_frame::{frame::DecodedFrame, frame::TableView};
 use viewer_counter_products::map::province_tooltips::air_region::{RosterHistory, Sampler};
 
 const PASSED_HOURS: Hour = 48;
+const MAP_SEED_TABLES: &[TableId] = &[
+    TableId::Campaign,
+    TableId::Clock,
+    TableId::SimulationFeatures,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::CountryAppearance,
+    TableId::Politics,
+    TableId::PoliticalParties,
+];
 
 pub struct AirRosters(RosterHistory);
 
@@ -286,6 +296,13 @@ impl Playback {
     pub fn seek(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
         let _cost = replay_frame::cpu::scope("viewer", Some("decode/hour-build"));
         self.seek_with(branch, hour, |_| {})
+    }
+
+    pub(crate) fn seek_map_seed(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
+        self.cursor = Some(HourCursor::new(Arc::clone(&self.replay), MAP_SEED_TABLES, false));
+        let read = self.seek(branch, hour);
+        self.cursor = None;
+        read
     }
 
     pub fn seek_with(

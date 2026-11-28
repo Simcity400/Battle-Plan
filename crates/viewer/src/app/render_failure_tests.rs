@@ -123,6 +123,7 @@ fn a_drawn_map_names_an_undeclared_distant_battle_effect() -> std::io::Result<()
         fixture.document.content.clone(),
         fixture.document.playback.replay_handle(),
         &InitialHour {
+            map_seed: false,
             branch: Some(fixture.input.branch),
             hour: Some(fixture.input.hour),
             hour_fraction: 0.,
@@ -179,6 +180,7 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
         fixture.document.content.clone(),
         fixture.document.playback.replay_handle(),
         &InitialHour {
+            map_seed: false,
             branch: Some(fixture.input.branch),
             hour: Some(fixture.input.hour),
             hour_fraction: 0.,
@@ -300,7 +302,7 @@ fn a_widget_export_writes_the_frame_it_draws_at_the_widgets_own_size() -> std::i
     let document = Document::from_shared_content(
         fixture.document.content.clone(),
         fixture.document.playback.replay_handle(),
-        &InitialHour { branch: Some(fixture.input.branch), hour: Some(fixture.input.hour), hour_fraction: 0. },
+        &InitialHour { map_seed: false, branch: Some(fixture.input.branch), hour: Some(fixture.input.hour), hour_fraction: 0. },
     )?;
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, Some((fixture.state.device.clone(), fixture.state.queue.clone())));
     viewer.dashboard_map = true;
@@ -339,6 +341,7 @@ fn a_retired_map_shown_again_draws_its_new_target() -> std::io::Result<()> {
             fixture.document.content.clone(),
             fixture.document.playback.replay_handle(),
             &InitialHour {
+                map_seed: false,
                 branch: Some(fixture.input.branch),
                 hour: Some(fixture.input.hour),
                 hour_fraction: 0.,

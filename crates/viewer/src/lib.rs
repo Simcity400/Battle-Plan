@@ -1189,6 +1189,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &config.resolve_options()?,
             options.allow_unverified,
             &document::InitialHour {
+                map_seed: false,
                 branch: options.branch,
                 hour: options.hour,
                 hour_fraction: options.hour_fraction,

@@ -105,6 +105,7 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
             fixture.document.content.clone(),
             fixture.document.playback.replay_handle(),
             &InitialHour {
+                map_seed: false,
                 branch: Some(fixture.input.branch),
                 hour: Some(fixture.input.hour),
                 hour_fraction: 0.,

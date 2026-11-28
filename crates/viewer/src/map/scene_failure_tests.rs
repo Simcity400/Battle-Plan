@@ -81,6 +81,7 @@ impl Fixture {
             },
             false,
             &crate::document::InitialHour {
+                map_seed: false,
                 branch: Some(input.branch),
                 hour: Some(input.hour),
                 hour_fraction: 0.,

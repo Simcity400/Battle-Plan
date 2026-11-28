@@ -231,7 +231,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
         return Err(invalid(format!("Hour {outside} is outside branch {branch}'s timeline, {} to {}", timeline.first(), timeline.last())));
     }
     let loaded = Instant::now();
-    let initial = InitialHour { branch: Some(branch), hour: Some(first), hour_fraction: 0.0 };
+    let initial = InitialHour { map_seed: false, branch: Some(branch), hour: Some(first), hour_fraction: 0.0 };
     let mut document = Document::load(&options.recording, &resolve, false, &initial, None, 0)?;
     engine_executable::executable_tables::enter(document.content.tables);
     let load_seconds = loaded.elapsed().as_secs_f64();

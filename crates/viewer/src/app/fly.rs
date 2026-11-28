@@ -286,6 +286,7 @@ mod tests {
             fixture.document.content.clone(),
             fixture.document.playback.replay_handle(),
             &crate::document::InitialHour {
+                map_seed: false,
                 branch: Some(fixture.input.branch),
                 hour: Some(fixture.input.hour),
                 hour_fraction: 0.,

@@ -667,7 +667,11 @@ impl Viewer {
                 }
                 viewer_playback::map_source::Current::Frame(frame) => {
                     for table in TableId::ALL {
-                        messages.push(match &*frame.tables[table.index()] {
+                        let view = &frame.tables[table.index()];
+                        if view.is_not_selected() {
+                            continue;
+                        }
+                        messages.push(match &**view {
                             TableView::Complete(rows) => format!("{table:?}: {} rows", rows.len()),
                             TableView::Truncated { missing, .. } => {
                                 format!("{table:?}: truncated, {missing} missing")
